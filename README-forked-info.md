@@ -55,3 +55,12 @@ After updating your local repo, you can push to your forked GitHub repo:
 
 - Use `git branch` to confirm your current branch.
 - Use a GitHub personal access token if prompted for credentials.
+The default branch has been renamed!
+main is now named hogan-main
+
+If you have a local clone, you can update it by running the following commands.
+
+    ```git branch -m main hogan-main
+    git fetch origin
+    git branch -u origin/hogan-main hogan-main
+    git remote set-head origin -a```
