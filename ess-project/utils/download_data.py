@@ -2,6 +2,7 @@ import os
 from ftplib import FTP
 import pandas as pd
 import datetime as dt
+import py3dep
 
 def download_spires_data(
     year: int,
@@ -71,7 +72,7 @@ def download_spires_data(
 
 from pynhd import NLDI
 import xarray as xr
-import rioxarray  # Ensure rioxarray is installed for geospatial operations
+import rioxarray as rxr  # Ensure rioxarray is installed for geospatial operations
 from dask import delayed, compute
 from pathlib import Path
 
@@ -96,3 +97,48 @@ def clip_file_to_basin(input_path, output_path, gage_id):
         return f"✔️ Clipped: {input_path.name}"
     except Exception as e:
         return f"❌ Failed: {input_path.name} — {e}"
+    
+def get_topo_data(gage_id, map_type="DEM", resolution=500, geo_crs=4326, save_path=None, override=False):
+    """
+    Get topographic data for a given gage ID.
+    Parameters:
+    gage_id (str): The gage ID for which to retrieve topographic data.
+    map_type (str or list): The type of map to retrieve (e.g., "DEM",
+                    "Slope Degrees"). Default is "DEM".
+    resolution (int): The resolution of the map in meters. Default is 500.
+    geo_crs (int): The EPSG code for the geographic coordinate reference system. Default
+                    is 4326 (WGS 84).   
+    save_path (str): Optional path to save the retrieved data. If None, data will not be saved.
+    Returns:
+    xarray.DataArray: The topographic data for the specified gage ID.
+    """
+    # establish if the file should saved/read as a geoTIFF or netcf
+    if type(map_type) is str:
+        map_type = [map_type]
+        file_type = 'tif'
+    elif type(map_type) is list:
+        file_type = 'nc'
+    else:
+        raise ValueError("map_type must be a string or a list of strings.")
+    
+    if os.path.exists(Path(save_path) / f"{gage_id}_topo.{file_type}") or save_path == None:
+        # ignore if file already exists
+        print("File already exists.\nNew data will not be saved.\nUse override=True to override old file")
+        if file_type == "nc":
+            topo = xr.open_dataset(Path(save_path) / f"{gage_id}_topo.{file_type}")
+        else:
+            topo = rxr.open_rasterio(Path(save_path) / f"{gage_id}_topo.{file_type}")
+
+    elif save_path or override:
+        basin = NLDI().get_basins(gage_id).geometry.iloc[0]
+        topo = py3dep.get_map(map_type, basin, resolution, geo_crs=4326,)
+        # save to the given path
+        save_path = Path(save_path)
+        save_path.mkdir(parents=True, exist_ok=True)
+        if file_type == 'nc':
+            topo.to_netcdf(save_path / f"{gage_id}_topo.{file_type}")
+        else:
+            # save as tif
+            topo.rio.to_raster(f"{gage_id}_topo.{file_type}")
+        print(f"✔️ Topo data saved to {save_path / f'{gage_id}_topo.{file_type}'}")
+    return topo
