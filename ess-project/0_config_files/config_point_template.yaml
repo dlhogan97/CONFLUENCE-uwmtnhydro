@@ -16,7 +16,7 @@
 
 ## ================================================= 0. Global Paths: =====================================================================
 
-CONFLUENCE_DATA_DIR: "/home/dlhogan/data/CONFLUENCE_data"
+CONFLUENCE_DATA_DIR: "/scratch/dlhogan/ess_project_data"
 CONFLUENCE_CODE_DIR: "/home/dlhogan/CONFLUENCE"
 
 ### ============================================= 1. Experiment settings: =====================================================================

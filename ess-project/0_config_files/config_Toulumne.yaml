@@ -16,7 +16,7 @@
 
 ## ================================================= 0. Global Paths: =====================================================================
 
-CONFLUENCE_DATA_DIR: "/home/dlhogan/data/CONFLUENCE_data"
+CONFLUENCE_DATA_DIR: "/scratch/dlhogan/ess_project_data"
 CONFLUENCE_CODE_DIR: "/home/dlhogan/CONFLUENCE"
 
 ### ============================================= 1. Experiment settings: =====================================================================
@@ -435,7 +435,7 @@ GISTOOL_LIB_PATH: /home/dlhogan/envs/r-env/                # Path to gistool lib
 TOOL_CACHE: /home/dlhogan/cache                       # Path to gistool cache directory
 EASYMORE_CACHE: /home/dlhogan/easymore/               # Path to easymore cache directory
 EASYMORE_JOB_CONF: "installs/MAF/02_model_agnostic_component/easymore-job.slurm" # Path to easymore job config
-# CLUSTER_JSON: /home/dlhogan/data/CONFLUENCE_data/installs/datatool/etc/clusters/ucalgary-arc.json # Path to cluster json config
+# CLUSTER_JSON: /scratch/dlhogan/ess_project_data/installs/datatool/etc/clusters/ucalgary-arc.json # Path to cluster json config
 
 
 

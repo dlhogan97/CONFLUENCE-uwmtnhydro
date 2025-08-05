@@ -28,7 +28,7 @@ CATCHMENT_SHP_LON: center_lon
 CATCHMENT_SHP_NAME: default
 CLEANUP_INTERMEDIATE_FILES: true
 CONFLUENCE_CODE_DIR: /home/dlhogan/CONFLUENCE
-CONFLUENCE_DATA_DIR: /home/dlhogan/data/CONFLUENCE_data
+CONFLUENCE_DATA_DIR: /scratch/dlhogan/ess_project_data
 DATATOOL_CACHE: /home/dlhogan/
 DATATOOL_DATASET_ROOT: /home/dlhogan/data/meteorological-data/
 DATATOOL_PATH: default
