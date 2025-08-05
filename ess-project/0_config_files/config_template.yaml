@@ -17,7 +17,7 @@
 ## ================================================= 0. Global Paths: =====================================================================
 
 CONFLUENCE_DATA_DIR: "/scratch/dlhogan/ess_project_data"
-CONFLUENCE_CODE_DIR: "/home/dlhogan/CONFLUENCE"
+CONFLUENCE_CODE_DIR: "/home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro"
 
 ### ============================================= 1. Experiment settings: =====================================================================
 
