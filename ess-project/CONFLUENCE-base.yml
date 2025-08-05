@@ -4,6 +4,7 @@ channels:
 dependencies:
   - python=3.10.13
   - r-base
+  - gdal
   - pip
   - pip:
       # Core scientific and data processing libraries
