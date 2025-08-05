@@ -440,7 +440,7 @@ GISTOOL_LIB_PATH: /home/dlhogan/tools/src/                  # Path to gistool li
 TOOL_CACHE: /scratch/dlhogan/ess-project-data/cache/gistool                      # Path to gistool cache directory
 EASYMORE_CACHE: /scratch/dlhogan/ess-project-data/cache/easymore/                      # Path to easymore cache directory
 EASYMORE_JOB_CONF: "installs/MAF/02_model_agnostic_component/easymore-job.slurm" # Path to easymore job config ??
-# CLUSTER_JSON: /work/comphyd_lab/users/darri/data/CONFLUENCE_data/installs/datatool/etc/clusters/ucalgary-arc.json # Path to cluster json config
+CLUSTER_JSON: /home/dlhogan/tools/src/datatool/datatool/etc/clusters/lundquist-server.json # Path to cluster json config
 
 
 
