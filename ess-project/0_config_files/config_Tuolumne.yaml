@@ -22,8 +22,8 @@ CONFLUENCE_CODE_DIR: "/home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro"
 ### ============================================= 1. Experiment settings: =====================================================================
 
 # Experiment settings
-DOMAIN_NAME: "Toulumne"                                    # Name of experimental domain
-EXPERIMENT_ID: run_2                                           # Name of experiment
+DOMAIN_NAME: "Tuolumne"                                        # Name of experimental domain
+EXPERIMENT_ID: "run_1"                                           # Name of experiment
 EXPERIMENT_TIME_START: 2010-01-02 01:00                        # Start time of experiment e.g. '2010-01-01 00:00'
 EXPERIMENT_TIME_END: 2024-12-30 23:00                          # End time of experiment e.g. '2010-12-31 23:00'
 CALIBRATION_PERIOD: 2012-01-01, 2020-12-30                     # start_date, end_date in format YYYY-MM-DD
@@ -31,7 +31,7 @@ EVALUATION_PERIOD:  2021-01-01, 2024-12-30                     # start_date, end
 SPINUP_PERIOD: 2010-01-02, 2012-12-31                          # start_date, end_date in format YYYY-MM-DDmat YYYY-MM-DD
 
 # Computatational settings
-MPI_PROCESSES: 2                                               # Number of parallel processes allowed, based on your system's capabilities
+MPI_PROCESSES: 4                                               # Number of parallel processes allowed, based on your system's capabilities
 FORCE_RUN_ALL_STEPS: False                                     # Run all steps in the workflow and overwrite existing files
 
 ### ============================================= 2. Geospatial settings: =================================================================
@@ -74,7 +74,7 @@ ROUTING_MODEL: mizuRoute                                       # Routing model, 
 
 SUMMA_EXE: summa.exe                                   # Name of SUMMA executable
 SETTINGS_SUMMA_USE_PARALLEL_SUMMA: false                       # Run SUMMA in parallel
-SETTINGS_SUMMA_PARALLEL_EXE: summa_actors.exe                  # Name of parallel SUMMA binary
+SETTINGS_SUMMA_PARALLEL_EXE: summa.exe                  # Name of parallel SUMMA binary
 SETTINGS_SUMMA_CONNECT_HRUS: yes                               # Attribute setting: "no" or "yes". If no; all HRUs modeled as independent columns 
 SETTINGS_SUMMA_TRIALPARAM_N: 0                                 # Number of trial parameter specifications in inital setup. Specify 0 if none are wanted (they can still be included in this file but won't be read).
 SETTINGS_SUMMA_TRIALPARAM_1:                                   # Name of trial parameter and value to assign. Value assumed to be float.
@@ -231,12 +231,12 @@ STATION_ID: 11290000                                            # Station ID fro
 # SNOTEL data settings
 DOWNLOAD_SNOTEL: 'false'                                       # Download SNOTEL data, options: 'true' or 'false'
 SNOTEL_STATION: 'DAN'                                          # SNOTEL station ID (numeric)
-SNOTEL_PATH: '/home/dlhogan/data/geospatial-data/SNOTEL'   # Path to directory containing SNOTEL data files
+SNOTEL_PATH: '/scratch/dlhogan/ess-project-data/geospatial-data/SNOTEL'   # Path to directory containing SNOTEL data files
 
 # FLUXNET data settings
 DOWNLOAD_FLUXNET: 'false'                                      # Download FLUXNET data, options: 'true' or 'false'
 FLUXNET_STATION: 'CA-NS7'                                      # FLUXNET station ID (numeric)
-FLUXNET_PATH: '/home/dlhogan/data/geospatial-data/fluxnet' # Path to directory containing FLUXNET data files
+FLUXNET_PATH: '/scratch/dlhogan/ess-project-data/geospatial-data/fluxnet' # Path to directory containing FLUXNET data files
 
 # USGS GW data settings
 DOWNLOAD_USGS_GW: 'false'                                      # Download USGS groundwater data, options: 'true' or 'false'
@@ -341,7 +341,7 @@ HYDAT_PATH: default                                            # Path to HYDAT d
 SIMULATIONS_PATH: default                                      # Path to streamflow simulation results, if default, uses self.data_dir / simulations / config['EXPERIMENT_ID'] / mizuRoute / 
 
 # Attribute Processing data path settings
-ATTRIBUTES_DATA_DIR: "/home/dlhogan/data/_to-be-moved/NorthAmerica_geospatial/"  # Base directory for attribute data, if default uses data_dir/geospatial-data
+ATTRIBUTES_DATA_DIR: "/scratch/dlhogan/ess-project-data/_to-be-moved/NorthAmerica_geospatial/"  # Base directory for attribute data, if default uses data_dir/geospatial-data
 ATTRIBUTES_SOILGRIDS_PATH: default                             # Will use {data_dir}/geospatial-data/soilgrids
 ATTRIBUTES_PELLETIER_PATH: default                             # Will use {data_dir}/geospatial-data/pelletier
 ATTRIBUTES_MERIT_PATH: default                                 # Will use {data_dir}/geospatial-data/merit
@@ -378,7 +378,7 @@ SETTINGS_SUMMA_PATH: default                                   # Path to SUMMA r
 EXPERIMENT_OUTPUT_SUMMA: default                               # Path to SUMMA output. If 'default', uses 'root_path/domain_[name]/simulations/[experiment_id]/SUMMA'.
 EXPERIMENT_LOG_SUMMA: default                                  # Path to SUMMA experiment log file. If 'default', uses 'root_path/domain_[name]/simulations/[experiment_id]/mizuRoute/mizuRoute_logs'
 SETTINGS_SUMMA_PARALLEL_PATH: default                          # Path to parallel SUMMA binary, if default self.data_dir / installs / summa / bin
-SUMMA_INSTALL_PATH: /home/dlhogan/MTNHYDROSUMMA/installs/summa/bin/                                    # SUMMA installation path, if default, self.code_dir / installs / summa / bin
+SUMMA_INSTALL_PATH: /home/ceeadmin/summa-3.3.0/bin/                                    # SUMMA installation path, if default, self.code_dir / installs / summa / bin
 SETTINGS_SUMMA_FILEMANAGER: fileManager.txt                    # Name of SUMMA file manager
 SETTINGS_SUMMA_FORCING_LIST: forcingFileList.txt               # Name of SUMMA forcing file list
 SETTINGS_SUMMA_COLDSTATE: coldState.nc                         # Name of SUMMA initial conditions file
@@ -425,17 +425,18 @@ LAND_CLASS_NAME: default                                       # Name of land cl
 RADIATION_PATH: default                                        # Path to radiation classification raster. If 'default', uses root_path/domain_[name]/attributes/radiation 
 
 # Tool paths
-DATATOOL_PATH: default                                         # Path to datatool executable 
-GISTOOL_PATH: default                                          # Path to gistool executable
+DATATOOL_PATH: /home/dlhogan/tools/src/datatool/                                         # Path to datatool executable 
+GISTOOL_PATH: /home/dlhogan/tools/src/gistool/                                          # Path to gistool executable
 EASYMORE_CLIENT: easymore cli                                  # Name of easymore client
-DATATOOL_DATASET_ROOT: /home/dlhogan/data/meteorological-data/    # Path to datatool datasets root directory
-DATATOOL_CACHE: /home/dlhogan/                         # Cache directory used in datatool
-GISTOOL_DATASET_ROOT: /home/dlhogan/data/geospatial-data/  # Path to gistool datasets root directory
-GISTOOL_LIB_PATH: /home/dlhogan/envs/r-env/                # Path to gistool libraries
-TOOL_CACHE: /home/dlhogan/cache                       # Path to gistool cache directory
-EASYMORE_CACHE: /home/dlhogan/easymore/               # Path to easymore cache directory
-EASYMORE_JOB_CONF: "installs/MAF/02_model_agnostic_component/easymore-job.slurm" # Path to easymore job config
-# CLUSTER_JSON: /scratch/dlhogan/ess_project_data/installs/datatool/etc/clusters/ucalgary-arc.json # Path to cluster json config
+DATATOOL_DATASET_ROOT: /scratch/dlhogan/ess-project-data/meteorological-data/    # Path to datatool datasets root directory
+DATATOOL_CACHE: /scratch/dlhogan/ess-project-data/cache/datatool                       # Cache directory used in datatool
+GISTOOL_DATASET_ROOT: /scratch/dlhogan/ess-project-data/geospatial-data/         # Path to gistool datasets root directory
+GISTOOL_LIB_PATH: /home/dlhogan/tools/src/                  # Path to gistool libraries
+TOOL_CACHE: /scratch/dlhogan/ess-project-data/cache/gistool                      # Path to gistool cache directory
+EASYMORE_CACHE: /scratch/dlhogan/ess-project-data/cache/easymore/                      # Path to easymore cache directory
+EASYMORE_JOB_CONF: "installs/MAF/02_model_agnostic_component/easymore-job.slurm" # Path to easymore job config ??
+# CLUSTER_JSON: /work/comphyd_lab/users/darri/data/CONFLUENCE_data/installs/datatool/etc/clusters/ucalgary-arc.json # Path to cluster json config
+
 
 
 
