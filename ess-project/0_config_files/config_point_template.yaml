@@ -236,12 +236,12 @@ STATION_ID: 09112500                                            # Station ID fro
 # SNOTEL data settings
 DOWNLOAD_SNOTEL: 'true'                                       # Download SNOTEL data, options: 'true' or 'false'
 SNOTEL_STATION: '380'                                          # SNOTEL station ID (numeric)
-SNOTEL_PATH: '/scratch/dlhogan/ess-project-data/geospatial-data/SNOTEL'   # Path to directory containing SNOTEL data files
+SNOTEL_PATH: '/scratch/dlhogan/ess-project-data/meteorological-data/SNOTEL'   # Path to directory containing SNOTEL data files
 
 # FLUXNET data settings
 DOWNLOAD_FLUXNET: 'false'                                      # Download FLUXNET data, options: 'true' or 'false'
 FLUXNET_STATION: 'CA-NS7'                                      # FLUXNET station ID (numeric)
-FLUXNET_PATH: '/scratch/dlhogan/ess-project-data/geospatial-data/fluxnet' # Path to directory containing FLUXNET data files
+FLUXNET_PATH: '/scratch/dlhogan/ess-project-data/meteorological-data/fluxnet' # Path to directory containing FLUXNET data files
 
 # USGS GW data settings
 DOWNLOAD_USGS_GW: 'false'                                       # Download USGS groundwater data, options: 'true' or 'false'

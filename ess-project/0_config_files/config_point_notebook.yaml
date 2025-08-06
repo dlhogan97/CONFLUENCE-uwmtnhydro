@@ -159,12 +159,12 @@ STREAMFLOW_DATA_PROVIDER: USGS
 DOWNLOAD_USGS_DATA: true
 DOWNLOAD_WSC_DATA: false
 STATION_ID: 09112500
-DOWNLOAD_SNOTEL: 'True'
+DOWNLOAD_SNOTEL: 'true'
 SNOTEL_STATION: '380'
-SNOTEL_PATH: /scratch/dlhogan/ess-project-data/geospatial-data/SNOTEL
+SNOTEL_PATH: /scratch/dlhogan/ess-project-data/meteorological-data/SNOTEL
 DOWNLOAD_FLUXNET: 'false'
 FLUXNET_STATION: CA-NS7
-FLUXNET_PATH: /scratch/dlhogan/ess-project-data/geospatial-data/fluxnet
+FLUXNET_PATH: /scratch/dlhogan/ess-project-data/meteorological-data/fluxnet
 DOWNLOAD_USGS_GW: 'false'
 USGS_STATION: '06306300'
 OPTIMISATION_METHODS:
@@ -321,4 +321,4 @@ TOOL_CACHE: /scratch/dlhogan/ess-project-data/cache/
 EASYMORE_CACHE: /scratch/dlhogan/ess-project-data/cache/easymore/
 EASYMORE_JOB_CONF: installs/MAF/02_model_agnostic_component/easymore-job.slurm
 CLUSTER_JSON: /home/dlhogan/tools/src/datatool/etc/clusters/lundquist-server.json
-SUPPLEMENT_FORCING: 'True'
+SUPPLEMENT_FORCING: 'true'
