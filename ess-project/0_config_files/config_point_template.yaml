@@ -346,7 +346,7 @@ HYDAT_PATH: default                                            # Path to HYDAT d
 SIMULATIONS_PATH: default                                      # Path to streamflow simulation results, if default, uses self.data_dir / simulations / config['EXPERIMENT_ID'] / mizuRoute / 
 
 # Attribute Processing data path settings
-ATTRIBUTES_DATA_DIR: "/scratch/dlhogan/ess-project-data/_to-be-moved/NorthAmerica_geospatial/"  # Base directory for attribute data, if default uses data_dir/geospatial-data
+ATTRIBUTES_DATA_DIR: default  # Base directory for attribute data, if default uses data_dir/geospatial-data
 ATTRIBUTES_SOILGRIDS_PATH: default                             # Will use {data_dir}/geospatial-data/soilgrids
 ATTRIBUTES_PELLETIER_PATH: default                             # Will use {data_dir}/geospatial-data/pelletier
 ATTRIBUTES_MERIT_PATH: default                                 # Will use {data_dir}/geospatial-data/merit
@@ -430,17 +430,17 @@ LAND_CLASS_NAME: default                                       # Name of land cl
 RADIATION_PATH: default                                        # Path to radiation classification raster. If 'default', uses root_path/domain_[name]/attributes/radiation 
 
 # Tool paths
-DATATOOL_PATH: /home/dlhogan/tools/src/datatool/                                         # Path to datatool executable 
-GISTOOL_PATH: /home/dlhogan/tools/src/gistool/                                          # Path to gistool executable
+DATATOOL_PATH: /home/dlhogan/tools/src/datatool                                         # Path to datatool executable 
+GISTOOL_PATH: /home/dlhogan/tools/src/gistool                                          # Path to gistool executable
 EASYMORE_CLIENT: easymore cli                                  # Name of easymore client
 DATATOOL_DATASET_ROOT: /scratch/dlhogan/ess-project-data/meteorological-data/    # Path to datatool datasets root directory
-DATATOOL_CACHE: /scratch/dlhogan/ess-project-data/cache/datatool                       # Cache directory used in datatool
+DATATOOL_CACHE: /scratch/dlhogan/ess-project-data/                       # Cache directory used in datatool
 GISTOOL_DATASET_ROOT: /scratch/dlhogan/ess-project-data/geospatial-data/         # Path to gistool datasets root directory
 GISTOOL_LIB_PATH: /home/dlhogan/tools/src/                  # Path to gistool libraries
-TOOL_CACHE: /scratch/dlhogan/ess-project-data/cache/gistool                      # Path to gistool cache directory
+TOOL_CACHE: /scratch/dlhogan/ess-project-data/cache/                      # Path to gistool cache directory
 EASYMORE_CACHE: /scratch/dlhogan/ess-project-data/cache/easymore/                      # Path to easymore cache directory
 EASYMORE_JOB_CONF: "installs/MAF/02_model_agnostic_component/easymore-job.slurm" # Path to easymore job config ??
-CLUSTER_JSON: /home/dlhogan/tools/src/datatool/datatool/etc/clusters/lundquist-server.json # Path to cluster json config
+CLUSTER_JSON: /home/dlhogan/tools/src/datatool/etc/clusters/lundquist-server.json # Path to cluster json config
 
 
 

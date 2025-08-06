@@ -1,4 +1,4 @@
-CONFLUENCE_DATA_DIR: /scratch/dlhogan/ess_project_data/CONFLUENCE_data
+CONFLUENCE_DATA_DIR: /scratch/dlhogan/ess-project-data
 CONFLUENCE_CODE_DIR: /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro
 DOMAIN_NAME: butte_snotel
 EXPERIMENT_ID: point_scale_tutorial
@@ -243,7 +243,7 @@ STREAMFLOW_RAW_NAME: default
 STREAMFLOW_PROCESSED_PATH: default
 HYDAT_PATH: default
 SIMULATIONS_PATH: default
-ATTRIBUTES_DATA_DIR: /scratch/dlhogan/ess-project-data/_to-be-moved/NorthAmerica_geospatial/
+ATTRIBUTES_DATA_DIR: default
 ATTRIBUTES_SOILGRIDS_PATH: default
 ATTRIBUTES_PELLETIER_PATH: default
 ATTRIBUTES_MERIT_PATH: default
@@ -310,14 +310,15 @@ SOIL_CLASS_NAME: default
 LAND_CLASS_PATH: default
 LAND_CLASS_NAME: default
 RADIATION_PATH: default
-DATATOOL_PATH: /home/dlhogan/tools/src/datatool/
-GISTOOL_PATH: /home/dlhogan/tools/src/gistool/
+DATATOOL_PATH: /home/dlhogan/tools/src/datatool
+GISTOOL_PATH: /home/dlhogan/tools/src/gistool
 EASYMORE_CLIENT: easymore cli
 DATATOOL_DATASET_ROOT: /scratch/dlhogan/ess-project-data/meteorological-data/
-DATATOOL_CACHE: /scratch/dlhogan/ess-project-data/cache/datatool
+DATATOOL_CACHE: /scratch/dlhogan/ess-project-data/
 GISTOOL_DATASET_ROOT: /scratch/dlhogan/ess-project-data/geospatial-data/
 GISTOOL_LIB_PATH: /home/dlhogan/tools/src/
-TOOL_CACHE: /scratch/dlhogan/ess-project-data/cache/gistool
+TOOL_CACHE: /scratch/dlhogan/ess-project-data/cache/
 EASYMORE_CACHE: /scratch/dlhogan/ess-project-data/cache/easymore/
 EASYMORE_JOB_CONF: installs/MAF/02_model_agnostic_component/easymore-job.slurm
+CLUSTER_JSON: /home/dlhogan/tools/src/datatool/etc/clusters/lundquist-server.json
 SUPPLEMENT_FORCING: 'True'

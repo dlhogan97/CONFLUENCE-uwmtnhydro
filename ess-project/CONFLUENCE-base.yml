@@ -5,6 +5,7 @@ dependencies:
   - python=3.10.13
   - r-base
   - gdal
+  - libgdal-hdf4
   - pip
   - pip:
       # Core scientific and data processing libraries
