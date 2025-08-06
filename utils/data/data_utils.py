@@ -1012,7 +1012,7 @@ class ObservedDataProcessor:
             # The column name might vary, so we'll try to identify it
             swe_column = None
             for col in df.columns:
-                if 'Snow Water Equivalent' in col:
+                if 'SWE' in col:
                     swe_column = col
                     break
             
@@ -1024,14 +1024,14 @@ class ObservedDataProcessor:
             # Try multiple date formats to handle different SNOTEL file formats
             try:
                 # First, examine a sample date to detect format
-                sample_date = df['Date'].iloc[0]
+                sample_date = df['datetime'].iloc[0]
                 self.logger.info(f"Sample date format: {sample_date}")
                 
                 # Try to infer the date format and parse accordingly
                 if '/' in sample_date:  # Format like "DD/MM/YYYY"
                     date_format = '%d/%m/%Y'
                 elif '-' in sample_date:  # Format like "YYYY-MM-DD"
-                    if sample_date.count('-') == 2:
+                    if (sample_date.count('-') == 2) & (sample_date.count(':') == 0):
                         parts = sample_date.split('-')
                         if len(parts[0]) == 4:  # YYYY-MM-DD
                             date_format = '%Y-%m-%d'
@@ -1048,12 +1048,12 @@ class ObservedDataProcessor:
                 # Parse dates with the detected format
                 if date_format == 'mixed':
                     processed_df = pd.DataFrame({
-                        'Date': pd.to_datetime(df['Date'], infer_datetime_format=True),
+                        'Date': pd.to_datetime(df['datetime']), # removed infer_datetime_format=True for deprecation warning
                         'SWE': df[swe_column]
                     })
                 else:
                     processed_df = pd.DataFrame({
-                        'Date': pd.to_datetime(df['Date'], format=date_format),
+                        'Date': pd.to_datetime(df['datetime'], format=date_format),
                         'SWE': df[swe_column]
                     })
                     
@@ -1063,7 +1063,7 @@ class ObservedDataProcessor:
                 
                 # Fall back to letting pandas infer the date format
                 processed_df = pd.DataFrame({
-                    'Date': pd.to_datetime(df['Date'], infer_datetime_format=True),
+                    'Date': pd.to_datetime(df['datetime'], infer_datetime_format=True),
                     'SWE': df[swe_column]
                 })
             
@@ -1334,7 +1334,7 @@ class ObservedDataProcessor:
             start_date = start_date_raw[:10]
         
         # Format end date as YYYY-MM-DD
-        end_date = datetime.now().strftime("%Y-%m-%d")
+        end_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d") # Use yesterday's date as end date
         parameter_cd = "00060"  # Discharge parameter code (cubic feet per second)
         
         # Conversion factor from cubic feet per second (cfs) to cubic meters per second (cms)
@@ -1349,7 +1349,7 @@ class ObservedDataProcessor:
         self.logger.info(f"Using formatted end date: {end_date}")
         
         # Use the correct URL with the 'nwis' prefix
-        base_url = "https://nwis.waterservices.usgs.gov/nwis/iv/" 
+        base_url = "https://nwis.waterservices.usgs.gov/nwis/dv/" 
         
         # Construct the URL for tab-delimited data - ensure no spaces in the URL
         url = f"{base_url}?site={station_id}&format=rdb&parameterCd={parameter_cd}&startDT={start_date}&endDT={end_date}"
