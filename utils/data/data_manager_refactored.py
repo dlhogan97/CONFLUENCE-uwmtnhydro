@@ -199,10 +199,10 @@ class DataManager:
         
         # Define time range for land cover data
         start_year = 2001
-        end_year = 2020
+        end_year = 2024
         
         # Select MODIS dataset
-        modis_var = "MCD12Q1.006"
+        modis_var = "MCD12Q1.061"  # MODIS Land Cover Type Yearly Global 500m Grid
         
         # Create gistool command
         gistool_command = gistool_runner.create_gistool_command(
