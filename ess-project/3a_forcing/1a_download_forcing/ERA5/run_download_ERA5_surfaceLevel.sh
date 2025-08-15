@@ -67,8 +67,8 @@ for (( year=$(( arrayYears[0] )); year<=$(( arrayYears[1] )); year++ )); do
  years="$years $year";
 done
 
-# Run the ERA5 downloads with the parallel command, and move them to background
-max_jobs=8
+# Run the ERA5 downloads with reduced parallelism to avoid conflicts
+max_jobs=2  # Reduced from 8 to prevent file corruption
 count=0
 pids=()  # store process IDs here
 
@@ -76,21 +76,66 @@ for y in $years; do
   for c in $coordinates; do
     for f in $forcing_path; do
 
+      # Add some debugging and error checking
+      echo "Starting download: Year=$y, Coords=$c, Path=$f"
+      
       python download_ERA5_surfaceLevel_annual.py "$y" "$c" "$f" &
       pid=$!
       pids+=($pid)  # save the PID
-      echo "Started $pid: $y $c $f"
+      echo "Started PID $pid: $y $c $f"
 
       ((count++))
       if (( count % max_jobs == 0 )); then
+        echo "Waiting for batch of $max_jobs jobs to complete..."
         wait  # wait until these finish before starting more
+        echo "Batch completed, checking for any failed jobs..."
+        
+        # Check if any downloads failed
+        for pid in "${pids[@]}"; do
+          if ! wait $pid; then
+            echo "ERROR: Process $pid failed!"
+          fi
+        done
+        pids=()  # reset the array
       fi
 
     done
   done
 done
 
+echo "Waiting for all remaining jobs to complete..."
 wait
+
+# Final check for file integrity
+echo "Checking downloaded files for readability..."
+for y in $years; do
+  for month in {01..12}; do
+    file="${forcing_path}/ERA5_surface_${y}${month}.nc"
+    if [ -f "$file" ]; then
+      echo "Checking file: $file"
+      
+      # Check if file is actually a ZIP archive
+      file_type=$(file "$file")
+      if [[ "$file_type" == *"Zip archive"* ]]; then
+        echo "WARNING: File $file is still a ZIP archive!"
+        echo "File type: $file_type"
+        echo "You may need to re-run the download for this file."
+      elif command -v ncdump >/dev/null 2>&1; then
+        # Try to read the file header with ncdump
+        if ! ncdump -h "$file" >/dev/null 2>&1; then
+          echo "ERROR: File $file is corrupted or unreadable!"
+          echo "File type: $file_type"
+          ls -la "$file"
+        else
+          echo "OK: File $file is readable NetCDF"
+        fi
+      else
+        echo "Warning: ncdump not available for file checking"
+        echo "File type: $file_type"
+      fi
+    fi
+  done
+done
 
 # --- Code provenance
 # Generates a basic log file in the domain folder and copies the control file and itself there.

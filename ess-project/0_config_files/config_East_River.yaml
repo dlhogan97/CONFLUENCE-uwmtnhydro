@@ -231,12 +231,12 @@ STATION_ID: 09112500                                            # Station ID fro
 # SNOTEL data settings
 DOWNLOAD_SNOTEL: 'false'                                       # Download SNOTEL data, options: 'true' or 'false'
 SNOTEL_STATION: '380'                                          # SNOTEL station ID (numeric)
-SNOTEL_PATH: '/scratch/dlhogan/data/geospatial-data/SNOTEL'   # Path to directory containing SNOTEL data files
+SNOTEL_PATH: '/scratch/dlhogan/ess-project-data/meteorological-data/SNOTEL'   # Path to directory containing SNOTEL data files
 
 # FLUXNET data settings
 DOWNLOAD_FLUXNET: 'false'                                      # Download FLUXNET data, options: 'true' or 'false'
 FLUXNET_STATION: 'CA-NS7'                                      # FLUXNET station ID (numeric)
-FLUXNET_PATH: '/scratch/dlhogan/data/geospatial-data/fluxnet' # Path to directory containing FLUXNET data files
+FLUXNET_PATH: '/scratch/dlhogan/ess-project-data/meteorological-data/fluxnet' # Path to directory containing FLUXNET data files
 
 # USGS GW data settings
 DOWNLOAD_USGS_GW: 'false'                                      # Download USGS groundwater data, options: 'true' or 'false'
@@ -330,7 +330,7 @@ POUR_POINT_SHP_PATH: default                                   # If 'default', u
 POUR_POINT_SHP_NAME: default                                   # If 'default', uses '[domain_name]_pourPoint.shp'.
 
 # Forcing path settings
-FORCING_PATH: default                                          # If default, uses, self.project_dir / forcing / raw_data
+FORCING_PATH: /scratch/dlhogan/ess-project-data/forcing/merged_data                                     # If default, uses, self.project_dir / forcing / raw_data
 
 # Observation data path settings
 OBSERVATIONS_PATH: default                                     # Path to observed streamflow data for evaluation. If default, uses self.data_dir / observations / streamflow / preprocessed / config['DOMAIN_NAME']_streamflow_processed.csv
@@ -378,7 +378,7 @@ SETTINGS_SUMMA_PATH: default                                   # Path to SUMMA r
 EXPERIMENT_OUTPUT_SUMMA: default                               # Path to SUMMA output. If 'default', uses 'root_path/domain_[name]/simulations/[experiment_id]/SUMMA'.
 EXPERIMENT_LOG_SUMMA: default                                  # Path to SUMMA experiment log file. If 'default', uses 'root_path/domain_[name]/simulations/[experiment_id]/mizuRoute/mizuRoute_logs'
 SETTINGS_SUMMA_PARALLEL_PATH: default                          # Path to parallel SUMMA binary, if default self.data_dir / installs / summa / bin
-SUMMA_INSTALL_PATH: /home/ceeadmin/summa-3.3.0/bin/            # SUMMA installation path, if default, self.code_dir / installs / summa / bin
+SUMMA_INSTALL_PATH: /usr/local/bin                             # SUMMA installation path, if default, self.code_dir / installs / summa / bin
 SETTINGS_SUMMA_FILEMANAGER: fileManager.txt                    # Name of SUMMA file manager
 SETTINGS_SUMMA_FORCING_LIST: forcingFileList.txt               # Name of SUMMA forcing file list
 SETTINGS_SUMMA_COLDSTATE: coldState.nc                         # Name of SUMMA initial conditions file

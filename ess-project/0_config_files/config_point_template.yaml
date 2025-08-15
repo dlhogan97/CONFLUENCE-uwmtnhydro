@@ -16,19 +16,19 @@
 
 ## ================================================= 0. Global Paths: =====================================================================
 
-CONFLUENCE_DATA_DIR: "/scratch/dlhogan/ess_project_data"
+CONFLUENCE_DATA_DIR: "/scratch/dlhogan/ess-project-data"
 CONFLUENCE_CODE_DIR: "/home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro"
 
 ### ============================================= 1. Experiment settings: =====================================================================
 
 # Experiment settings
-DOMAIN_NAME: "East_River"                                    # Name of experimental domain
-EXPERIMENT_ID: "point_test"                                           # Name of experiment
-EXPERIMENT_TIME_START: 1980-01-02 01:00                        # Start time of experiment e.g. '2010-01-01 00:00'
-EXPERIMENT_TIME_END: 2023-12-30 23:00                          # End time of experiment e.g. '2010-12-31 23:00'
+DOMAIN_NAME: "butte_snotel"                                    # Name of experimental domain
+EXPERIMENT_ID: "point_scale_tutorial"                                           # Name of experiment
+EXPERIMENT_TIME_START: 1981-01-02 01:00                        # Start time of experiment e.g. '2010-01-01 00:00'
+EXPERIMENT_TIME_END: 1985-12-30 23:00                          # End time of experiment e.g. '2010-12-31 23:00'
 CALIBRATION_PERIOD: 1982-01-01, 1990-12-30                     # start_date, end_date in format YYYY-MM-DD
 EVALUATION_PERIOD:  2012-01-01, 2023-12-30                     # start_date, end_date in format YYYY-MM-DD
-SPINUP_PERIOD: 1980-01-02, 1981-12-31                          # start_date, end_date in format YYYY-MM-DD
+SPINUP_PERIOD: 1981-01-02, 1981-12-31                          # start_date, end_date in format YYYY-MM-DD
 
 # Computatational settings
 MPI_PROCESSES: 4                                               # Number of parallel processes allowed, based on your system's capabilities
@@ -383,7 +383,7 @@ SETTINGS_SUMMA_PATH: default                                   # Path to SUMMA r
 EXPERIMENT_OUTPUT_SUMMA: default                               # Path to SUMMA output. If 'default', uses 'root_path/domain_[name]/simulations/[experiment_id]/SUMMA'.
 EXPERIMENT_LOG_SUMMA: default                                  # Path to SUMMA experiment log file. If 'default', uses 'root_path/domain_[name]/simulations/[experiment_id]/mizuRoute/mizuRoute_logs'
 SETTINGS_SUMMA_PARALLEL_PATH: default                          # Path to parallel SUMMA binary, if default self.data_dir / installs / summa / bin
-SUMMA_INSTALL_PATH: /home/ceeadmin/summa-3.3.0/bin/                                  # SUMMA installation path, if default, self.code_dir / installs / summa / bin
+SUMMA_INSTALL_PATH: /usr/local/bin                                  # SUMMA installation path, if default, self.code_dir / installs / summa / bin /home/ceeadmin/summa-3.3.0/bin/
 SETTINGS_SUMMA_FILEMANAGER: fileManager.txt                    # Name of SUMMA file manager
 SETTINGS_SUMMA_FORCING_LIST: forcingFileList.txt               # Name of SUMMA forcing file list
 SETTINGS_SUMMA_COLDSTATE: coldState.nc                         # Name of SUMMA initial conditions file

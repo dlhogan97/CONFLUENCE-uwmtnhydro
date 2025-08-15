@@ -16,7 +16,7 @@ import os
 
 # --- Control file handling
 # Easy access to control file folder
-controlFolder = Path('../../../0_config_files')
+controlFolder = Path('../../0_config_files')
 
 # Store the name of the 'active' file in a variable
 controlFile = sys.argv[1]
@@ -33,9 +33,14 @@ def read_from_control( file, setting ):
                 break
     
     # Extract the setting's value
-    substring = line.split(':',1)[1]      # Remove the setting's name (split into 2 based on '|', keep only 2nd part)
+    substring = line.split(':',1)[1]      # Remove the setting's name (split into 2 based on ':', keep only 2nd part)
     substring = substring.split('#',1)[0] # Remove comments, does nothing if no '#' is found
     substring = substring.strip()         # Remove leading and trailing whitespace, tabs, newlines
+    
+    # Remove any surrounding quotes (single or double)
+    if (substring.startswith('"') and substring.endswith('"')) or \
+       (substring.startswith("'") and substring.endswith("'")):
+        substring = substring[1:-1]
        
     # Return this value    
     return substring
@@ -44,7 +49,8 @@ def read_from_control( file, setting ):
 def make_default_path(suffix):
     
     # Get the root path
-    rootPath = Path( read_from_control(controlFolder/controlFile,'CONFLUENCE_DATA_DIR') )
+    rootPath_str = read_from_control(controlFolder/controlFile,'CONFLUENCE_DATA_DIR')
+    rootPath = Path(rootPath_str)
     
     # Get the domain folder
     domainName = read_from_control(controlFolder/controlFile,'DOMAIN_NAME')
@@ -53,25 +59,33 @@ def make_default_path(suffix):
     # Specify the forcing path
     defaultPath = rootPath / domainFolder / suffix
     
+    # Debug: print the path components
+    print(f"Debug - Root path string: '{rootPath_str}'")
+    print(f"Debug - Root path object: {rootPath}")
+    print(f"Debug - Domain name: '{domainName}'")
+    print(f"Debug - Final path: {defaultPath}")
+    
     return defaultPath
     
     
 # --- Find source and destination paths
 # Find the path where the raw forcing is
 # Immediately store as a 'Path' to avoid issues with '/' and '\' on different operating systems
-forcingPath = read_from_control(controlFolder/controlFile,'FORCING_PATH')
+forcingPath_str = read_from_control(controlFolder/controlFile,'FORCING_PATH')
 
-# Find the path where the merged forcing needs to go
-mergePath = read_from_control(controlFolder/controlFile,'forcing_merged_path')
+print(f"Debug - FORCING_PATH from control file: '{forcingPath_str}'")
 
 # Specify the default paths if required
-if forcingPath == 'default':
+if forcingPath_str == 'default':
     forcingRawPath = make_default_path('forcing/raw_data')
-    
 else: 
-    forcingRawPath = Path(forcingPath) # ensure Path() object 
-mergePath = make_default_path('forcing/merged_data')
+    forcingRawPath = Path(forcingPath_str) # ensure Path() object 
     
+mergePath = make_default_path('forcing/merged_data')
+
+print(f"Debug - Final forcing raw path: {forcingRawPath}")
+print(f"Debug - Final merge path: {mergePath}")
+
 # Make the merge folder if it doesn't exist
 mergePath.mkdir(parents=True, exist_ok=True)
 
@@ -94,16 +108,18 @@ for year in range(years[0],years[1]+1):
         data_pres = 'ERA5_pressureLevel137_' + str(year) + str(month).zfill(2) + '.nc'
         data_surf = 'ERA5_surface_' + str(year) + str(month).zfill(2) + '.nc'
         data_dest = 'ERA5_merged_' + str(year) + str(month).zfill(2) + '.nc'
-
+        print('Merging {} and {} into {}'.format(data_surf, data_pres, data_dest))
+        print('Source path:', forcingRawPath
+              ,'\nDestination path:', mergePath)
         # Step 1: convert lat/lon in the pressure level file to range [-180,180], [-90,90]
         # Extract the variables we need for the similarity check in a way that closes the files implicitly
-        with nc4.Dataset(forcingPath / data_pres) as src1, nc4.Dataset(forcingPath / data_surf) as src2:
+        with nc4.Dataset(forcingRawPath / data_pres) as src1, nc4.Dataset(forcingRawPath / data_surf) as src2:
             pres_lat = src1.variables['latitude'][:]
             pres_lon = src1.variables['longitude'][:]
-            pres_time = src1.variables['time'][:]
+            pres_time = src1.variables['valid_time'][:]
             surf_lat = src2.variables['latitude'][:]
             surf_lon = src2.variables['longitude'][:]
-            surf_time = src2.variables['time'][:]
+            surf_time = src2.variables['valid_time'][:]
 
         # Update the pressure level coordinates
         pres_lat[pres_lat > 90] = pres_lat[pres_lat > 90] - 180
@@ -128,14 +144,14 @@ for year in range(years[0],years[1]+1):
         # - Variables: forcing at pressure level 137
 
         # Define the variables we want to transfer
-        variables_surf_transfer = ['longitude','latitude','time']
-        variables_surf_convert = ['sp','mtpr','msdwswrf','msdwlwrf']
+        variables_surf_transfer = ['longitude','latitude','valid_time']
+        variables_surf_convert = ['sp','avg_sdlwrf','avg_sdswrf','avg_tprate']
         variables_pres_convert = ['t','q']
         attr_names_expected = ['scale_factor','add_offset','_FillValue','missing_value','units','long_name','standard_name'] # these are the attributes we think each .nc variable has             
         loop_attr_copy_these = ['units','long_name','standard_name'] # we will define new values for _FillValue and missing_value when writing the .nc variables' attributes
 
         # Open the destination file and transfer information
-        with nc4.Dataset(forcingPath / data_pres) as src1, nc4.Dataset(forcingPath / data_surf) as src2, nc4.Dataset(mergePath / data_dest, "w") as dest: 
+        with nc4.Dataset(forcingRawPath / data_pres) as src1, nc4.Dataset(forcingRawPath / data_surf) as src2, nc4.Dataset(mergePath / data_dest, "w") as dest: 
     
             # === Some general attributes
             dest.setncattr('History','Created ' + time.ctime(time.time()))
@@ -155,15 +171,25 @@ for year in range(years[0],years[1]+1):
                     dest.createDimension( name, None)
                 else:
                     dest.createDimension( name, len(dimension))
+            
+            # Rename 'valid_time' dimension to 'time' in the output file
+            if 'valid_time' in [dim for dim in dest.dimensions.keys()]:
+                # Create new 'time' dimension with same size as 'valid_time'
+                valid_time_size = len(dest.dimensions['valid_time'])
+                dest.createDimension('time', valid_time_size)
     
             # === Get the surface level generic variables (lat, lon, time)
             for name, variable in src2.variables.items():
         
                 # Transfer lat, long and time variables because these don't have scaling factors
                 if name in variables_surf_transfer:
-                    dest.createVariable(name, variable.datatype, variable.dimensions, fill_value = -999)
-                    dest[name].setncatts(src1[name].__dict__)
-                    dest.variables[name][:] = src2.variables[name][:]
+                    # Rename valid_time to time in the output
+                    output_name = 'time' if name == 'valid_time' else name
+                    # Use 'time' dimension for the renamed variable
+                    output_dims = tuple('time' if dim == 'valid_time' else dim for dim in variable.dimensions)
+                    dest.createVariable(output_name, variable.datatype, output_dims, fill_value = -999)
+                    dest[output_name].setncatts(src2[name].__dict__)
+                    dest.variables[output_name][:] = src2.variables[name][:]
             
             # === For the forcing variables, we need to:
             # 1. Extract them (this automatically applies scaling and offset with nc4) and apply non-negativity constraints
@@ -193,11 +219,11 @@ for year in range(years[0],years[1]+1):
                     # 2a. Find what this ERA5 variable should be called in SUMMA
                     if name == 'sp':
                         name_summa = 'airpres'
-                    elif name == 'msdwlwrf':
+                    elif name == 'avg_sdlwrf': 
                         name_summa = 'LWRadAtm'
-                    elif name == 'msdwswrf':
-                        name_summa = 'SWRadAtm'
-                    elif name == 'mtpr':
+                    elif name == 'avg_sdswrf':
+                        name_summa = 'SWRadAtm' 
+                    elif name == 'avg_tprate':
                         name_summa = 'pptrate'            
                     else:
                         name_summa = 'n/a/' # no name so we don't start overwriting data if a new name is not defined for some reason
@@ -293,7 +319,7 @@ logFolder = '_workflow_log'
 Path( mergePath / logFolder ).mkdir(parents=True, exist_ok=True)
 
 # Copy this script
-thisFile = 'ERA5_surface_and_pressure_level_combiner.py'
+thisFile = 'ERA5_surface_and_pressureLevel_combiner.py'
 copyfile(thisFile, mergePath / logFolder / thisFile);
 
 # Get current date and time
