@@ -72,9 +72,9 @@ ROUTING_MODEL: mizuRoute                                       # Routing model, 
 
 ### 4.1 Model Specific settings: SUMMA 
 
-SUMMA_EXE: summa.exe                                  # Name of SUMMA executable
+SUMMA_EXE: summa                                  # Name of SUMMA executable
 SETTINGS_SUMMA_USE_PARALLEL_SUMMA: false                       # Run SUMMA in parallel
-SETTINGS_SUMMA_PARALLEL_EXE: summa.exe                  # Name of parallel SUMMA binary
+SETTINGS_SUMMA_PARALLEL_EXE: summa                  # Name of parallel SUMMA binary
 SETTINGS_SUMMA_CONNECT_HRUS: yes                               # Attribute setting: "no" or "yes". If no; all HRUs modeled as independent columns 
 SETTINGS_SUMMA_TRIALPARAM_N: 0                                 # Number of trial parameter specifications in inital setup. Specify 0 if none are wanted (they can still be included in this file but won't be read).
 SETTINGS_SUMMA_TRIALPARAM_1:                                   # Name of trial parameter and value to assign. Value assumed to be float.

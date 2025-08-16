@@ -3,6 +3,35 @@ from ftplib import FTP
 import pandas as pd
 import datetime as dt
 import py3dep
+from metloom.pointdata import CDECPointData, SnotelPointData 
+
+def download_snotel_data(
+    start_date: str,
+    end_date: str,
+    variables: list[str],
+    site_id: str,
+    site_name: str,
+    needs_cdec: bool
+):  
+    
+    if needs_cdec:
+        point = CDECPointData(site_id, site_name)
+    else:
+        point = SnotelPointData(site_id, site_name)
+
+    if variables == 'default':
+        variables = [point.ALLOWED_VARIABLES.PRECIPITATION,
+                    point.ALLOWED_VARIABLES.PRECIPITATIONACCUM,
+                    point.ALLOWED_VARIABLES.SNOWDEPTH,
+                    point.ALLOWED_VARIABLES.SWE,
+                    point.ALLOWED_VARIABLES.TEMP,
+                    point.ALLOWED_VARIABLES.RH]
+    point_data = point.get_daily_data(
+                    dt.datetime.strptime(start_date, "%Y-%m-%d"), dt.datetime.strptime(end_date, "%Y-%m-%d"),
+                    variables
+    )
+    point_data = point_data.droplevel(1)
+    return point_data
 
 def download_spires_data(
     year: int,
