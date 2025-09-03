@@ -700,6 +700,10 @@ class SummaPreProcessor:
         forcing_id = 'S_2_ID'
         catchment_elev = 'S_1_elev_m'
         forcing_elev = 'S_2_elev_m'
+        # if -9999. is in either catchment elev or forcing elev, replace it with the other value
+        if forcing_elev not in topo_data.columns:
+            topo_data[forcing_elev] = -9999.
+        topo_data.loc[topo_data[forcing_elev] == -9999., forcing_elev] = topo_data[catchment_elev]
         weights = 'weight'
         lapse_rate = float(self.config.get('LAPSE_RATE'))  # [K m-1]
 
