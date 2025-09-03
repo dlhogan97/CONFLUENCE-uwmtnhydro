@@ -38,7 +38,11 @@ if [ "$forcing_path" = "default" ]; then
     domain_name=$(echo ${domain_line##*: }) 
     domain_name=$(echo ${domain_name%%#*})  
 
-    forcing_path="${root_path}/domain_${domain_name}/forcing/raw_data/"
+    # remove quotes
+    root_path=$(echo $root_path | tr -d '"')
+    domain_name=$(echo $domain_name | tr -d '"')
+
+    forcing_path=${root_path}/domain_${domain_name}/forcing/raw_data/
 fi
 
 # Make the folder if it doesn't exist
@@ -56,7 +60,8 @@ echo "Years to download: ${arrayYears[0]} to ${arrayYears[1]}"
 
 # - space
 setting_line=$(grep -m 1 -i "bounding_box_coords" $control_file_path)
-coordinates=$(echo ${setting_line##*:}) 
+echo "setting line: $setting_line"
+coordinates=$(echo ${setting_line#*: }) 
 coordinates=$(echo ${coordinates%%#*})
 echo "Coordinates: $coordinates"
 
