@@ -16,7 +16,7 @@
 
 ## ================================================= 0. Global Paths: =====================================================================
 
-CONFLUENCE_DATA_DIR: "/scratch/dlhogan/CONFLUENCE_data"
+CONFLUENCE_DATA_DIR: "/scratch/dlhogan/ess-project-data"
 CONFLUENCE_CODE_DIR: "/home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro"
 
 ### ============================================= 1. Experiment settings: =====================================================================
@@ -26,8 +26,8 @@ DOMAIN_NAME: "East_River"                                    # Name of experimen
 EXPERIMENT_ID: run_2                                           # Name of experiment
 EXPERIMENT_TIME_START: 2010-01-02 01:00                        # Start time of experiment e.g. '2010-01-01 00:00'
 EXPERIMENT_TIME_END: 2024-12-30 23:00                          # End time of experiment e.g. '2010-12-31 23:00'
-CALIBRATION_PERIOD: 2012-01-01, 2020-12-30                     # start_date, end_date in format YYYY-MM-DD
-EVALUATION_PERIOD:  2021-01-01, 2024-12-30                     # start_date, end_date in format YYYY-MM-DD
+CALIBRATION_PERIOD: 2000-01-01, 2010-12-30                     # start_date, end_date in format YYYY-MM-DD
+EVALUATION_PERIOD:  2014-01-01, 2019-12-30                     # start_date, end_date in format YYYY-MM-DD
 SPINUP_PERIOD: 2010-01-02, 2012-12-31                          # start_date, end_date in format YYYY-MM-DD
 
 # Computatational settings
@@ -204,7 +204,7 @@ FLASH_USE_SNOW: False                                          # Use snow data
 
 ###  4.a Model Specific settings: MizuRoute 
 
-EXE_NAME_MIZUROUTE: mizuroute.exe                              # Name of mizuroute executable
+EXE_NAME_MIZUROUTE: route_runoff                              # Name of mizuroute executable
 SETTINGS_MIZU_WITHIN_BASIN: 0                                  # '0' (no) or '1' (IRF routing). Flag to enable within-basin routing by mizuRoute. Should be set to 0 if SUMMA is run with "subRouting" decision "timeDlay".
 SETTINGS_MIZU_ROUTING_DT: 3600                                 # Duration of the routing time step [s].
 SETTINGS_MIZU_ROUTING_UNITS: m/s                               # Units of the variable to be routed.
@@ -392,7 +392,7 @@ SETTINGS_SUMMA_LOCAL_PARAMS_FILE: localParamInfo.txt           # Name of SUMMA b
 EXPERIMENT_LOG_MIZUROUTE: default                              # Path to mizuRoute experiment log file. If 'default', uses 'root_path/domain_[name]/simulations/[experiment_id]/SUMMA'/SUMMA_logs.
 EXPERIMENT_OUTPUT_MIZUROUTE: default                           # Path to mizuRoute output. If 'default', uses 'root_path/domain_[name]/simulations/[experiment_id]/mizuRoute'.
 SETTINGS_MIZU_PATH: default                                    # Directory containing mizuroute settings. If "default" self.data_dir / settings / mizuRoute
-INSTALL_PATH_MIZUROUTE: default                                # Mizuroute installation path. If "default", self.code_dir / installs / mizuRoute / route / bin
+INSTALL_PATH_MIZUROUTE: /home/dlhogan/tools/src/mizuRoute/route/bin                                # Mizuroute installation path. If "default", self.code_dir / installs / mizuRoute / route / bin
 SETTINGS_MIZU_TOPOLOGY: topology.nc                            # Name of the river network topology file.
 SETTINGS_MIZU_PARAMETERS: param.nml.default                    # Mizuroute parameter file
 SETTINGS_MIZU_CONTROL_FILE: mizuroute.control                  # Name of the control file.
@@ -415,7 +415,7 @@ DEM_PATH: default                                              # If 'default', u
 DEM_NAME: default                                              # Name of elevation dem tiff
 SOURCE_GEOFABRIC_BASINS_PATH: default                          # Path to source geofabric basins
 SOURCE_GEOFABRIC_RIVERS_PATH: default                          # Path to source geofabric rivers
-TAUDEM_DIR: default                                            # If 'default', uses 'root_path/installs/TauDEM 
+TAUDEM_DIR: /home/dlhogan/tools/src/TauDEM/bin                     # If 'default', uses 'root_path/installs/TauDEM 
 OUTPUT_DIR: default                                            # If 'default', uses 'root_path/domain_[name]/shapefiles/r
 CATCHMENT_PLOT_DIR: default                                    # Directory to output plots of domain catchment
 SOIL_CLASS_PATH: default                                       # Path to soil classification raster. If 'default', uses root_path/domain_[name]/attributes/soilclass

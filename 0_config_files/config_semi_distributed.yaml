@@ -1,16 +1,16 @@
-CONFLUENCE_DATA_DIR: /Users/darrieythorsson/compHydro/data/CONFLUENCE_data
-CONFLUENCE_CODE_DIR: /Users/darrieythorsson/compHydro/code/CONFLUENCE
-DOMAIN_NAME: Bow_at_Banff_distributed
-EXPERIMENT_ID: distributed_tutorial
-EXPERIMENT_TIME_START: 2011-01-01 01:00
+CONFLUENCE_DATA_DIR: /scratch/dlhogan/ess-project-data
+CONFLUENCE_CODE_DIR: /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro
+DOMAIN_NAME: East_River_distributed
+EXPERIMENT_ID: distributed_tutorial_run
+EXPERIMENT_TIME_START: 2011-01-02 01:00
 EXPERIMENT_TIME_END: 2018-12-31 23:00
 CALIBRATION_PERIOD: 2011-01-01, 2015-12-31
 EVALUATION_PERIOD: 2016-01-01, 2018-12-31
 SPINUP_PERIOD: 2011-01-01, 2011-12-31
-MPI_PROCESSES: 1
+MPI_PROCESSES: 4
 FORCE_RUN_ALL_STEPS: false
-POUR_POINT_COORDS: 51.1722/-115.5717
-BOUNDING_BOX_COORDS: 51.76/-116.55/50.95/-115.5
+POUR_POINT_COORDS: 38.66443715/-106.848095
+BOUNDING_BOX_COORDS: 39.1/-107.2/38.5/-106.6
 DOMAIN_DEFINITION_METHOD: delineate
 GEOFABRIC_TYPE: TDX
 STREAM_THRESHOLD: 5000
@@ -22,7 +22,7 @@ DOMAIN_DISCRETIZATION: GRUs
 ELEVATION_BAND_SIZE: 200
 MIN_HRU_SIZE: 4
 RADIATION_CLASS_NUMBER: 5
-FORCING_DATASET: CASR
+FORCING_DATASET: ERA5
 FORCING_VARIABLES: default
 FORCING_MEASUREMENT_HEIGHT: 1.5
 FORCING_TIME_STEP_SIZE: 3600
@@ -30,16 +30,11 @@ APPLY_LAPSE_RATE: true
 LAPSE_RATE: 0.0065
 FORCING_SHAPE_LAT_NAME: lat
 FORCING_SHAPE_LON_NAME: lon
-SUPPLEMENT_FORCING: false
-EM_EARTH_PRCP_DIR: /anvil/datasets/meteorological/EM-Earth/EM_Earth_v1/deterministic_hourly/prcp/NorthAmerica
-EM_EARTH_TMEAN_DIR: /anvil/datasets/meteorological/EM-Earth/EM_Earth_v1/deterministic_hourly/tmean/NorthAmerica
-EM_EARTH_MIN_BBOX_SIZE: 0.1
-EM_EARTH_MAX_EXPANSION: 0.2
 HYDROLOGICAL_MODEL: SUMMA
 ROUTING_MODEL: mizuRoute
-SUMMA_EXE: summa_sundials.exe
+SUMMA_EXE: summa
 SETTINGS_SUMMA_USE_PARALLEL_SUMMA: false
-SETTINGS_SUMMA_PARALLEL_EXE: summa_actors.exe
+SETTINGS_SUMMA_PARALLEL_EXE: summa
 SETTINGS_SUMMA_CONNECT_HRUS: true
 SETTINGS_SUMMA_TRIALPARAM_N: 0
 SETTINGS_SUMMA_TRIALPARAM_1: null
@@ -146,7 +141,7 @@ FLASH_DROPOUT: 0.2
 FLASH_L2_REGULARIZATION: 1e-6
 FLASH_USE_ATTENTION: true
 FLASH_USE_SNOW: false
-EXE_NAME_MIZUROUTE: mizuroute.exe
+EXE_NAME_MIZUROUTE: route_runoff
 SETTINGS_MIZU_WITHIN_BASIN: 0
 SETTINGS_MIZU_ROUTING_DT: 3600
 SETTINGS_MIZU_ROUTING_UNITS: m/s
@@ -155,26 +150,23 @@ SETTINGS_MIZU_OUTPUT_FREQ: single
 SETTINGS_MIZU_OUTPUT_VARS: 1
 SETTINGS_MIZU_MAKE_OUTLET: n/a
 SETTINGS_MIZU_NEEDS_REMAP: false
-EVALUATION_DATA:
-- streamflow
-ANALYSES:
-- benchmarking
+EVALUATION_DATA: []
+ANALYSES: []
 SIM_REACH_ID: 123
-STREAMFLOW_DATA_PROVIDER: WSC
-DOWNLOAD_USGS_DATA: false
-DOWNLOAD_WSC_DATA: true
-STATION_ID: 05BB001
+STREAMFLOW_DATA_PROVIDER: USGS
+DOWNLOAD_USGS_DATA: true
+DOWNLOAD_WSC_DATA: false
+STATION_ID: 09112500
 DOWNLOAD_SNOTEL: 'false'
-SNOTEL_STATION: '602'
-SNOTEL_PATH: /work/comphyd_lab/data/geospatial-data/SNOTEL
+SNOTEL_STATION: '380'
+SNOTEL_PATH: /scratch/dlhogan/ess-project-data/meteorological-data/SNOTEL
 DOWNLOAD_FLUXNET: 'false'
 FLUXNET_STATION: CA-NS7
-FLUXNET_PATH: /work/comphyd_lab/data/geospatial-data/fluxnet
-DOWNLOAD_USGS_GW: 'true'
-USGS_STATION: '06306300'
+FLUXNET_PATH: /scratch/dlhogan/ess-project-data/meteorological-data/fluxnet
+DOWNLOAD_USGS_GW: 'false'
+USGS_STATION: 09112500
 OPTIMISATION_METHODS:
 - iteration
-- emulation
 EMULATION_NUM_SAMPLES: 100
 EMULATION_SEED: 22
 EMULATION_SAMPLING_METHOD: lhs
@@ -208,8 +200,6 @@ ITERATIVE_OPTIMIZATION_ALGORITHM: DE
 NUMBER_OF_ITERATIONS: 100
 POPULATION_SIZE: 30
 OPTIMIZATION_METRIC: KGE
-DE_SCALING_FACTOR: 0.5
-DE_CROSSOVER_RATE: 0.9
 DDS_R: 0.4
 NUMBER_OF_COMPLEXES: 2
 POINTS_PER_SUBCOMPLEX: 5
@@ -221,6 +211,8 @@ PSO_COGNITIVE_PARAM: 1.5
 PSO_SOCIAL_PARAM: 1.5
 PSO_INERTIA_WEIGHT: 0.7
 PSO_INERTIA_REDUCTION_RATE: 0.99
+DE_SCALING_FACTOR: 0.5
+DE_CROSSOVER_RATE: 0.9
 CATCHMENT_SHP_LAT: center_lat
 CATCHMENT_SHP_LON: center_lon
 CATCHMENT_SHP_AREA: HRU_area
@@ -241,14 +233,14 @@ RIVER_NETWORK_SHP_PATH: default
 RIVER_NETWORK_SHP_NAME: default
 POUR_POINT_SHP_PATH: default
 POUR_POINT_SHP_NAME: default
-FORCING_PATH: default
+FORCING_PATH: /scratch/dlhogan/ess-project-data/forcing/merged_data
 OBSERVATIONS_PATH: default
 STREAMFLOW_RAW_PATH: default
 STREAMFLOW_RAW_NAME: default
 STREAMFLOW_PROCESSED_PATH: default
 HYDAT_PATH: default
 SIMULATIONS_PATH: default
-ATTRIBUTES_DATA_DIR: /work/comphyd_lab/data/_to-be-moved/NorthAmerica_geospatial/
+ATTRIBUTES_DATA_DIR: /scratch/dlhogan/data/_to-be-moved/NorthAmerica_geospatial/
 ATTRIBUTES_SOILGRIDS_PATH: default
 ATTRIBUTES_PELLETIER_PATH: default
 ATTRIBUTES_MERIT_PATH: default
@@ -276,7 +268,7 @@ SETTINGS_SUMMA_PATH: default
 EXPERIMENT_OUTPUT_SUMMA: default
 EXPERIMENT_LOG_SUMMA: default
 SETTINGS_SUMMA_PARALLEL_PATH: default
-SUMMA_INSTALL_PATH: default
+SUMMA_INSTALL_PATH: /usr/local/bin
 SETTINGS_SUMMA_FILEMANAGER: fileManager.txt
 SETTINGS_SUMMA_FORCING_LIST: forcingFileList.txt
 SETTINGS_SUMMA_COLDSTATE: coldState.nc
@@ -288,7 +280,7 @@ SETTINGS_SUMMA_LOCAL_PARAMS_FILE: localParamInfo.txt
 EXPERIMENT_LOG_MIZUROUTE: default
 EXPERIMENT_OUTPUT_MIZUROUTE: default
 SETTINGS_MIZU_PATH: default
-INSTALL_PATH_MIZUROUTE: default
+INSTALL_PATH_MIZUROUTE: /home/dlhogan/tools/src/mizuRoute/route/bin
 SETTINGS_MIZU_TOPOLOGY: topology.nc
 SETTINGS_MIZU_PARAMETERS: param.nml.default
 SETTINGS_MIZU_CONTROL_FILE: mizuroute.control
@@ -307,7 +299,7 @@ DEM_PATH: default
 DEM_NAME: default
 SOURCE_GEOFABRIC_BASINS_PATH: default
 SOURCE_GEOFABRIC_RIVERS_PATH: default
-TAUDEM_DIR: default
+TAUDEM_DIR: /home/dlhogan/tools/src/TauDEM/bin
 OUTPUT_DIR: default
 CATCHMENT_PLOT_DIR: default
 SOIL_CLASS_PATH: default
@@ -315,14 +307,15 @@ SOIL_CLASS_NAME: default
 LAND_CLASS_PATH: default
 LAND_CLASS_NAME: default
 RADIATION_PATH: default
-DATATOOL_PATH: default
-GISTOOL_PATH: default
+DATATOOL_PATH: /home/dlhogan/tools/src/datatool/
+GISTOOL_PATH: /home/dlhogan/tools/src/gistool/
 EASYMORE_CLIENT: easymore cli
-DATATOOL_DATASET_ROOT: /work/comphyd_lab/data/meteorological-data/
-DATATOOL_CACHE: /home/darri.eythorsson
-GISTOOL_DATASET_ROOT: /work/comphyd_lab/data/geospatial-data/
-GISTOOL_LIB_PATH: /work/comphyd_lab/envs/r-env/
-TOOL_CACHE: /home/darri.eythorsson/cache
-EASYMORE_CACHE: /home/darri.eythorsson/easymore/
+DATATOOL_DATASET_ROOT: /scratch/dlhogan/ess-project-data/meteorological-data/
+DATATOOL_CACHE: /scratch/dlhogan/ess-project-data/cache/datatool
+GISTOOL_DATASET_ROOT: /scratch/dlhogan/ess-project-data/geospatial-data/
+GISTOOL_LIB_PATH: /home/dlhogan/tools/src/
+TOOL_CACHE: /scratch/dlhogan/ess-project-data/cache/gistool
+EASYMORE_CACHE: /scratch/dlhogan/ess-project-data/cache/easymore/
 EASYMORE_JOB_CONF: installs/MAF/02_model_agnostic_component/easymore-job.slurm
-CLUSTER_JSON: /work/comphyd_lab/users/darri/data/CONFLUENCE_data/installs/datatool/etc/clusters/ucalgary-arc.json
+CLUSTER_JSON: /home/dlhogan/tools/src/datatool/datatool/etc/clusters/lundquist-server.json
+SPATIAL_MODE: Distributed

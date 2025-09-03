@@ -16,15 +16,15 @@
 
 ## ================================================= 0. Global Paths: =====================================================================
 
-CONFLUENCE_DATA_DIR: "/scratch/dlhogan/ess_project_data"
+CONFLUENCE_DATA_DIR: "/scratch/dlhogan/ess-project-data"
 CONFLUENCE_CODE_DIR: "/home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro"
 
 ### ============================================= 1. Experiment settings: =====================================================================
 
 # Experiment settings
-DOMAIN_NAME: "Tuolumne"                                        # Name of experimental domain
+DOMAIN_NAME: "Tuolumne_River"                                        # Name of experimental domain
 EXPERIMENT_ID: "run_1"                                           # Name of experiment
-EXPERIMENT_TIME_START: 2010-01-02 01:00                        # Start time of experiment e.g. '2010-01-01 00:00'
+EXPERIMENT_TIME_START: 1980-01-02 01:00                        # Start time of experiment e.g. '2010-01-01 00:00'
 EXPERIMENT_TIME_END: 2024-12-30 23:00                          # End time of experiment e.g. '2010-12-31 23:00'
 CALIBRATION_PERIOD: 2012-01-01, 2020-12-30                     # start_date, end_date in format YYYY-MM-DD
 EVALUATION_PERIOD:  2021-01-01, 2024-12-30                     # start_date, end_date in format YYYY-MM-DD
