@@ -298,7 +298,7 @@ class MizuRoutePreProcessor:
         cf.write("<vname_time>            time    ! Variable name for time \n")
         cf.write("<dname_hruid>           gru     ! Dimension name for HM_HRU ID \n")
         cf.write("<vname_hruid>           gruId   ! Variable name for HM_HRU ID \n")
-        cf.write("<calendar>              standard    ! Calendar of the nc file if not provided in the time variable of the nc file \n")
+        cf.write("<calendar_ro>              standard    ! Calendar of the nc file if not provided in the time variable of the nc file \n")
 
     def _write_control_file_remapping(self, cf):
         cf.write("!\n! --- DEFINE RUNOFF MAPPING FILE \n")
