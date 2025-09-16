@@ -1,7 +1,7 @@
 CONFLUENCE_DATA_DIR: /scratch/dlhogan/ess-project-data
 CONFLUENCE_CODE_DIR: /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro
 DOMAIN_NAME: East_River_distributed
-EXPERIMENT_ID: 20250915_distributed_gw_bigBuckt
+EXPERIMENT_ID: 20250916_distributed_adjusted_snowparams
 EXPERIMENT_TIME_START: 2016-01-02 01:00
 EXPERIMENT_TIME_END: 2018-12-31 23:00
 CALIBRATION_PERIOD: 2016-01-01, 2017-12-31
