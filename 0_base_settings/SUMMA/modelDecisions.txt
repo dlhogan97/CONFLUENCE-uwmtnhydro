@@ -35,7 +35,7 @@ compaction    anderson             ! choice of compaction routine
 snowLayers    CLM_2010             ! choice of method to combine and sub-divide snow layers
 thCondSnow    jrdn1991             ! choice of thermal conductivity representation for snow
 thCondSoil    funcSoilWet          ! choice of thermal conductivity representation for soil
-spatial_gw    localColumn          ! choice of method for spatial representation of groundwater
+spatial_gw    singleBasin          ! choice of method for spatial representation of groundwater
 subRouting    timeDlay             ! choice of method for sub-grid routing
 ! history Fri Aug  7 11:11:26 2020: /pool0/home/andrbenn/data/summa/utils/convert_summa_config_v2_v3.py file_manager.txt
 
