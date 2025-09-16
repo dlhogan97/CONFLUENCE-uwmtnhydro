@@ -220,7 +220,7 @@ SETTINGS_MIZU_NEEDS_REMAP: no                                  # 'no' if routing
 EVALUATION_DATA: []                                        # Evaluation data to acquire. Options: streamflow, snow, ground_water, fluxnet
 ANALYSES: []                                                   # Options: sensitivity, decision, benchmarking, attributes
 
-SIM_REACH_ID: 123                                              # River reach ID used for streamflow evaluation and optimization
+SIM_REACH_ID: 154                                              # River reach ID used for streamflow evaluation and optimization
 
 # Streamflow data settings
 STREAMFLOW_DATA_PROVIDER: USGS                                  # Provider of streamflow data, current options: USGS, WSC, VI, NIWA
@@ -330,7 +330,7 @@ POUR_POINT_SHP_PATH: default                                   # If 'default', u
 POUR_POINT_SHP_NAME: default                                   # If 'default', uses '[domain_name]_pourPoint.shp'.
 
 # Forcing path settings
-FORCING_PATH: /scratch/dlhogan/ess-project-data/forcing/merged_data                                     # If default, uses, self.project_dir / forcing / raw_data
+FORCING_PATH: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/forcing/merged_data                                     # If default, uses, self.project_dir / forcing / raw_data
 
 # Observation data path settings
 OBSERVATIONS_PATH: default                                     # Path to observed streamflow data for evaluation. If default, uses self.data_dir / observations / streamflow / preprocessed / config['DOMAIN_NAME']_streamflow_processed.csv

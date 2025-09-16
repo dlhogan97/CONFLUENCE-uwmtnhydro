@@ -97,7 +97,7 @@ FLUXNET_STATION: CA-NS7
 FORCE_RUN_ALL_STEPS: false
 FORCING_DATASET: ERA5
 FORCING_MEASUREMENT_HEIGHT: 1.5
-FORCING_PATH: /scratch/dlhogan/ess-project-data/forcing/merged_data
+FORCING_PATH: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/forcing/merged_data
 FORCING_SHAPE_LAT_NAME: lat
 FORCING_SHAPE_LON_NAME: lon
 FORCING_TIME_STEP_SIZE: 3600
@@ -242,7 +242,7 @@ SETTINGS_SUMMA_TRIALPARAM_1: null
 SETTINGS_SUMMA_TRIALPARAM_N: 0
 SETTINGS_SUMMA_USE_PARALLEL_SUMMA: false
 SIMULATIONS_PATH: default
-SIM_REACH_ID: 123
+SIM_REACH_ID: 154
 SNOTEL_PATH: /scratch/dlhogan/ess-project-data/meteorological-data/SNOTEL
 SNOTEL_STATION: '380'
 SOIL_CLASS_NAME: default
