@@ -4,18 +4,15 @@ from pathlib import Path
 import logging
 from typing import Dict, Any, Optional
 import pandas as pd
+from datetime import datetime
+import json
+
+
+
 import numpy as np
-
-
-# Optimizers
-from utils.optimization.dds_optimizer import DDSOptimizer # type: ignore
-from utils.optimization.pso_optimizer import PSOOptimizer # type: ignore
-from utils.optimization.sce_ua_optimizer import SCEUAOptimizer # type: ignore
-from utils.optimization.de_optimizer_refactored import DEOptimizer # type: ignore
-
-# Emulation
-from utils.optimization.single_sample_emulator import EmulationRunner # type: ignore
-
+from utils.optimization.iterative_optimizer import DEOptimizer, DDSOptimizer, AsyncDDSOptimizer, PopulationDDSOptimizer, PSOOptimizer, NSGA2Optimizer, SCEUAOptimizer # type: ignore
+from utils.optimization.large_domain_emulator import LargeDomainEmulator
+from utils.optimization.differentiable_parameter_emulator import DifferentiableParameterOptimizer, EmulatorConfig
 
 class OptimizationManager:
     """
@@ -53,7 +50,6 @@ class OptimizationManager:
         project_dir (Path): Path to the project directory
         experiment_id (str): ID of the current experiment
         results_manager (OptimizationResultsManager): Manager for optimization results
-        emulation_runner (EmulationRunner): Runner for parameter emulation
         optimizers (Dict[str, Any]): Mapping of algorithm names to optimizer classes
         optimizer_methods (Dict[str, str]): Mapping of algorithm names to method names
     """
@@ -89,33 +85,191 @@ class OptimizationManager:
             self.logger
         )
         
-        # Initialize emulation runner
-        self.emulation_runner = EmulationRunner(self.config, self.logger)
         
         # Define optimizer mapping
         self.optimizers = {
-            'PSO': PSOOptimizer,
-            'SCE-UA': SCEUAOptimizer,
             'DDS': DDSOptimizer,
-            'DE' : DEOptimizer
+            'ASYNC-DDS': AsyncDDSOptimizer,
+            'POP-DDS': PopulationDDSOptimizer,
+            'DE' : DEOptimizer,
+            'PSO': PSOOptimizer,
+            'NSGA-II': NSGA2Optimizer,
+            'SCE-UA': SCEUAOptimizer,
         }
         
         # Define optimizer run method names
         self.optimizer_methods = {
-            'PSO': 'run_pso_optimization',
-            'SCE-UA': 'run_sceua_optimization',
-            'DDS': 'run_dds_optimization',
-            'DE': 'run_de_optimization'
+            'DDS': 'run_optimization',
+            'ASYNC-DDS': 'run_optimization',
+            'POP-DDS': 'run_optimization',
+            'DE': 'run_optimization',
+            'PSO': 'run_optimization',
+            'NSGA-II': 'run_optimization',
+            'SCE-UA': 'run_optimization' 
+
         }
+
+    def run_optimization_workflow(self) -> Dict[str, Any]:
+        """
+        Main entry point for all optimization and emulation workflows.
+        
+        This method checks the OPTIMISATION_METHODS configuration and runs
+        the appropriate workflows in the correct order.
+        
+        Returns:
+            Dict[str, Any]: Results from all completed workflows
+        """
+        results = {}
+        optimization_methods = self.config.get('OPTIMISATION_METHODS', [])
+        
+        self.logger.info(f"Running optimization workflows: {optimization_methods}")
+        
+        # Run iterative optimization (calibration)
+        if 'iteration' in optimization_methods:
+            calibration_results = self.calibrate_model()
+            if calibration_results:
+                results['calibration'] = str(calibration_results)
+        
+        # Run differentiable parameter emulation
+        if 'differentiable_parameter_emulation' in optimization_methods:
+            dpe_results = self.run_emulation()
+            if dpe_results:
+                results['differentiable_parameter_emulation'] = dpe_results
+        
+        # Run large domain emulation
+        if 'large_domain_emulator' in optimization_methods:
+            lde_results = self.run_large_domain_emulation()
+            if lde_results:
+                results['large_domain_emulation'] = lde_results
+        
+        return results
     
+    def run_large_domain_emulation(self) -> Optional[Dict]:
+        """Run large domain emulation workflow."""
+        if not 'large_domain_emulator' in self.config.get('OPTIMISATION_METHODS', []):
+            self.logger.info("Large domain emulation is disabled in configuration")
+            return None
+        
+        self.logger.info("Starting large domain emulation workflow")
+        
+        try:
+            # Import here to avoid circular imports
+            from utils.optimization.large_domain_emulator import LargeDomainEmulator
+            
+            # Initialize large domain emulator
+            self.large_domain_emulator = LargeDomainEmulator(self.config, self.logger)
+            
+            # Run the distributed emulation workflow
+            results = self.large_domain_emulator.run_distributed_emulation()  # FIXED METHOD NAME
+            
+            if results:
+                self.logger.info("Large domain emulation completed successfully")
+                
+                # Save results using the results manager
+                self._save_large_domain_results(results)
+                
+                return results
+            else:
+                self.logger.warning("Large domain emulation did not produce results")
+                return None
+                
+        except Exception as e:
+            self.logger.error(f"Error during large domain emulation: {str(e)}")
+            import traceback
+            self.logger.error(traceback.format_exc())
+            return None
+    
+    def _save_large_domain_results(self, results: Dict[str, Any]):
+        """Save large domain emulation results to standard CONFLUENCE location."""
+        try:
+            # Create large domain results directory
+            lde_results_dir = self.project_dir / "optimisation" / "large_domain_emulation"
+            lde_results_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Save comprehensive results
+            results_file = lde_results_dir / f"{self.experiment_id}_large_domain_results.json"
+            with open(results_file, 'w') as f:
+                json.dump(results, f, indent=2, default=str)
+            
+            self.logger.info(f"Saved large domain emulation results to {results_file}")
+            
+            # Save best parameters in CONFLUENCE format if available
+            optimization_results = results.get('optimization', {})
+            best_params = optimization_results.get('best_parameters')
+            
+            if best_params and isinstance(best_params, dict):
+                # Convert to DataFrame format compatible with other CONFLUENCE optimizers
+                params_data = {'iteration': [0]}
+                
+                # Add optimization mode and loss
+                mode = optimization_results.get('mode', 'unknown')
+                best_loss = optimization_results.get('best_loss', float('inf'))
+                params_data['optimization_mode'] = [mode]
+                params_data['composite_loss'] = [best_loss]
+                
+                # Add parameter values
+                for param_name, value in best_params.items():
+                    if isinstance(value, (list, np.ndarray)):
+                        params_data[param_name] = [float(np.mean(value))]
+                    else:
+                        params_data[param_name] = [float(value)]
+                
+                # Save as CSV for compatibility
+                params_df = pd.DataFrame(params_data)
+                params_file = lde_results_dir / f"{self.experiment_id}_large_domain_parameters.csv"
+                params_df.to_csv(params_file, index=False)
+                
+                self.logger.info(f"Saved large domain parameters to {params_file}")
+                
+        except Exception as e:
+            self.logger.error(f"Error saving large domain results: {str(e)}")
+    
+    def get_optimization_status(self) -> Dict[str, Any]:
+        """
+        Get status of optimization operations.
+        
+        Enhanced to include large domain emulation status.
+        """
+        status = {
+            'iterative_optimization_enabled': 'iteration' in self.config.get('OPTIMISATION_METHODS', []),
+            'optimization_algorithm': self.config.get('ITERATIVE_OPTIMIZATION_ALGORITHM', 'PSO'),
+            'optimization_metric': self.config.get('OPTIMIZATION_METRIC', 'KGE'),
+            'optimization_dir': str(self.project_dir / "optimisation"),
+            'results_exist': False,
+            'emulation_enabled': 'emulation' in self.config.get('OPTIMISATION_METHODS', []),
+            'rf_emulation_enabled': 'emulation' in self.config.get('OPTIMISATION_METHODS', []),
+            'differentiable_emulation_enabled': 'differentiable_parameter_emulation' in self.config.get('OPTIMISATION_METHODS', []),
+            'large_domain_emulation_enabled': 'large_domain_emulator' in self.config.get('OPTIMISATION_METHODS', [])
+        }
+        
+        # Check for optimization results
+        results_file = self.project_dir / "optimisation" / f"{self.experiment_id}_parallel_iteration_results.csv"
+        status['results_exist'] = results_file.exists()
+        
+        # Check for emulation outputs
+        emulation_dir = self.project_dir / "emulation" / self.experiment_id
+        if emulation_dir.exists():
+            status['emulation_parameter_sets'] = (emulation_dir / "parameter_sets.nc").exists()
+            status['ensemble_runs_exist'] = (emulation_dir / "ensemble_runs").exists()
+            status['performance_metrics_exist'] = (emulation_dir / "ensemble_analysis" / "performance_metrics.csv").exists()
+            status['rf_emulation_complete'] = (emulation_dir / "rf_emulation" / "optimized_parameters.csv").exists()
+        
+        # Check for large domain emulation outputs
+        lde_dir = self.project_dir / "optimisation" / "large_domain_emulation"
+        if lde_dir.exists():
+            status['large_domain_results_exist'] = (lde_dir / f"{self.experiment_id}_large_domain_results.json").exists()
+            status['large_domain_parameters_exist'] = (lde_dir / f"{self.experiment_id}_large_domain_parameters.csv").exists()
+        
+        return status
+    
+
     def calibrate_model(self) -> Optional[Path]:
         """
         Calibrate the model using the specified optimization algorithm.
         
         This method coordinates the calibration process for the configured
         hydrological model using the optimization algorithm specified in the
-        configuration. It currently supports calibration for the SUMMA model,
-        with planned support for other models.
+        configuration. It supports calibration for both SUMMA and FUSE models.
         
         The calibration process involves:
         1. Checking if iterative optimization is enabled in the configuration
@@ -125,12 +279,12 @@ class OptimizationManager:
         
         The optimization algorithm is specified through the ITERATIVE_OPTIMIZATION_ALGORITHM
         configuration parameter (default: 'PSO'). Supported algorithms include PSO,
-        SCE-UA, and DDS.
+        SCE-UA, DDS, DE, and NSGA-II.
         
         Returns:
             Optional[Path]: Path to calibration results file or None if calibration
-                          was disabled or failed
-                          
+                        was disabled or failed
+                        
         Raises:
             ValueError: If the optimization algorithm is not supported
             RuntimeError: If the calibration process fails
@@ -154,6 +308,8 @@ class OptimizationManager:
                 
                 if model == 'SUMMA':
                     return self._calibrate_summa(opt_algorithm)
+                elif model == 'FUSE':
+                    return self._calibrate_fuse(opt_algorithm)
                 else:
                     self.logger.warning(f"Calibration for model {model} not yet implemented")
             
@@ -164,7 +320,194 @@ class OptimizationManager:
             import traceback
             self.logger.error(traceback.format_exc())
             return None
-    
+
+
+    def _calibrate_fuse(self, algorithm: str) -> Optional[Path]:
+        """
+        Calibrate FUSE model using specified algorithm.
+        
+        This is an internal method that handles the specifics of calibrating the
+        FUSE hydrological model. It:
+        1. Creates the optimization directory if it doesn't exist
+        2. Loads the appropriate FUSEOptimizer and runs the algorithm
+        3. Saves and returns the results
+        
+        The method supports different optimization algorithms including:
+        - Population-based: PSO, SCE-UA, DDS, DE, NSGA-II
+        - Gradient-based: ADAM, LBFGS, ADAM-MULTI, LBFGS-MULTI
+        
+        Args:
+            algorithm (str): Optimization algorithm to use
+            
+        Returns:
+            Optional[Path]: Path to results file or None if optimization failed
+            
+        Raises:
+            ValueError: If the specified algorithm is not supported
+            RuntimeError: If the optimization process fails
+            Exception: For other errors during optimization
+        """
+        # UPDATED: Expanded supported algorithms for FUSE
+        supported_algorithms = [
+            # Population-based algorithms
+            'PSO', 'SCE-UA', 'DDS', 'DE', 'NSGA-II',
+            # Gradient-based algorithms
+            'ADAM', 'LBFGS', 'ADAM-MULTI', 'LBFGS-MULTI'
+        ]
+        
+        if algorithm not in supported_algorithms:
+            raise ValueError(f"Unsupported optimization algorithm for FUSE: {algorithm}. "
+                            f"Supported: {', '.join(supported_algorithms)}")
+        
+        # Create optimization directory if it doesn't exist
+        opt_dir = self.project_dir / "optimisation"
+        opt_dir.mkdir(parents=True, exist_ok=True)
+        
+        try:
+            # Import FUSEOptimizer
+            from fuse_optimiser import FUSEOptimizer
+            
+            # Initialize FUSE optimizer
+            self.logger.info(f"Using {algorithm} optimization for FUSE")
+            fuse_optimizer = FUSEOptimizer(self.config, self.logger, opt_dir)
+            
+            # UPDATED: Enhanced algorithm routing with gradient-based methods
+            if algorithm == 'PSO':
+                results_file = fuse_optimizer.run_pso()
+            elif algorithm == 'SCE-UA':
+                results_file = fuse_optimizer.run_sce()
+            elif algorithm == 'DDS':
+                results_file = fuse_optimizer.run_dds()
+            elif algorithm == 'DE':
+                results_file = fuse_optimizer.run_de()
+            elif algorithm == 'NSGA-II':
+                results_file = fuse_optimizer.run_nsga2()
+            
+            # NEW: Gradient-based algorithm routing
+            elif algorithm == 'ADAM':
+                # Get configuration parameters for Adam
+                steps = self.config.get('ADAM_STEPS', 100)
+                lr = self.config.get('ADAM_LEARNING_RATE', 0.01)
+                initial_params = self.config.get('ADAM_INITIAL_PARAMS', None)
+                results_file = fuse_optimizer.run_adam(steps=steps, lr=lr, initial_params=initial_params)
+                
+            elif algorithm == 'LBFGS':
+                # Get configuration parameters for L-BFGS
+                steps = self.config.get('LBFGS_STEPS', 50)
+                lr = self.config.get('LBFGS_LEARNING_RATE', 0.1)
+                initial_params = self.config.get('LBFGS_INITIAL_PARAMS', None)
+                results_file = fuse_optimizer.run_lbfgs(steps=steps, lr=lr, initial_params=initial_params)
+                
+            elif algorithm == 'ADAM-MULTI':
+                # Multi-objective Adam optimization
+                steps = self.config.get('ADAM_STEPS', 100)
+                lr = self.config.get('ADAM_LEARNING_RATE', 0.01)
+                objectives = self.config.get('MULTI_OBJECTIVES', ['NSE', 'KGE'])
+                weights = self.config.get('MULTI_OBJECTIVE_WEIGHTS', [0.5, 0.5])
+                initial_params = self.config.get('ADAM_INITIAL_PARAMS', None)
+                results_file = fuse_optimizer.run_differentiable_multiobjective(
+                    optimizer='ADAM', steps=steps, lr=lr, 
+                    objectives=objectives, weights=weights, initial_params=initial_params
+                )
+                
+            elif algorithm == 'LBFGS-MULTI':
+                # Multi-objective L-BFGS optimization
+                steps = self.config.get('LBFGS_STEPS', 50)
+                lr = self.config.get('LBFGS_LEARNING_RATE', 0.1)
+                objectives = self.config.get('MULTI_OBJECTIVES', ['NSE', 'KGE'])
+                weights = self.config.get('MULTI_OBJECTIVE_WEIGHTS', [0.5, 0.5])
+                initial_params = self.config.get('LBFGS_INITIAL_PARAMS', None)
+                results_file = fuse_optimizer.run_differentiable_multiobjective(
+                    optimizer='LBFGS', steps=steps, lr=lr,
+                    objectives=objectives, weights=weights, initial_params=initial_params
+                )
+                
+            else:
+                raise ValueError(f"Algorithm {algorithm} not implemented for FUSE")
+            
+            if results_file and results_file.exists():
+                self.logger.info(f"FUSE calibration completed successfully: {results_file}")
+                return results_file
+            else:
+                self.logger.warning("FUSE calibration completed but results file not found")
+                return None
+                
+        except ImportError as e:
+            self.logger.error(f"Could not import FUSEOptimizer: {str(e)}")
+            return None
+        except Exception as e:
+            self.logger.error(f"Error during FUSE {algorithm} optimization: {str(e)}")
+            import traceback
+            self.logger.error(traceback.format_exc())
+            return None
+
+    def differentiable_parameter_emulation(self):
+        """
+        Runs the full Differentiable Parameter Emulation (DPE) workflow.
+        """
+        self.logger.info("Starting Differentiable Parameter Emulation workflow...")
+
+        try:
+            # a. Configure the emulator from your main config file for flexibility
+            #    Add these DPE_* parameters to your main config.yaml if you wish.
+            emulator_config = EmulatorConfig(
+                hidden_dims=self.config.get('DPE_HIDDEN_DIMS', [256, 128, 64]),
+                n_training_samples=self.config.get('DPE_TRAINING_SAMPLES', 500),
+                n_validation_samples=self.config.get('DPE_VALIDATION_SAMPLES', 100),
+                n_epochs=self.config.get('DPE_EPOCHS', 300),
+                optimization_steps=self.config.get('DPE_OPTIMIZATION_STEPS', 200),
+                learning_rate=self.config.get('DPE_LEARNING_RATE', 1e-3),
+                optimization_lr=self.config.get('DPE_OPTIMIZATION_LR', 1e-2),
+            )
+
+            dpe = DifferentiableParameterOptimizer(self.config, self.config.get('DOMAIN_NAME'), emulator_config)
+
+            self.logger.info("Running DPE from config (EMULATOR_SETTING)…")
+            optimized_params = dpe.run_from_config()
+
+            self.logger.info("Validating optimized parameters with a final SUMMA run…")
+            validation_results = dpe.validate_optimization(optimized_params)
+
+            results_dir = Path(f"results_differentiable_{dpe.domain_name}_{datetime.now().strftime('%Y%m%d_%H%M')}")
+            dpe.save_results(optimized_params, results_dir)
+            return True
+
+        except Exception as e:
+            self.logger.error("Differentiable Parameter Emulation workflow failed.", exc_info=True)
+            # Re-raise the exception to be caught by the main CONFLUENCE error handler
+            raise e    
+
+    def run_emulation(self) -> Optional[Dict]:
+        """
+        Entry point for all emulation workflows.
+        
+        This method dispatches to the appropriate emulation workflow based on
+        the OPTIMISATION_METHODS configuration.
+        """
+        optimization_methods = self.config.get('OPTIMISATION_METHODS', [])
+        results = {}
+        
+        # Run differentiable parameter emulation
+        if 'differentiable_parameter_emulation' in optimization_methods:
+            dpe_results = self.differentiable_parameter_emulation()
+            if dpe_results:
+                results['differentiable_parameter_emulation'] = dpe_results
+        
+        # Run large domain emulation
+        if 'large_domain_emulator' in optimization_methods:
+            lde_results = self.run_large_domain_emulation()
+            if lde_results:
+                results['large_domain_emulation'] = lde_results
+        
+        # If no emulation methods were configured
+        if not results:
+            if not any(method in optimization_methods for method in ['differentiable_parameter_emulation', 'large_domain_emulator']):
+                self.logger.info("No emulation methods enabled in configuration.")
+            return None
+        
+        return results
+
+
     def _calibrate_summa(self, algorithm: str) -> Optional[Path]:
         """
         Calibrate SUMMA model using specified algorithm.
@@ -236,52 +579,6 @@ class OptimizationManager:
             self.logger.error(traceback.format_exc())
             return None
     
-    def run_emulation(self) -> Optional[Dict]:
-        """
-        Run model parameter emulation workflow.
-        
-        This method executes the parameter emulation process, which enables rapid
-        exploration of parameter space and uncertainty quantification. The emulation
-        workflow includes:
-        1. Generation of parameter sets using Latin Hypercube Sampling or other methods
-        2. Execution of model simulations with the generated parameter sets
-        3. Analysis of model performance across the parameter space
-        4. Training of emulator models (e.g., Random Forest) to predict performance
-        5. Optimization using the trained emulator
-        
-        Parameter emulation is a computationally efficient approach for exploring
-        parameter sensitivity and uncertainty, and for identifying optimal parameter
-        sets without running the full hydrological model for every parameter combination.
-        
-        The emulation is controlled by configuration parameters starting with EMULATION_*,
-        including RUN_SINGLE_SITE_EMULATION.
-        
-        Returns:
-            Optional[Dict]: Dictionary with emulation results or None if emulation
-                          was disabled or failed
-                          
-        Raises:
-            RuntimeError: If the emulation process fails
-            Exception: For other errors during emulation
-        """
-        self.logger.info("Starting model parameter emulation")
-        
-        try:
-            # Run the complete emulation workflow
-            results = self.emulation_runner.run_emulation_workflow()
-            
-            if results:
-                self.logger.info("Model parameter emulation completed successfully")
-            else:
-                self.logger.warning("Model parameter emulation did not produce results")
-                
-            return results
-            
-        except Exception as e:
-            self.logger.error(f"Error during model parameter emulation: {str(e)}")
-            import traceback
-            self.logger.error(traceback.format_exc())
-            return None
     
     def get_optimization_status(self) -> Dict[str, Any]:
         """

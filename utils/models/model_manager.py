@@ -3,6 +3,7 @@
 from pathlib import Path
 import logging
 from typing import Dict, Any
+import pandas as pd 
 
 # Model preprocessors
 from utils.models.summa_utils import SummaPreProcessor # type: ignore
@@ -147,52 +148,65 @@ class ModelManager:
         Process the forcing data into model-specific formats.
         """
         self.logger.info("Starting model-specific preprocessing")
-        
+
         models = self.config.get('HYDROLOGICAL_MODEL', '').split(',')
-        
+
         for model in models:
             model = model.strip()
             try:
                 # Create model input directory
                 model_input_dir = self.project_dir / "forcing" / f"{model}_input"
                 model_input_dir.mkdir(parents=True, exist_ok=True)
-                
-                self.logger.info(f"Processing model: {model}")
-                
-                # Get preprocessor class
-                preprocessor_class = self.preprocessors.get(model)
-                
+
+                # Select preprocessor for this model
+                preprocessor_class = None
+                if hasattr(self, "preprocessors"):
+                    preprocessor_class = self.preprocessors.get(model)
+
                 if preprocessor_class is None:
-                    if model in self.preprocessors:
+                    # Models that truly don't need preprocessing (e.g., FLASH)
+                    if model in ['FLASH']:
                         self.logger.info(f"Model {model} doesn't require preprocessing")
                     else:
                         self.logger.warning(f"Unsupported model: {model}. No preprocessing performed.")
                     continue
-                
-                # Run preprocessing
+
+                # Run model-specific preprocessing
                 preprocessor = preprocessor_class(self.config, self.logger)
                 preprocessor.run_preprocessing()
-                
-                # Enhanced routing logic for SUMMA
+
+                # ----- Routing preprocessing hooks -----
+                routing_delineation = self.config.get('ROUTING_DELINEATION', 'river_network')
+                domain_method = self.config.get('DOMAIN_DEFINITION_METHOD', 'lumped')
+                needs_mizuroute = self._needs_mizuroute_routing(domain_method, routing_delineation)
+
                 if model == 'SUMMA':
-                    routing_delineation = self.config.get('ROUTING_DELINEATION', 'lumped')
-                    domain_method = self.config.get('DOMAIN_DEFINITION_METHOD', 'lumped')
-                    
-                    # Determine if we need mizuRoute
-                    needs_mizuroute = self._needs_mizuroute_routing(domain_method, routing_delineation)
-                    
+                    # SUMMA -> mizuRoute (existing behavior, kept)
                     if needs_mizuroute:
-                        self.logger.info("Initializing MizuRoute preprocessor")
+                        self.logger.info("Initializing mizuRoute preprocessor for SUMMA")
+                        # Hint to mizu preproc which upstream model is providing qsim
+                        self.config['MIZU_FROM_MODEL'] = 'SUMMA'
                         mp = MizuRoutePreProcessor(self.config, self.logger)
                         mp.run_preprocessing()
-                        
+
+                elif model == 'FUSE':
+                    # NEW: FUSE -> mizuRoute when requested by config
+                    fuse_integration = self.config.get('FUSE_ROUTING_INTEGRATION', 'none')
+                    if needs_mizuroute:
+                        self.logger.info("Initializing mizuRoute preprocessor for FUSE")
+                        # Tell the mizu preprocessor to emit a FUSE-style control file
+                        self.config['MIZU_FROM_MODEL'] = 'FUSE'
+                        mp = MizuRoutePreProcessor(self.config, self.logger)
+                        mp.run_preprocessing()
+
             except Exception as e:
                 self.logger.error(f"Error preprocessing model {model}: {str(e)}")
                 import traceback
                 self.logger.error(traceback.format_exc())
                 raise
 
-        # Archive basin-averaged forcing data
+        # Archive basin-averaged forcing data (left disabled; keep as-is)
+        '''
         self.logger.info("Archiving basin-averaged forcing data to save storage space")
         try:
             basin_data_dir = self.project_dir / 'forcing' / 'basin_averaged_data'
@@ -209,13 +223,172 @@ class ModelManager:
                     self.logger.warning("Failed to archive basin-averaged forcing data")
         except Exception as e:
             self.logger.warning(f"Error during basin-averaged data archiving: {str(e)}")
+        '''
 
         self.logger.info("Model-specific preprocessing completed")
 
+    def _convert_fuse_distributed_to_mizuroute_format(self):
+        """
+        Convert FUSE spatial dimensions to mizuRoute format.
+        MINIMAL changes only: latitude->gru, add gruId, squeeze longitude.
+        Preserves ALL original data and time coordinates unchanged.
+        """
+        import xarray as xr
+        import numpy as np
+        import shutil
+        import tempfile
+        import os
+
+        experiment_id = self.config.get('EXPERIMENT_ID')
+        domain = self.domain_name
+        
+        fuse_out_dir = self.project_dir / "simulations" / experiment_id / "FUSE"
+        
+        # Find FUSE output file
+        target_files = [
+            fuse_out_dir / f"{domain}_{experiment_id}_runs_def.nc",
+            fuse_out_dir / f"{domain}_{experiment_id}_runs_best.nc"
+        ]
+        
+        target = None
+        for file_path in target_files:
+            if file_path.exists():
+                target = file_path
+                break
+        
+        if target is None:
+            raise FileNotFoundError(f"FUSE output not found. Tried: {[str(f) for f in target_files]}")
+
+        self.logger.info(f"Converting FUSE spatial dimensions: {target}")
+
+        # Create backup
+        backup_file = target.with_suffix('.backup.nc')
+        if not backup_file.exists():
+            shutil.copy2(target, backup_file)
+            self.logger.info(f"Created backup: {backup_file}")
+
+        # Load, modify, and immediately close the dataset
+        with xr.open_dataset(target) as ds:
+            self.logger.info(f"Original dimensions: {dict(ds.sizes)}")
+            
+            # Step 1: Remove singleton longitude dimension if it exists
+            if 'longitude' in ds.sizes and ds.sizes['longitude'] == 1:
+                ds = ds.squeeze('longitude', drop=True)
+                self.logger.info("Squeezed longitude dimension")
+            
+            # Step 2: Rename latitude dimension to gru
+            if 'latitude' in ds.sizes:
+                ds = ds.rename({'latitude': 'gru'})
+                self.logger.info("Renamed latitude -> gru")
+                
+                # Step 3: Create gruId variable from gru coordinates
+                if 'gru' in ds.coords:
+                    gru_values = ds.coords['gru'].values
+                    try:
+                        # Try to convert to integers
+                        gru_ids = gru_values.astype('int32')
+                    except (ValueError, TypeError):
+                        # If conversion fails, use sequential IDs
+                        gru_ids = np.arange(1, len(gru_values) + 1, dtype='int32')
+                        self.logger.warning(f"Using sequential GRU IDs 1-{len(gru_values)}")
+                    
+                    ds['gruId'] = xr.DataArray(
+                        gru_ids,
+                        dims=('gru',),
+                        attrs={'long_name': 'ID of grouped response unit', 'units': '-'}
+                    )
+                    
+                    self.logger.info(f"Created gruId variable with {len(gru_ids)} GRUs")
+                else:
+                    raise ValueError("No gru coordinate found after renaming")
+            else:
+                raise ValueError("No latitude dimension found in FUSE output")
+            
+            self.logger.info(f"Final dimensions: {dict(ds.sizes)}")
+            
+            # Load all data into memory before closing
+            ds = ds.load()
+        
+        # Now the original file is closed, we can write to a temp file and replace
+        try:
+            # Make sure target file is writable
+            try:
+                os.chmod(target, 0o664)
+            except Exception as e:
+                self.logger.warning(f"Could not change file permissions: {e}")
+            
+            # Write to temporary file
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.nc', dir=target.parent) as tmp_file:
+                temp_path = tmp_file.name
+            
+            # Write the modified dataset to temp file
+            ds.to_netcdf(temp_path, format='NETCDF4')
+            
+            # Replace original with temp file
+            shutil.move(temp_path, str(target))
+            self.logger.info(f"Spatial conversion completed: {target}")
+            
+            # Ensure _runs_def.nc exists if we processed a different file
+            def_file = fuse_out_dir / f"{domain}_{experiment_id}_runs_def.nc"
+            if target != def_file and not def_file.exists():
+                shutil.copy2(target, def_file)
+                self.logger.info(f"Created runs_def file: {def_file}")
+                
+        except Exception as e:
+            # Clean up temp file if it exists
+            if 'temp_path' in locals() and os.path.exists(temp_path):
+                try:
+                    os.unlink(temp_path)
+                except:
+                    pass
+            raise
+
+    def _fix_time_attributes_netcdf4(self, file_path, time_attrs):
+        """Fallback method to fix time attributes using netCDF4 directly"""
+        import netCDF4 as nc4
+        
+        try:
+            self.logger.info(f"Using netCDF4 fallback to set time attributes: {time_attrs}")
+            with nc4.Dataset(file_path, 'a') as ncfile:  # 'a' for append mode
+                time_var = ncfile.variables['time']
+                
+                # Set attributes directly
+                for attr_name, attr_value in time_attrs.items():
+                    time_var.setncattr(attr_name, attr_value)
+                
+                self.logger.info(f"Successfully set time attributes using netCDF4")
+                
+        except Exception as e:
+            self.logger.error(f"Failed to fix time attributes with netCDF4: {e}")
+            raise
+
+    def _needs_mizuroute_routing(self, domain_method: str, routing_delineation: str) -> bool:
+        """
+        Enhanced version that properly handles FUSE distributed modes.
+        """
+        # Check for FUSE distributed modes
+        models = self.config.get('HYDROLOGICAL_MODEL', '').split(',')
+        if 'FUSE' in [m.strip() for m in models]:
+            fuse_spatial_mode = self.config.get('FUSE_SPATIAL_MODE', 'lumped')
+            fuse_routing = self.config.get('FUSE_ROUTING_INTEGRATION', 'none')
+            
+            if fuse_routing == 'mizuRoute':
+                if fuse_spatial_mode in ['semi_distributed', 'distributed']:
+                    return True
+                elif fuse_spatial_mode == 'lumped' and routing_delineation == 'river_network':
+                    return True
+        
+        # Original SUMMA logic
+        if domain_method not in ['point', 'lumped']:
+            return True
+        
+        if domain_method == 'lumped' and routing_delineation == 'river_network':
+            return True
+        
+        return False
+
     def run_models(self):
-        """
-        Run all configured hydrological models.
-        """
+        """Enhanced run_models with FUSE distributed support"""
         self.logger.info("Starting model runs")
         
         models = self.config.get('HYDROLOGICAL_MODEL', '').split(',')
@@ -224,84 +397,128 @@ class ModelManager:
             model = model.strip()
             try:
                 self.logger.info(f"Running model: {model}")
-                
-                # Get runner class
                 runner_class = self.runners.get(model)
-                
                 if runner_class is None:
                     self.logger.error(f"Unknown hydrological model: {model}")
                     continue
-                
-                # Create runner instance
+
                 runner = runner_class(self.config, self.logger)
-                
-                # Get method name and run
                 method_name = self.runner_methods.get(model)
                 if method_name and hasattr(runner, method_name):
                     getattr(runner, method_name)()
                 else:
                     self.logger.error(f"Runner method not found for model: {model}")
                     continue
-                
-                # Enhanced routing logic for SUMMA
-                if model == 'SUMMA':
-                    routing_delineation = self.config.get('ROUTING_DELINEATION', 'lumped')
-                    domain_method = self.config.get('DOMAIN_DEFINITION_METHOD', 'lumped')
-                    
-                    # Determine if we need mizuRoute
-                    needs_mizuroute = self._needs_mizuroute_routing(domain_method, routing_delineation)
-                    
-                    if needs_mizuroute:
-                        # Handle lumped-to-distributed conversion if needed
+
+                routing_delineation = self.config.get('ROUTING_DELINEATION', 'lumped')
+                domain_method = self.config.get('DOMAIN_DEFINITION_METHOD', 'lumped')
+                needs_mizuroute = self._needs_mizuroute_routing(domain_method, routing_delineation)
+
+                if needs_mizuroute:
+                    if model == 'FUSE':
+                        try:
+                            fuse_spatial_mode = self.config.get('FUSE_SPATIAL_MODE', 'lumped')
+                            if fuse_spatial_mode in ['semi_distributed', 'distributed']:
+                                self.logger.info("Converting distributed FUSE output to mizuRoute format (gru/gruId)")
+                                #self._convert_fuse_distributed_to_mizuroute_format()
+                        except Exception as e:
+                            self.logger.error(f"FUSE→mizuRoute distributed conversion failed: {e}")
+                            raise
+                        mizuroute_runner = MizuRouteRunner(self.config, self.logger)
+                        mizuroute_runner.run_mizuroute()
+                        self.logger.info("FUSE routing completed via mizuRoute")
+                    elif model == 'SUMMA':
                         if domain_method == 'lumped' and routing_delineation == 'river_network':
                             self.logger.info("Converting lumped SUMMA output for distributed routing")
                             self._convert_lumped_to_distributed_routing()
-                        
-                        # Run mizuRoute
                         mizuroute_runner = MizuRouteRunner(self.config, self.logger)
                         mizuroute_runner.run_mizuroute()
-                
-                self.logger.info(f"{model} model run completed successfully")
-                
+
             except Exception as e:
-                self.logger.error(f"Error during {model} model run: {str(e)}")
+                self.logger.error(f"Error running model {model}: {str(e)}")
                 import traceback
                 self.logger.error(traceback.format_exc())
-        
-        # After all models run, visualize outputs
-        self.visualize_outputs()
-        self.logger.info("Model runs completed")
+                raise
 
-    def _needs_mizuroute_routing(self, domain_method: str, routing_delineation: str) -> bool:
-        """
-        Determine if mizuRoute routing is needed based on domain and routing configuration.
+    def _convert_fuse_lumped_to_distributed_routing(self):
+        """Convert lumped FUSE output for distributed routing - simplified version
         
-        Args:
-            domain_method (str): Domain definition method
-            routing_delineation (str): Routing delineation method
+        Only handles HRU and GRU dimension/variable changes.
+        Leaves runoff data unchanged.
+        """
+        self.logger.info("Converting FUSE output HRU/GRU dimensions for distributed routing")
+        
+        try:
+            import xarray as xr
+            import numpy as np
             
-        Returns:
-            bool: True if mizuRoute routing is needed
-        """
-        # Original logic: distributed domain always needs routing
-        if domain_method not in ['point', 'lumped']:
-            return True
-        
-        # New logic: lumped domain with river network routing
-        if domain_method == 'lumped' and routing_delineation == 'river_network':
-            return True
-        
-        # Point simulations never need routing
-        # Lumped domain with lumped routing doesn't need mizuRoute
-        return False
+            experiment_id = self.config.get('EXPERIMENT_ID')
+            
+            # FUSE output file path
+            fuse_output_dir = self.project_dir / "simulations" / experiment_id / "FUSE"
+            fuse_output_file = fuse_output_dir / f"{self.domain_name}_{experiment_id}_runs_best.nc"
+            
+            if not fuse_output_file.exists():
+                raise FileNotFoundError(f"FUSE output file not found: {fuse_output_file}")
+            
+            # Load FUSE output
+            fuse_output = xr.open_dataset(fuse_output_file, decode_times=False)
+            
+            try:
+                # Check current dimensions
+                self.logger.info(f"Original dimensions: {dict(fuse_output.dims)}")
+                
+                # Convert FUSE distributed format to mizuRoute format
+                if 'latitude' in fuse_output.dims and 'longitude' in fuse_output.dims:
+                    # Squeeze out longitude dimension (should be 1)
+                    if fuse_output.dims['longitude'] == 1:
+                        fuse_output = fuse_output.squeeze('longitude', drop=True)
+                        self.logger.info("Removed longitude dimension")
+                    
+                    # Rename latitude dimension to gru
+                    fuse_output = fuse_output.rename({'latitude': 'gru'})
+                    self.logger.info("Renamed latitude dimension to gru")
+                    
+                    # Create gruId variable from the gru coordinate
+                    if 'gru' in fuse_output.coords:
+                        gru_values = fuse_output.coords['gru'].values.astype(int)
+                        fuse_output['gruId'] = xr.DataArray(
+                            gru_values,
+                            dims=('gru',),
+                            attrs={'long_name': 'ID of grouped response unit', 'units': '-'}
+                        )
+                        self.logger.info(f"Created gruId variable with {len(gru_values)} values")
+                
+                elif 'gru' not in fuse_output.dims:
+                    # Fallback: add single GRU if no existing spatial dimensions
+                    hru_id = 1
+                    fuse_output = fuse_output.expand_dims({'gru': [hru_id]})
+                    fuse_output['gruId'] = xr.DataArray(
+                        [hru_id], 
+                        dims=('gru',),
+                        attrs={'long_name': 'ID of grouped response unit', 'units': '-'}
+                    )
+                    self.logger.info(f"Added single GRU dimension (ID={hru_id})")
+                
+                self.logger.info(f"Final dimensions: {dict(fuse_output.dims)}")
+                
+                # Save the modified dataset (overwrites original)
+                fuse_output.to_netcdf(fuse_output_file, format='NETCDF4')
+                self.logger.info("FUSE HRU/GRU conversion completed successfully")
+                
+            finally:
+                fuse_output.close()
+                
+        except Exception as e:
+            self.logger.error(f"Error converting FUSE HRU/GRU dimensions: {str(e)}")
+            raise
 
     def _convert_lumped_to_distributed_routing(self):
         """
         Convert lumped SUMMA output to distributed mizuRoute forcing.
         
-        This method replicates the functionality from the manual script,
-        broadcasting the single lumped runoff to all routing segments.
-        Creates mizuRoute-compatible files with proper naming and variables.
+        This method creates a single lumped GRU that mizuRoute can map to 
+        the distributed routing network. The GRU ID matches the topology HRU ID.
         Only processes the timestep file for mizuRoute routing.
         """
         self.logger.info("Converting lumped SUMMA output for distributed routing")
@@ -327,30 +544,27 @@ class ModelManager:
             if not summa_timestep_file.exists():
                 raise FileNotFoundError(f"SUMMA timestep output file not found: {summa_timestep_file}")
             
-            # Load mizuRoute topology to get segment information
+            # Load mizuRoute topology to get HRU information
             topology_file = mizuroute_settings_dir / self.config.get('SETTINGS_MIZU_TOPOLOGY', 'topology.nc')
             
             if not topology_file.exists():
                 raise FileNotFoundError(f"mizuRoute topology file not found: {topology_file}")
             
             with xr.open_dataset(topology_file) as mizuTopology:
-                # Use SEGMENT IDs from topology (these are the routing elements we broadcast to)
-                # This matches the original manual script approach
+                # Get the single HRU ID from topology (not segment IDs)
+                hru_id = 1 #mizuTopology['hruId'].values[0]  # Should be 1
                 seg_ids = mizuTopology['segId'].values
                 n_segments = len(seg_ids)
-                
-                # Also get HRU info for context
-                hru_ids = mizuTopology['hruId'].values if 'hruId' in mizuTopology else []
-                n_hrus = len(hru_ids)
+                n_hrus = len(mizuTopology['hruId'].values)
             
-            self.logger.info(f"Broadcasting to {n_segments} routing segments ({n_hrus} HRUs in topology)")
+            self.logger.info(f"Creating single lumped GRU (ID={hru_id}) for {n_segments} routing segments ({n_hrus} HRUs in topology)")
             
             # Check if we actually have a distributed routing network
             if n_segments <= 1:
                 self.logger.warning(f"Only {n_segments} routing segment(s) found in topology. Distributed routing may not be beneficial.")
                 self.logger.warning("Consider using ROUTING_DELINEATION: lumped instead")
             
-            # Get the routing variable name from config (updated defaults for new SUMMA versions)
+            # Get the routing variable name from config
             routing_var = self.config.get('SETTINGS_MIZU_ROUTING_VAR', 'averageRoutedRunoff')
             
             self.logger.info(f"Processing {summa_timestep_file.name}")
@@ -381,17 +595,16 @@ class ModelManager:
                 
                 self.logger.info(f"Preserved original time coordinate: {mizuForcing['time'].attrs.get('units', 'no units')}")
                 
-                # Create GRU dimension using SEGMENT IDs (this is the key fix!)
-                # This matches the original script: mizuTopology['segId'].values.flatten()
+                # Create single GRU using HRU ID from topology (NOT segment IDs)
                 mizuForcing['gru'] = xr.DataArray(
-                    seg_ids, 
+                    [hru_id],  # Single HRU, not multiple segment IDs
                     dims=('gru',),
                     attrs={'long_name': 'Index of GRU', 'units': '-'}
                 )
                 
-                # GRU ID variable (use segment IDs as GRU IDs for routing)
+                # GRU ID variable (use HRU ID from topology)
                 mizuForcing['gruId'] = xr.DataArray(
-                    seg_ids, 
+                    [hru_id],  # Single HRU ID
                     dims=('gru',),
                     attrs={'long_name': 'ID of grouped response unit', 'units': '-'}
                 )
@@ -399,7 +612,7 @@ class ModelManager:
                 # Copy global attributes from SUMMA output
                 mizuForcing.attrs.update(summa_output.attrs)
                 
-                # Find the best variable to broadcast (updated for new SUMMA variable names)
+                # Find the best variable to broadcast
                 source_var = None
                 available_vars = list(summa_output.variables.keys())
                 
@@ -408,7 +621,7 @@ class ModelManager:
                     source_var = routing_var
                     self.logger.info(f"Using configured routing variable: {routing_var}")
                 else:
-                    # Try fallback variables in order of preference (updated for new naming)
+                    # Try fallback variables in order of preference
                     fallback_vars = ['averageRoutedRunoff', 'basin__TotalRunoff', 'averageRoutedRunoff_mean', 'basin__TotalRunoff_mean']
                     for var in fallback_vars:
                         if var in summa_output:
@@ -442,21 +655,21 @@ class ModelManager:
                 else:
                     raise ValueError(f"Unexpected runoff data shape: {lumped_runoff.shape}")
                 
-                # Tile to all SEGMENTS: (time,) -> (time, n_segments)
-                # This is the key fix - broadcast to segments, not HRUs
-                tiled_data = np.tile(lumped_runoff[:, np.newaxis], (1, n_segments))
+                # Keep as single GRU: (time,) -> (time, 1)
+                # Don't tile to multiple segments - mizuRoute will handle the routing
+                tiled_data = lumped_runoff[:, np.newaxis]  # Shape: (time, 1)
                 
                 # Create the routing variable with the expected name
                 mizuForcing[routing_var] = xr.DataArray(
                     tiled_data,
                     dims=('time', 'gru'),
                     attrs={
-                        'long_name': 'Broadcast runoff for distributed routing',
+                        'long_name': 'Lumped runoff for distributed routing',
                         'units': 'm/s'
                     }
                 )
                 
-                self.logger.info(f"Broadcast {source_var} -> {routing_var} to {n_segments} segments")
+                self.logger.info(f"Created single lumped GRU (ID={hru_id}) with {routing_var} data")
                 
                 # Close the original dataset to release the file
                 summa_output.close()

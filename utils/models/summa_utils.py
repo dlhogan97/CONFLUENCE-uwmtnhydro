@@ -250,7 +250,7 @@ class SummaPreProcessor:
                     raise ValueError(f"File {file}: No valid HRUs found after filtering")
             
             # 2. FIX NaN VALUES IN FORCING DATA
-            dat = self._fix_nan_values(dat, file)
+            #dat = self._fix_nan_values(dat, file)
             
             # 3. VALIDATE DATA RANGES
             dat = self._validate_and_fix_data_ranges(dat, file)
@@ -891,15 +891,28 @@ class SummaPreProcessor:
         num_hru = len(forcing_hruIds)
 
         # Define the dimensions and fill values
-        nSoil = 8
         nSnow = 0
-        midSoil = 8
-        midToto = 8
-        ifcToto = midToto + 1
         scalarv = 1
 
-        mLayerDepth = np.asarray([0.025, 0.075, 0.15, 0.25, 0.5, 0.5, 1, 1.5])
-        iLayerHeight = np.asarray([0, 0.025, 0.1, 0.25, 0.5, 1, 1.5, 2.5, 4])
+        soil_setups = {
+            "FA": {
+                "mLayerDepth":  np.asarray([0.2, 0.3, 0.5]),
+                "iLayerHeight": np.asarray([0.0, 0.2, 0.5, 1.0]),
+            },
+            "CWARHM": {
+                "mLayerDepth":  np.asarray([0.025, 0.075, 0.15, 0.25, 0.5, 0.5, 1.0, 1.5]),
+                "iLayerHeight": np.asarray([0, 0.025, 0.1, 0.25, 0.5, 1, 1.5, 2.5, 4]),
+            },
+        }
+
+        choice = self.config.get('SETTINGS_SUMMA_SOILPROFILE', 'FA')  #"FA"  # or "CWARHM"
+        mLayerDepth  = soil_setups[choice]["mLayerDepth"]
+        iLayerHeight = soil_setups[choice]["iLayerHeight"]
+
+        midToto = len(mLayerDepth)
+        ifcToto = len(iLayerHeight)
+        midSoil = midToto
+        nSoil   = midToto
 
         # States
         states = {
@@ -908,13 +921,13 @@ class SummaPreProcessor:
             'scalarSnowDepth': 0,
             'scalarSWE': 0,
             'scalarSfcMeltPond': 0,
-            'scalarAquiferStorage': 0.4,
+            'scalarAquiferStorage': 2.5,
             'scalarSnowAlbedo': 0,
             'scalarCanairTemp': 283.16,
             'scalarCanopyTemp': 283.16,
             'mLayerTemp': 283.16,
             'mLayerVolFracIce': 0,
-            'mLayerVolFracLiq': 0.4,
+            'mLayerVolFracLiq': 0.2,
             'mLayerMatricHead': -1.0
         }
 
