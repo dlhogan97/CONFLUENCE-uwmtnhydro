@@ -1465,7 +1465,7 @@ class LumpedWatershedDelineator:
         self.project_dir = self.data_dir / f"domain_{self.domain_name}"
         self.output_dir = self.project_dir / "shapefiles/tempdir"
         self.mpi_processes = self.config.get('MPI_PROCESSES', 1)
-        self.delineation_method = 'TauDEM'
+        self.delineation_method = self.config.get('DELINEATION_METHOD') # 'TauDEM
         self.dem_path = self.config.get('DEM_PATH')
         self.taudem_dir = self.config.get('TAUDEM_DIR')
         if self.taudem_dir == "default":

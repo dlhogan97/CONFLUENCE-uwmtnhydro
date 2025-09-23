@@ -1524,7 +1524,7 @@ class forcingResampler:
                 
                 # Convert to WGS84 and handle potential tuple returns
                 source_result = self._ensure_shapefile_wgs84(source_shp_path, "_wgs84")
-                target_result = self._ensure_shapefile_wgs84(target_shp_path, "_wgs84")
+                target_result, actual_hru_field = self._ensure_shapefile_wgs84(target_shp_path, "_wgs84")
                 
                 # Handle tuple returns - extract just the path
                 if isinstance(source_result, tuple):
@@ -1562,7 +1562,7 @@ class forcingResampler:
                 esmr.source_shp_lon = self.config.get('FORCING_SHAPE_LON_NAME')
                 
                 esmr.target_shp = str(target_shp_wgs84)
-                esmr.target_shp_ID = self.config.get('CATCHMENT_SHP_HRUID')
+                esmr.target_shp_ID = actual_hru_field # self.config.get('CATCHMENT_SHP_HRUID')
                 esmr.target_shp_lat = self.config.get('CATCHMENT_SHP_LAT')
                 esmr.target_shp_lon = self.config.get('CATCHMENT_SHP_LON')
                 
