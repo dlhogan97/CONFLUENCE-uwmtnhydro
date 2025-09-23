@@ -31,7 +31,7 @@ EVALUATION_PERIOD:  2017-01-01, 2024-12-30                     # start_date, end
 SPINUP_PERIOD: 2016-01-02, 2016-12-31                          # start_date, end_date in format YYYY-MM-DDmat YYYY-MM-DD
 
 # Computatational settings
-MPI_PROCESSES: 6                                               # Number of parallel processes allowed, based on your system's capabilities
+MPI_PROCESSES: 1                                               # Number of parallel processes allowed, based on your system's capabilities
 FORCE_RUN_ALL_STEPS: False                                     # Run all steps in the workflow and overwrite existing files
 
 ### ============================================= 2. Geospatial settings: =================================================================
@@ -72,9 +72,9 @@ ROUTING_MODEL: mizuRoute                                       # Routing model, 
 
 ### 4.1 Model Specific settings: SUMMA 
 
-SUMMA_EXE: summa.exe                                   # Name of SUMMA executable
+SUMMA_EXE: summa                                   # Name of SUMMA executable
 SETTINGS_SUMMA_USE_PARALLEL_SUMMA: false                       # Run SUMMA in parallel
-SETTINGS_SUMMA_PARALLEL_EXE: summa.exe                  # Name of parallel SUMMA binary
+SETTINGS_SUMMA_PARALLEL_EXE: summa                  # Name of parallel SUMMA binary
 SETTINGS_SUMMA_CONNECT_HRUS: yes                               # Attribute setting: "no" or "yes". If no; all HRUs modeled as independent columns 
 SETTINGS_SUMMA_TRIALPARAM_N: 0                                 # Number of trial parameter specifications in inital setup. Specify 0 if none are wanted (they can still be included in this file but won't be read).
 SETTINGS_SUMMA_TRIALPARAM_1:                                   # Name of trial parameter and value to assign. Value assumed to be float.
@@ -226,7 +226,7 @@ SIM_REACH_ID: 123                                              # River reach ID 
 STREAMFLOW_DATA_PROVIDER: USGS                                  # Provider of streamflow data, current options: USGS, WSC, VI, NIWA
 DOWNLOAD_USGS_DATA: True                                      # Download USGS data through API
 DOWNLOAD_WSC_DATA: False                                        # Download HYDAT data from HPC
-STATION_ID: 11290000                                            # Station ID from provider
+STATION_ID: 11274790                                            # Station ID from provider
 
 # SNOTEL data settings
 DOWNLOAD_SNOTEL: 'false'                                       # Download SNOTEL data, options: 'true' or 'false'
@@ -305,7 +305,7 @@ POPULATION_SIZE: 30                                            # Optional - will
 CATCHMENT_SHP_LAT: center_lat                                  # Name of the latitude column. Should be a value representative for the HRU. Typically the centroid
 CATCHMENT_SHP_LON: center_lon                                  # Name of the longitude column. Should be a value representative for the HRU. Typically the centroid.
 CATCHMENT_SHP_AREA: HRU_area                                   # Name of the catchment area column. Area must be in units [m^2]
-CATCHMENT_SHP_HRUID: HRU_ID                                    # HRU ID column in riverBasin shapefile
+CATCHMENT_SHP_HRUID: hru_new_id                                # HRU ID column in riverBasin shapefile, check if it needs to be hru_id_new if doubled up! If not use HRU_ID
 CATCHMENT_SHP_GRUID: GRU_ID                                    # GRU ID column in riverBasin shapefile
 CATCHMENT_PATH: default                                        # Path to domain catchment shapefile. If default, uses self.data_dir / shapefiles / catchment / 
 CATCHMENT_SHP_NAME: default                                    # Name of domain catchment shapefile used in data acquisition and modelling 
