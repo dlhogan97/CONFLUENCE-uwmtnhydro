@@ -25,7 +25,12 @@ def download_snotel_data(
                     point.ALLOWED_VARIABLES.SNOWDEPTH,
                     point.ALLOWED_VARIABLES.SWE,
                     point.ALLOWED_VARIABLES.TEMP,
-                    point.ALLOWED_VARIABLES.RH]
+                    point.ALLOWED_VARIABLES.RH,
+                    point.ALLOWED_VARIABLES.SOILMOISTURE2IN,
+                    point.ALLOWED_VARIABLES.SOILMOISTURE4IN,
+                    point.ALLOWED_VARIABLES.SOILMOISTURE8IN,
+                    point.ALLOWED_VARIABLES.SOILMOISTURE20IN,
+                    ]
     point_data = point.get_daily_data(
                     dt.datetime.strptime(start_date, "%Y-%m-%d"), dt.datetime.strptime(end_date, "%Y-%m-%d"),
                     variables
@@ -50,7 +55,6 @@ def download_spires_data(
         tile (str): Tile identifier, e.g., "h09v05"
         destination_base (str): Base path to store data (e.g., "~/data/spires")
     """
-    
     # Validate input
     assert product in ["NRT", "HIST"], "Product must be 'NRT' or 'HIST'"
     for m in months:
@@ -71,7 +75,7 @@ def download_spires_data(
     filtered_dates = all_dates[all_dates.strftime("%m").isin(months)]
 
     # Format filenames
-    file_template = f"SPIRES_{product}_h09v05_MOD09GA061_{{date}}_V1.0.nc"
+    file_template = f"SPIRES_{product}_{tile}_MOD09GA061_{{date}}_V1.0.nc"
     file_names = [file_template.format(date=d.strftime("%Y%m%d")) for d in filtered_dates]
 
     # Create local output directory
@@ -98,6 +102,45 @@ def download_spires_data(
     ftp.quit()
     print(f"All downloads complete. Check {output_dir} for files.")
     return
+
+def download_prism_data(
+    start_date: str,
+    end_date: str,
+    variables: list[str],
+    save_path: str = None
+):
+    """
+    Download PRISM data for a given date range and list of variables.
+    
+    Parameters:
+        start_date (str): Start date in "YYYY-MM-DD" format
+        end_date (str): End date in "YYYY-MM-DD" format
+        variables (list[str]): List of variable names to download (e.g., ["ppt", "tmax", "tmin"])
+        save_path (str): Optional path to save the downloaded data. If None, data will not be saved.
+    Returns:
+        dict: A dictionary with variable names as keys and xarray.DataArray as values
+    """
+    # outpath = '/storage/dlhogan/sos/data/PRISM_ppt/' # fix this
+    # if not os.path.exists('../data/precipdata/prism_4km_ucrb.nc'): # fix this
+    #     # get file name list
+    #     files = [x for x in os.listdir(outpath) if (x[-3:] == 'bil') and (len(x) == 37)]
+    #     prism_list = []
+    #     dates = []
+    #     # Open each file and append to a list
+    #     for file in files:
+    #             dates.append(file[-14:-8]+'01')
+    #             tmp = rxr.open_rasterio(os.path.join(outpath,file)).rio.reproject(co_epsg).rio.clip(ucrb_basin_boundary.geometry) # fix this
+    #             prism_list.append(tmp)
+    #     # concatentate each file to netcdf
+    #     prism_4km_historic_ds = xr.concat(prism_list, dim='band')
+    #     prism_4km_historic_ds = prism_4km_historic_ds.rename({'band':'month'})
+
+    #     # Assign dates to coordinates
+    #     prism_4km_historic_ds = prism_4km_historic_ds.assign_coords({
+    #             'month': pd.to_datetime(dates,format='%Y%m%d')}) 
+    #     prism_4km_historic_ds = prism_4km_historic_ds.sortby('month')
+    #     prism_4km_all_ds = xr.concat([prism_4km_historic_ds, prism_4km_ds], dim='month', join='override')
+    #     prism_4km_all_ds.to_netcdf('../data/precipdata/prism_4km_ucrb.nc')
 
 from pynhd import NLDI
 import xarray as xr
