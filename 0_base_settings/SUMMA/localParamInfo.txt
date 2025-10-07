@@ -30,7 +30,7 @@ upperBoundTheta           |       0.2004 |       0.1020 |       0.3680
 lowerBoundTheta           |       0.1100 |       0.1020 |       0.3680
 upperBoundTemp            |     272.1600 |     270.1600 |     280.1600
 lowerBoundTemp            |     274.1600 |     270.1600 |     280.1600
-tempCritRain              |     273.1600 |     272.1600 |     274.1600       
+tempCritRain              |     273.1600 |     272.1600 |     274.1600                 
 tempRangeTimestep         |       2.0000 |       0.5000 |       5.0000
 frozenPrecipMultip        |       1.0000 |       0.5000 |       1.5000
 snowfrz_scale             |      50.0000 |      10.0000 |    1000.0000
@@ -39,10 +39,10 @@ albedoMax                 |       0.8500 |       0.7000 |       0.9500
 albedoMinWinter           |       0.6000 |       0.6000 |       1.0000  
 albedoMinSpring           |       0.3000 |       0.3000 |       1.0000  
 albedoMaxVisible          |       0.9500 |       0.7000 |       0.9500
-albedoMinVisible          |       0.3000 |       0.5000 |       0.7500 
+albedoMinVisible          |       0.3000 |       0.5000 |       0.7500           
 albedoMaxNearIR           |       0.6500 |       0.5000 |       0.7500
 albedoMinNearIR           |       0.3000 |       0.1500 |       0.4500
-albedoDecayRate           |       3.0d+6 |       1.0d+5 |       5.0d+6  
+albedoDecayRate           |       1.0d+6 |       1.0d+5 |       5.0d+6            
 albedoSootLoad            |       0.3000 |       0.1000 |       0.5000
 albedoRefresh             |       1.0000 |       1.0000 |      10.0000
 radExt_snow               |      20.0000 |      20.0000 |      20.0000

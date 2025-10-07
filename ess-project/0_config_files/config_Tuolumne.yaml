@@ -79,7 +79,7 @@ SETTINGS_SUMMA_CONNECT_HRUS: yes                               # Attribute setti
 SETTINGS_SUMMA_TRIALPARAM_N: 0                                 # Number of trial parameter specifications in inital setup. Specify 0 if none are wanted (they can still be included in this file but won't be read).
 SETTINGS_SUMMA_TRIALPARAM_1:                                   # Name of trial parameter and value to assign. Value assumed to be float.
 
-# Calibration settings 
+# Calibration settings  
 PARAMS_TO_CALIBRATE: tempCritRain,k_soil,vGn_n,theta_sat,theta_res,rootingDepth,zScale_TOPMODEL,k_macropore # Local parameters to calibrate
 BASIN_PARAMS_TO_CALIBRATE: routingGammaScale # Basin parameters to calibrate                       
 
@@ -277,7 +277,7 @@ NN_VALIDATION_SPLIT: 0.2                                       # Uncertainty per
 
 # Iterative optimisation settings
 ITERATIVE_OPTIMIZATION_ALGORITHM: DE                           # Options DDS, DE, PSO or SCE-UA
-NUMBER_OF_ITERATIONS: 100                                      # Number of iterations for calibration 
+NUMBER_OF_ITERATIONS: 10                                       # Number of iterations for calibration 
 POPULATION_SIZE: 50                                            # Population size for genetic algorithms
 OPTIMIZATION_METRIC: KGE                                       # Options: Root mean square error : "RMSE", Nash-Suthcliffe efficiency: "NSE", Kling-Gupta Efficiency: "KGE", KGE projected: "KGEp", Mean absolute error: "MAE"
   # -- DDS specific settings
