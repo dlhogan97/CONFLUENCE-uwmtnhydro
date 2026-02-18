@@ -2615,9 +2615,9 @@ if __name__ == "__main__":
             # Update file manager for full period
             self._update_file_manager_for_final_run()
             
-            # Update modelDecisions.txt to use direct solver for final evaluation
-            if self.config.get('FINAL_EVALUATION_NUMERICAL_METHOD', 'ida') == 'ida':
-                self._update_model_decisions_for_final_run()
+            # # Update modelDecisions.txt to use direct solver for final evaluation
+            # if self.config.get('FINAL_EVALUATION_NUMERICAL_METHOD', 'ida') == 'ida':
+            #     self._update_model_decisions_for_final_run()
             
             # Apply best parameters
             self._fix_file_permissions_for_final_run()

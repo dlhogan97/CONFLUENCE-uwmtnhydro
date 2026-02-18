@@ -52,6 +52,7 @@ contextily
 
 # Configuration management
 pyyaml>=6.0.2
+python-dotenv>=1.0.0
 
 # Parallel processing
 mpi4py>=3.0.0

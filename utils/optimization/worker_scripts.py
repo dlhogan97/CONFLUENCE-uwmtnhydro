@@ -1022,7 +1022,13 @@ def _calculate_metrics_inline_worker(summa_dir: Path, mizuroute_dir: Path, confi
                         
                 else:
                     # SUMMA output - convert from m/s to m³/s using ACTUAL area
-                    summa_vars = ['averageRoutedRunoff', 'basin__TotalRunoff', 'scalarTotalRunoff']
+                    # Check config for preferred variable, otherwise use fallback list
+                    preferred_var = config.get('SUMMA_RUNOFF_VAR', None)
+                    if preferred_var:
+                        summa_vars = [preferred_var, 'averageRoutedRunoff', 'basin__TotalRunoff', 'scalarTotalRunoff']
+                        logger.info(f"DEBUG: Using config-specified SUMMA_RUNOFF_VAR: {preferred_var}")
+                    else:
+                        summa_vars = ['averageRoutedRunoff', 'basin__TotalRunoff', 'scalarTotalRunoff']
                     sim_data = None
                     
                     for var_name in summa_vars:

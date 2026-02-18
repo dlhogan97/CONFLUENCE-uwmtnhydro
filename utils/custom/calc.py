@@ -4,7 +4,7 @@ def q_to_e0(q, p):
     MV_CST = 0.622
     e_0 = (q * p) / (MV_CST + q * (1 - MV_CST))
     return e_0
-def emperical_lw_dilley_obrien(Tair, p, q):
+def empirical_lw_dilley_obrien(Tair, p, q):
     """
     Calculate incoming longwave radiation using the Dilley and O'Brien (1998) empirical formula.
 

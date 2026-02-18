@@ -27,6 +27,11 @@ env/
 .env/
 .venv/
 
+# API Keys and Secrets
+.env
+*.env
+!.env.template
+
 # Ignore everything in 0_config_files
 0_config_files/*
 

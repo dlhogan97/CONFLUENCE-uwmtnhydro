@@ -892,8 +892,13 @@ class StreamflowTarget(CalibrationTarget):
     def _extract_summa_streamflow(self, sim_file: Path) -> pd.Series:
         """Extract streamflow from SUMMA output"""
         with xr.open_dataset(sim_file) as ds:
-            # Find streamflow variable
-            streamflow_vars = ['averageRoutedRunoff', 'basin__TotalRunoff', 'scalarTotalRunoff']
+            # Find streamflow variable - check config for preferred var first
+            preferred_var = self.config.get('SUMMA_RUNOFF_VAR', None)
+            if preferred_var:
+                streamflow_vars = [preferred_var, 'averageRoutedRunoff', 'basin__TotalRunoff', 'scalarTotalRunoff']
+                self.logger.info(f"Using config-specified SUMMA_RUNOFF_VAR: {preferred_var}")
+            else:
+                streamflow_vars = ['averageRoutedRunoff', 'basin__TotalRunoff', 'scalarTotalRunoff']
             
             for var_name in streamflow_vars:
                 if var_name in ds.variables:

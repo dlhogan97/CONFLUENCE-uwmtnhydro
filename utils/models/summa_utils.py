@@ -344,6 +344,36 @@ class SummaPreProcessor:
                 else:
                     # Try to interpret as seconds since unix epoch
                     pd_times = pd.to_datetime(time_coord.values, unit='s')
+            elif time_coord.dtype == object:
+                # Check for cftime objects (DatetimeGregorian, etc.)
+                time_values = time_coord.values
+                if len(time_values) > 0:
+                    first_val = time_values[0]
+                    # Check if it's a cftime object
+                    if hasattr(first_val, 'isoformat') or 'cftime' in str(type(first_val)):
+                        # Convert cftime objects to pandas datetime via string representation
+                        try:
+                            import cftime
+                            # Use cftime's built-in conversion if available
+                            if hasattr(cftime, 'num2date'):
+                                # Try to get units from attrs
+                                if 'units' in time_coord.attrs:
+                                    units = time_coord.attrs['units']
+                                    calendar = time_coord.attrs.get('calendar', 'standard')
+                                    # If already decoded, extract datetime strings
+                                    pd_times = pd.to_datetime([str(t) for t in time_values])
+                                else:
+                                    pd_times = pd.to_datetime([str(t) for t in time_values])
+                            else:
+                                pd_times = pd.to_datetime([str(t) for t in time_values])
+                        except ImportError:
+                            # No cftime available, try string conversion
+                            pd_times = pd.to_datetime([str(t) for t in time_values])
+                    else:
+                        # Generic object array - try direct conversion
+                        pd_times = pd.to_datetime(time_values)
+                else:
+                    raise ValueError("Empty time coordinate")
             else:
                 # Try direct conversion
                 pd_times = pd.to_datetime(time_coord.values)
