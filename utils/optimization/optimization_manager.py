@@ -743,6 +743,144 @@ class OptimizationManager:
         except Exception as e:
             self.logger.error(f"Error loading optimization results: {str(e)}")
             return None
+    
+    def update_parameters_with_best_values(
+        self, 
+        best_parameters_csv: Optional[Path] = None,
+        use_latest: bool = True,
+        verbose: bool = True,
+        backup_before_update: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Update basin and local parameter files with best values from optimization.
+        
+        This method reads the best_parameters.csv from an optimization run and updates
+        the corresponding parameter files (basinParamInfo.txt and localParamInfo.txt)
+        with the optimized values. This allows you to use the improved parameters for
+        subsequent model runs.
+        
+        **Important:** Call this BEFORE running your model so the updated parameters
+        are copied to your experiment folder by your model setup cell. This ensures
+        your improved parameters are used and saved alongside your simulation outputs.
+        
+        Args:
+            best_parameters_csv: Path to best_parameters.csv file. If None and use_latest=True,
+                               will search for the most recent optimization results.
+            use_latest: If True and best_parameters_csv is None, uses the latest optimization results
+            verbose: If True, prints update summary
+            backup_before_update: If True, backs up original parameter files before updating.
+                                 Backups saved as localParamInfo.txt.bak, basinParamInfo.txt.bak
+            
+        Returns:
+            Dictionary with update results:
+                - 'success': bool indicating if update was successful
+                - 'local_params_updated': number of local parameters updated
+                - 'basin_params_updated': number of basin parameters updated
+                - 'parameters_dir': path to the parameter files directory
+                - 'best_parameters_csv': path to the best_parameters.csv used
+                - 'backup_files': list of backup file paths (if backup_before_update=True)
+                
+        Raises:
+            FileNotFoundError: If parameter files cannot be found
+            ValueError: If best_parameters_csv cannot be located or has invalid structure
+            
+        Example:
+            >>> # Call this BEFORE running your model to ensure optimized parameters
+            >>> # are automatically copied to your experiment folder
+            >>> manager = OptimizationManager(config, logger)
+            >>> results = manager.update_parameters_with_best_values(backup_before_update=True)
+            >>> if results['success']:
+            ...     print(f"✓ Updated {results['local_params_updated']} local parameters")
+            ...     print(f"✓ Updated {results['basin_params_updated']} basin parameters")
+            ...     print(f"✓ Backups saved: {results['backup_files']}")
+            ...     print("Now run your model to use these optimized parameters")
+        """
+        try:
+            from utils.custom.adjust_settings import update_best_parameters_in_files
+            
+            # Determine which best_parameters.csv to use
+            if best_parameters_csv is None:
+                if use_latest:
+                    # Find latest optimization directory
+                    opt_base_dir = self.project_dir / "optimisation"
+                    if not opt_base_dir.exists():
+                        raise FileNotFoundError(f"Optimization directory not found: {opt_base_dir}")
+                    
+                    # Find all optimization result directories and get the most recent
+                    opt_dirs = [d for d in opt_base_dir.iterdir() if d.is_dir()]
+                    if not opt_dirs:
+                        raise FileNotFoundError(f"No optimization results found in {opt_base_dir}")
+                    
+                    # Sort by modification time to get latest
+                    opt_dirs.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+                    latest_opt_dir = opt_dirs[0]
+                    
+                    best_parameters_csv = latest_opt_dir / "best_parameters.csv"
+                    
+                    if not best_parameters_csv.exists():
+                        raise FileNotFoundError(
+                            f"best_parameters.csv not found in latest optimization directory: {latest_opt_dir}"
+                        )
+                    
+                    self.logger.info(f"Using latest optimization results from: {latest_opt_dir}")
+                else:
+                    raise ValueError("best_parameters_csv must be provided if use_latest=False")
+            
+            if not best_parameters_csv.exists():
+                raise FileNotFoundError(f"best_parameters_csv not found: {best_parameters_csv}")
+            
+            # Get parameter file paths
+            project_settings_dir = self.project_dir / "settings" / "SUMMA"
+            localParamInfo_file = project_settings_dir / "localParamInfo.txt"
+            basinParamInfo_file = project_settings_dir / "basinParamInfo.txt"
+            
+            if not localParamInfo_file.exists():
+                raise FileNotFoundError(f"localParamInfo.txt not found: {localParamInfo_file}")
+            if not basinParamInfo_file.exists():
+                raise FileNotFoundError(f"basinParamInfo.txt not found: {basinParamInfo_file}")
+            
+            # Get calibration parameters from config if available
+            local_params_to_calibrate = None
+            basin_params_to_calibrate = None
+            
+            if 'PARAMS_TO_CALIBRATE' in self.config:
+                local_params_to_calibrate = [p.strip() for p in self.config['PARAMS_TO_CALIBRATE'].split(',')]
+            
+            if 'BASIN_PARAMS_TO_CALIBRATE' in self.config:
+                basin_params_to_calibrate = [p.strip() for p in self.config['BASIN_PARAMS_TO_CALIBRATE'].split(',')]
+            
+            # Update parameter files with best values
+            self.logger.info(f"Updating parameter files with best values from: {best_parameters_csv}")
+            
+            update_results = update_best_parameters_in_files(
+                best_parameters_csv=best_parameters_csv,
+                localParamInfo_file=localParamInfo_file,
+                basinParamInfo_file=basinParamInfo_file,
+                local_params_to_update=local_params_to_calibrate,
+                basin_params_to_update=basin_params_to_calibrate,
+                verbose=verbose
+            )
+            
+            self.logger.info("Parameter files updated successfully with best optimization values")
+            
+            return {
+                'success': True,
+                'local_params_updated': update_results.get('local_params_updated', 0),
+                'basin_params_updated': update_results.get('basin_params_updated', 0),
+                'parameters_dir': str(project_settings_dir),
+                'best_parameters_csv': str(best_parameters_csv)
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Error updating parameters with best values: {str(e)}")
+            import traceback
+            self.logger.error(traceback.format_exc())
+            return {
+                'success': False,
+                'error': str(e),
+                'local_params_updated': 0,
+                'basin_params_updated': 0
+            }
 
 class OptimizationResultsManager:
     """Manages saving and loading of optimization results."""

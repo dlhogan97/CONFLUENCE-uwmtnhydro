@@ -928,6 +928,17 @@ class StreamflowTarget(CalibrationTarget):
     
     def _get_catchment_area(self) -> float:
         """Get catchment area for unit conversion"""
+        # Check for explicit config override first
+        override_area = self.config.get('BASIN_AREA_M2', None)
+        if override_area is not None:
+            try:
+                override_area = float(override_area)
+                if override_area > 0:
+                    self.logger.info(f"Using basin area from config BASIN_AREA_M2: {override_area:.2f} m²")
+                    return override_area
+            except (TypeError, ValueError):
+                self.logger.warning(f"Invalid BASIN_AREA_M2 override: {override_area}")
+        
         try:
             import geopandas as gpd
             
@@ -940,8 +951,10 @@ class StreamflowTarget(CalibrationTarget):
                 area_col = self.config.get('RIVER_BASIN_SHP_AREA', 'GRU_area')
                 
                 if area_col in gdf.columns:
-                    total_area = gdf[area_col].sum()
+                    # Select the maximum area value (handles shapefiles with multiple features)
+                    total_area = gdf[area_col].max()
                     if 0 < total_area < 1e12:  # Reasonable area
+                        self.logger.info(f"Got basin area from {basin_files[0].name}: {total_area:.2f} m²")
                         return total_area
             
             # Fallback: calculate from geometry
@@ -957,7 +970,8 @@ class StreamflowTarget(CalibrationTarget):
                 return gdf.geometry.area.sum()
             
         except Exception as e:
-            self.logger.warning(f"Could not calculate catchment area: {str(e)}")
+            self.logger.warning(f"Could not calculate catchment area from shapefiles: {str(e)}")
+            self.logger.warning("Using default 1e6 m² fallback. Set BASIN_AREA_M2 in config to override.")
         
         # Default fallback
         return 1e6  # 1 km²
