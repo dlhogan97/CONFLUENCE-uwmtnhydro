@@ -1,20 +1,29 @@
 #!/usr/bin/env python3
 """
-CONFLUENCE DDS Optimization with Complete Preprocessing
+CONFLUENCE Parameter Calibration Optimization with Complete Preprocessing
+
+Flexible optimization script supporting multiple algorithms and domains.
 
 Standalone script that handles:
-1. Configuration setup
+1. Configuration setup (any domain)
 2. Parameter initialization  
 3. Temperature lapsing and forcing adjustments
 4. Model preprocessing
-5. DDS parameter calibration optimization
+5. Parameter calibration optimization (DDS, PSO, SCE, GA, DE)
 6. Results analysis
 
 Usage:
-    python optimize_confluence.py --config config_Tuolumne_lumped_v1.yaml --run-name "my_run"
+    # DDS with single processor (recommended for sequential)
+    python optimize_confluence.py --config config_Tuolumne_lumped_v1.yaml --algorithm DDS --mpi-processes 1
+    
+    # PSO with parallel processing
+    python optimize_confluence.py --config config_East_River.yaml --algorithm PSO --mpi-processes 4
+    
+    # Custom experiment name
+    python optimize_confluence.py --config config_template.yaml --run-name "test_run" --algorithm DDS --mpi-processes 1
     
 Or with bash wrapper:
-    ./optimize.sh --config config_Tuolumne_lumped_v1.yaml --run-name "spongy_test"
+    ./optimize.sh --config config_Tuolumne_lumped_v1.yaml --algorithm DDS --mpi-processes 1
 """
 
 import sys
@@ -203,10 +212,24 @@ def adjust_forcing_data(config_dict):
     )
     
     # Load DEM for elevation calculations
-    dem_path = project_dir / 'attributes' / 'elevation' / "dem" / "domain_Tuolumne_River_lumped_elv.tif"
+    # Try multiple common DEM path patterns
+    dem_candidates = [
+        project_dir / 'attributes' / 'elevation' / 'dem' / f"domain_{config_dict['DOMAIN_NAME']}_elv.tif",
+        project_dir / 'attributes' / 'elevation' / 'dem' / "dem.tif",
+        project_dir / 'attributes' / 'dem.tif',
+    ]
     
-    if not dem_path.exists():
-        logger.warning(f"⚠️  DEM not found at {dem_path}, skipping elevation adjustments")
+    dem_path = None
+    for candidate in dem_candidates:
+        if candidate.exists():
+            dem_path = candidate
+            break
+    
+    if dem_path is None:
+        logger.warning(f"⚠️  DEM not found. Searched:")
+        for c in dem_candidates:
+            logger.warning(f"     {c}")
+        logger.warning(f"   Skipping elevation adjustments")
         return
     
     logger.info(f"\n📊 Loading DEM from: {dem_path}")
@@ -310,24 +333,63 @@ def protect_and_preprocess(confluence, project_settings_dir):
             shutil.copy(src, dst)
 
 
-def run_optimization(config_path, run_name=None, use_previous_params=False):
+def run_optimization(config_path, run_name=None, use_previous_params=False, algorithm=None, mpi_processes=None):
     """Main optimization execution"""
-    logger.info("\n" + "=" * 70)
-    logger.info("CONFLUENCE DDS PARAMETER CALIBRATION OPTIMIZATION")
-    logger.info("=" * 70)
-    
     start_time = datetime.now()
     
     # Load configuration
     logger.info(f"\n📂 Loading configuration: {config_path}")
     config_dict = load_config(config_path)
     
+    # Override MPI processes if specified on command line
+    if mpi_processes is not None:
+        original_mpi = config_dict.get('MPI_PROCESSES', 1)
+        logger.info(f"\n⚙️  Overriding MPI processes: {original_mpi} → {mpi_processes}")
+        config_dict['MPI_PROCESSES'] = mpi_processes
+    
+    # Override algorithm if specified on command line
+    original_algorithm = config_dict.get('ITERATIVE_OPTIMIZATION_ALGORITHM', 'DDS')
+    if algorithm:
+        logger.info(f"\n⚙️  Overriding optimization algorithm: {original_algorithm} → {algorithm}")
+        config_dict['ITERATIVE_OPTIMIZATION_ALGORITHM'] = algorithm
+    elif config_dict.get('MPI_PROCESSES', 1) == 1:
+        # Recommend DDS for single processor
+        current_alg = config_dict.get('ITERATIVE_OPTIMIZATION_ALGORITHM', 'DDS')
+        if current_alg != 'DDS':
+            logger.warning(f"\n💡 With MPI_PROCESSES=1, DDS is recommended (not {current_alg})")
+            logger.warning(f"   DDS is sequential/intelligent - optimal for single processor")
+            logger.warning(f"   Use: --algorithm DDS to switch")
+    
+    # Write modified config back to YAML so CONFLUENCE reads the overrides
+    with open(config_path, 'w') as f:
+        yaml.dump(config_dict, f, default_flow_style=False, sort_keys=False)
+    if algorithm or mpi_processes is not None:
+        logger.info(f"   ✓ Config updated")
+    
+    opt_alg = config_dict.get('ITERATIVE_OPTIMIZATION_ALGORITHM', 'DDS')
+    mpi_procs = config_dict.get('MPI_PROCESSES', 1)
+    
+    logger.info("\n" + "=" * 70)
+    logger.info(f"CONFLUENCE {opt_alg} PARAMETER CALIBRATION OPTIMIZATION")
+    logger.info("=" * 70)
+    
+    # Warn if DDS with parallel processing
+    if opt_alg == 'DDS' and mpi_procs > 1:
+        logger.warning("\n⚠️⚠️⚠️  CRITICAL WARNING ⚠️⚠️⚠️")
+        logger.warning(f"  DDS is a SEQUENTIAL algorithm - each iteration needs the previous best!")
+        logger.warning(f"  Config has MPI_PROCESSES = {mpi_procs}")
+        logger.warning(f"  Running DDS in parallel defeats convergence.")
+        logger.warning(f"  RECOMMENDATION: Set MPI_PROCESSES = 1 or use PSO/SCE\n")
+    
     # Override experiment ID if custom run name provided
     if run_name:
         config_dict['EXPERIMENT_ID'] = f"{run_name}_{datetime.now().strftime('%Y%m%d')}"
         logger.info(f"   Custom run name: {config_dict['EXPERIMENT_ID']}")
+        # Update config file with new experiment ID
+        with open(config_path, 'w') as f:
+            yaml.dump(config_dict, f, default_flow_style=False, sort_keys=False)
     
-    # Initialize CONFLUENCE
+    # Initialize CONFLUENCE (now reads the updated config)
     logger.info(f"\n🔧 Initializing CONFLUENCE...")
     confluence = CONFLUENCE(
         config_path=config_path
@@ -350,10 +412,12 @@ def run_optimization(config_path, run_name=None, use_previous_params=False):
     
     # Run optimization
     logger.info(f"\n" + "=" * 70)
-    logger.info("STARTING DDS OPTIMIZATION")
+    logger.info(f"STARTING {opt_alg} OPTIMIZATION")
     logger.info("=" * 70)
     logger.info(f"Config: {config_path}")
     logger.info(f"Experiment ID: {config_dict['EXPERIMENT_ID']}")
+    logger.info(f"Algorithm: {opt_alg}")
+    logger.info(f"MPI Processes: {mpi_procs}")
     logger.info(f"Iterations: {config_dict.get('NUMBER_OF_ITERATIONS', 'default')}")
     logger.info(f"Parameters: {config_dict.get('PARAMS_TO_CALIBRATE', 'default')}")
     logger.info(f"Basin area: {config_dict.get('BASIN_AREA_M2', 'not specified')} m²")
@@ -369,15 +433,28 @@ def run_optimization(config_path, run_name=None, use_previous_params=False):
 def main():
     """Parse arguments and run optimization"""
     parser = argparse.ArgumentParser(
-        description="Run complete DDS optimization with preprocessing",
+        description="Run optimization with preprocessing (supports multiple algorithms)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
+Supported Algorithms:
+  DDS  - Dynamical Dimensioned Search (sequential, intelligent)
+  PSO  - Particle Swarm Optimization (parallel-friendly)
+  SCE  - Shuffled Complex Evolution (parallel-friendly)
+  GA   - Genetic Algorithm (parallel-friendly)
+  DE   - Differential Evolution (parallel-friendly, robust)
+
 Examples:
-  # Standard run
+  # Standard run (uses algorithm from config)
   python optimize_confluence.py --config config_Tuolumne_lumped_v1.yaml
   
-  # Custom experiment name
-  python optimize_confluence.py --config config_Tuolumne_lumped_v1.yaml --run-name "spongy"
+  # DDS with single processor (recommended combo)
+  python optimize_confluence.py --config config_Tuolumne_lumped_v1.yaml --algorithm DDS --mpi-processes 1
+  
+  # PSO with parallel processing
+  python optimize_confluence.py --config config_Tuolumne_lumped_v1.yaml --algorithm PSO --mpi-processes 4
+  
+  # DDS with custom experiment name
+  python optimize_confluence.py --config config_Tuolumne_lumped_v1.yaml --algorithm DDS --mpi-processes 1 --run-name "spongy"
   
   # Continue from previous best
   python optimize_confluence.py --config config_Tuolumne_lumped_v1.yaml --use-previous
@@ -385,6 +462,10 @@ Examples:
     )
     
     parser.add_argument('--config', required=True, help='Configuration YAML file')
+    parser.add_argument('--algorithm', choices=['DDS', 'PSO', 'SCE', 'GA', 'DE'],
+                       help='Optimization algorithm (overrides config file). DDS=Sequential (use with --mpi-processes 1), others are parallel-friendly')
+    parser.add_argument('--mpi-processes', type=int, metavar='N',
+                       help='Number of MPI processes (overrides config file). Use 1 with DDS, >1 with PSO/SCE/GA/DE')
     parser.add_argument('--run-name', help='Custom experiment name')
     parser.add_argument('--use-previous', action='store_true',
                        help='Initialize with previous best parameters')
@@ -401,7 +482,7 @@ Examples:
         sys.exit(1)
     
     try:
-        run_optimization(str(config_path), args.run_name, args.use_previous)
+        run_optimization(str(config_path), args.run_name, args.use_previous, args.algorithm, args.mpi_processes)
     except Exception as e:
         logger.error(f"Optimization failed: {str(e)}", exc_info=True)
         sys.exit(1)
