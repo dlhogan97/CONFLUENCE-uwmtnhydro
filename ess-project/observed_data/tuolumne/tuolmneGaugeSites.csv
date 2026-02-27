@@ -1,0 +1,5 @@
+﻿File_Name,Standard,UTC_Offset,File_Version,Date_Start,Date_End,Latitude,Longitude,Missing_Value_Codes,Data_Orientation,Notes
+Tuolumne120_streamflow.csv,ESS-Dive Hydrologic Monitoring v1,PDT+7,1,2001-10-30,2021-08-12,37.876,-119.355,N/A; -9999,horizontal,N/A
+DanaFkBugCamp_streamflow.csv,ESS-Dive Hydrologic Monitoring v1,PDT+7,1,2005-09-01,2021-07-28,37.877,-119.338,N/A; -9999,horizontal,N/A
+LyellAbvTB_streamflow.csv,ESS-Dive Hydrologic Monitoring v1,PDT+7,1,2005-09-03,2021-07-26,37.869,-119.331,N/A; -9999,horizontal,N/A
+LyellBlwMaclure_streamflow.csv,ESS-Dive Hydrologic Monitoring v1,PDT+7,1,2004-07-16,2021-08-11,37.777,-119.261,N/A; -9999,horizontal,N/A
