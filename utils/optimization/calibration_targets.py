@@ -951,8 +951,9 @@ class StreamflowTarget(CalibrationTarget):
                 area_col = self.config.get('RIVER_BASIN_SHP_AREA', 'GRU_area')
                 
                 if area_col in gdf.columns:
-                    # Select the maximum area value (handles shapefiles with multiple features)
-                    total_area = gdf[area_col].max()
+                    # Sum across all GRUs — correct for both lumped (1 GRU) and
+                    # semi-distributed (N GRUs) shapefiles
+                    total_area = gdf[area_col].sum()
                     if 0 < total_area < 1e12:  # Reasonable area
                         self.logger.info(f"Got basin area from {basin_files[0].name}: {total_area:.2f} m²")
                         return total_area

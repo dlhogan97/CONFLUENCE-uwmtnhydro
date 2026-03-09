@@ -10,6 +10,7 @@ import xarray as xr
 import geopandas as gpd
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Union, Any
 from dataclasses import dataclass
@@ -25,8 +26,10 @@ from shapely.geometry import Point
 from sklearn.neighbors import BallTree
 from tqdm import tqdm
 
-# Import CONFLUENCE backend components
+# Fix sys.path for MPI subprocesses - add CONFLUENCE root so utils can be found
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
+# Import CONFLUENCE backend components
 from utils.optimization.iterative_optimizer import DEOptimizer
 from utils.optimization.iterative_optimizer import ParameterManager, ModelExecutor, ResultsManager
 from utils.optimization.iterative_optimizer import CalibrationTarget, StreamflowTarget, SnowTarget, SoilMoistureTarget

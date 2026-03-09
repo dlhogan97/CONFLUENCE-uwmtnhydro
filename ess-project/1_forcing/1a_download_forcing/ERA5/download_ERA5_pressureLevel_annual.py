@@ -11,7 +11,7 @@ from datetime import datetime
 
 ''' 
 Downloads 1 year of ERA5 data as monthly chunks.
-Usage: python download_ERA5_pressureLevel_annual.py <year> <coordinates> <path/to/save/data> 
+Usage: python download_ERA5_pressureLevel_annual.py <year> <coordinates> <path/to/save/data> [start_month] [end_month]
 '''
 
 # Get the year we're downloading from command line argument
@@ -24,6 +24,28 @@ bounding_box = [float(value) for value in bounding_box] # string to array
 
 # Get the path as the second command line argument
 forcingPath = Path(sys.argv[3]) # string to Path()
+
+# Optional month window within the year (inclusive)
+startMonth = int(sys.argv[4]) if len(sys.argv) > 4 else 1
+endMonth = int(sys.argv[5]) if len(sys.argv) > 5 else 12
+
+# Resolve forcing raw folder path
+def resolve_forcing_raw_path(path):
+    """Return the forcing raw_data folder. If input ends with merged_data or forcing, append raw_data."""
+    path = Path(path)
+    
+    # If already raw_data, return as-is
+    if path.name == 'raw_data':
+        return path
+    
+    # If merged_data, replace with raw_data at same level
+    if path.name == 'merged_data':
+        return path.parent / 'raw_data'
+    
+    # Otherwise assume it's the forcing folder, append raw_data
+    return path / 'raw_data'
+
+forcingRawPath = resolve_forcing_raw_path(forcingPath)
 
 # --- Convert the bounding box to download coordinates
 # function to round coordinates of a bounding box to ERA5s 0.25 degree resolution
@@ -59,7 +81,7 @@ def round_coords_to_ERA5(coords):
 coordinates,_,_ = round_coords_to_ERA5(bounding_box)
 
 # --- Start the month loop
-for month in range (1,13): # this loops through numbers 1 to 12
+for month in range(startMonth, endMonth + 1):
        
     # find the number of days in this month
     daysInMonth = calendar.monthrange(year,month) 
@@ -68,14 +90,13 @@ for month in range (1,13): # this loops through numbers 1 to 12
     date = str(year) + '-' + str(month).zfill(2) + '-01/to/' + \
         str(year) + '-' + str(month).zfill(2) + '-' + str(daysInMonth[1]).zfill(2) 
         
-    # compile the file name string
-    file = forcingPath / ('ERA5_pressureLevel137_' + str(year) + str(month).zfill(2) + '.nc')
+    # compile the file name string in forcing raw folder
+    file = forcingRawPath / ('ERA5_pressureLevel137_' + str(year) + str(month).zfill(2) + '.nc')
 
-    # track progress
-    print('Trying to download ' + date + ' into ' + str(file))
-
-    # if file doesn't yet exist, download the data
-    if not os.path.isfile(file):
+    # if file doesn't yet exist in forcing raw folder, download the data
+    if not file.is_file():
+        print('Selected month ' + str(year) + '-' + str(month).zfill(2) + ': downloading ' + str(file))
+        print('Trying to download ' + date + ' into ' + str(file))
 
         # Make sure the connection is re-tried if it fails
         retries_max = 10
@@ -112,3 +133,5 @@ for month in range (1,13): # this loops through numbers 1 to 12
                 continue
             else:
                 break
+    else:
+        print('Selected month ' + str(year) + '-' + str(month).zfill(2) + ': file exists, skipping ' + str(file))

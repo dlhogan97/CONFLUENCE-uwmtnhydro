@@ -133,8 +133,8 @@ def _calculate_fuse_metrics_worker(config: Dict[str, Any], metric: str = 'KGE') 
         float: Calculated metric value, or -999 if error
     """
     try:
-        # Import evaluation functions
-        sys.path.append(str(Path(__file__).resolve().parent.parent))
+        # Import evaluation functions - fix sys.path for MPI subprocesses
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
         from utils.evaluation.calculate_sim_stats import get_KGE, get_NSE, get_RMSE, get_MAE
         
         # Get paths

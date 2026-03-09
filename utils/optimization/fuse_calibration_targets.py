@@ -17,8 +17,8 @@ from typing import Dict, Any, List, Tuple, Optional
 import logging
 import sys
 
-# Import evaluation functions
-sys.path.append(str(Path(__file__).resolve().parent.parent))
+# Fix sys.path for MPI subprocesses - add CONFLUENCE root so utils can be found
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from utils.evaluation.calculate_sim_stats import get_KGE, get_KGEp, get_NSE, get_MAE, get_RMSE
 
 

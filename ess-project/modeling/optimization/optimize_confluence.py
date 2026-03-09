@@ -136,14 +136,21 @@ def setup_parameters(confluence, config_dict, use_previous=False):
     localParamInfo_file = project_settings_dir / "localParamInfo.txt"
     basinParamInfo_file = project_settings_dir / "basinParamInfo.txt"
     
-    # Update model decisions
+    # Update model decisions (read from config file if available)
     logger.info("✓ Updating model decisions...")
+    
+    # Extract model decisions from SUMMA_DECISION_OPTIONS in config
+    summa_decisions = config_dict.get('SUMMA_DECISION_OPTIONS', {})
     modelDecision_updates = {
-        'groundwatr': 'bigBuckt',
-        'bcLowrSoiH': 'drainage',
-        'spatial_gw': 'localColumn',
-        'alb_method': 'varDecay'
+        'groundwatr': summa_decisions.get('groundwatr', ['bigBuckt'])[0] if summa_decisions.get('groundwatr') else 'bigBuckt',
+        'bcLowrSoiH': summa_decisions.get('bcLowrSoiH', ['drainage'])[0] if summa_decisions.get('bcLowrSoiH') else 'drainage',
+        'spatial_gw': summa_decisions.get('spatial_gw', ['localColumn'])[0] if summa_decisions.get('spatial_gw') else 'localColumn',
+        'alb_method': summa_decisions.get('alb_method', ['varDecay'])[0] if summa_decisions.get('alb_method') else 'varDecay'
     }
+    logger.info(f"   - groundwatr: {modelDecision_updates['groundwatr']}")
+    logger.info(f"   - bcLowrSoiH: {modelDecision_updates['bcLowrSoiH']}")
+    logger.info(f"   - spatial_gw: {modelDecision_updates['spatial_gw']}")
+    logger.info(f"   - alb_method: {modelDecision_updates['alb_method']}")
     edit_modelDecisions(modelDecision_file, modelDecision_updates)
     
     # Load parameters
