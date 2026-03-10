@@ -698,28 +698,47 @@ class StreamflowTarget(CalibrationTarget):
     
     def get_simulation_files(self, sim_dir: Path) -> List[Path]:
         """Get SUMMA timestep files or mizuRoute output files"""
+        experiment_id = self.config.get('EXPERIMENT_ID', '')
+        
         # First try mizuRoute files if in mizuRoute directory
         if 'mizuRoute' in str(sim_dir):
+            if experiment_id:
+                mizu_files = list(sim_dir.glob(f"*{experiment_id}*.nc"))
+                if mizu_files:
+                    return mizu_files
             mizu_files = list(sim_dir.glob("*.nc"))
             if mizu_files:
                 return mizu_files
         
-        # Otherwise look for SUMMA timestep files
+        # Look for SUMMA timestep files matching current experiment
+        if experiment_id:
+            filtered = list(sim_dir.glob(f"*{experiment_id}*timestep.nc"))
+            if filtered:
+                return filtered
+        
+        # Fallback to all timestep files
         return list(sim_dir.glob("*timestep.nc"))
     
     def extract_simulated_data(self, sim_files: List[Path], **kwargs) -> pd.Series:
         """Extract streamflow data from simulation files"""
-        sim_file = sim_files[0]  # Use first file
+        # Sort by modification time (most recent first) to prefer current iteration's output
+        sim_files = sorted(sim_files, key=lambda f: f.stat().st_mtime, reverse=True)
         
-        try:
-            # Determine if this is mizuRoute or SUMMA output
-            if self._is_mizuroute_output(sim_file):
-                return self._extract_mizuroute_streamflow(sim_file)
-            else:
-                return self._extract_summa_streamflow(sim_file)
-        except Exception as e:
-            self.logger.error(f"Error extracting streamflow data from {sim_file}: {str(e)}")
-            raise
+        for sim_file in sim_files:
+            try:
+                # Determine if this is mizuRoute or SUMMA output
+                if self._is_mizuroute_output(sim_file):
+                    result = self._extract_mizuroute_streamflow(sim_file)
+                else:
+                    result = self._extract_summa_streamflow(sim_file)
+                if result is not None and len(result) > 0:
+                    return result
+                self.logger.warning(f"Empty data from {sim_file.name}, trying next file")
+            except Exception as e:
+                self.logger.warning(f"Could not read {sim_file.name}: {e}")
+                continue
+        
+        raise ValueError(f"No readable simulation files with data found in {len(sim_files)} files")
     
     def _is_mizuroute_output(self, sim_file: Path) -> bool:
         """Check if file is mizuRoute output based on variables"""
