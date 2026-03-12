@@ -32,6 +32,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 import yaml
+import netCDF4 as nc
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from matplotlib.gridspec import GridSpec
@@ -51,12 +52,19 @@ if not logger.handlers:
     handler.setFormatter(formatter)
     logger.addHandler(handler)
 
-# Season definitions (meteorological seasons)
+# Season definitions aligned to the water year (Oct–Sep).
+# Each season spans exactly 3 months within a single calendar year,
+# eliminating any cross-year month-donor complications.
+#
+#   OND  Fall:   Oct, Nov, Dec  (calendar year = water_year - 1)
+#   JFM  Winter: Jan, Feb, Mar  (calendar year = water_year)
+#   AMJ  Spring: Apr, May, Jun  (calendar year = water_year)
+#   JAS  Summer: Jul, Aug, Sep  (calendar year = water_year)
 SEASONS = {
-    'DJF': {'name': 'Winter', 'months': [12, 1, 2], 'color': '#2166ac'},
-    'MAM': {'name': 'Spring', 'months': [3, 4, 5], 'color': '#4dac26'},
-    'JJA': {'name': 'Summer', 'months': [6, 7, 8], 'color': '#d01c8b'},
-    'SON': {'name': 'Fall', 'months': [9, 10, 11], 'color': '#e66101'},
+    'OND': {'name': 'Fall',   'months': [10, 11, 12], 'color': '#e66101'},
+    'JFM': {'name': 'Winter', 'months': [1,  2,  3],  'color': '#2166ac'},
+    'AMJ': {'name': 'Spring', 'months': [4,  5,  6],  'color': '#4dac26'},
+    'JAS': {'name': 'Summer', 'months': [7,  8,  9],  'color': '#d01c8b'},
 }
 
 FORCING_VARS = ['pptrate', 'SWRadAtm', 'LWRadAtm', 'airpres', 'airtemp', 'windspd', 'spechum']
@@ -65,7 +73,6 @@ FORCING_VARS = ['pptrate', 'SWRadAtm', 'LWRadAtm', 'airpres', 'airtemp', 'windsp
 # (variables NOT already in the default outputControl.txt)
 WARM_STATE_EXTRA_VARS = [
     'scalarCanopyIce',
-    'scalarSfcMeltPond',
     'scalarAquiferStorage',
     'scalarCanairTemp',
     'scalarCanopyTemp',
@@ -201,27 +208,92 @@ class ModelRunner:
         self.cfg = exp_config
     
     def apply_parameters(self, params_df: pd.DataFrame):
-        """Write optimized parameters to SUMMA config files."""
+        """Write optimized parameters to SUMMA config files.
+
+        Uses the same update+reformat pattern as the notebook examples via
+        update_and_reformat_parameter_file(..., reformat_all=True).
+        """
         sys.path.insert(0, str(self.cfg.code_dir))
-        from utils.custom.adjust_settings import update_and_reformat_parameter_file
+        from utils.custom.adjust_settings import update_and_reformat_parameter_file, _format_parameter_value
+
+        if 'parameter' not in params_df.columns or 'value' not in params_df.columns:
+            raise ValueError("params_df must contain 'parameter' and 'value' columns")
+
+        local_params = {}
+        basin_params = {}
+
+        for raw_name, value in zip(params_df['parameter'], params_df['value']):
+            name = str(raw_name).strip()
+
+            # Optimization outputs may use prefixes like basin__paramName.
+            # SUMMA parameter files store plain parameter names.
+            if name.startswith('basin__'):
+                file_name = name.split('basin__', 1)[1]
+                basin_params[file_name] = value
+            elif name.startswith('routing__'):
+                file_name = name.split('routing__', 1)[1]
+                basin_params[file_name] = value
+            elif name.startswith('routing'):
+                basin_params[name] = value
+            else:
+                local_params[name] = value
         
-        param_dict = dict(zip(params_df['parameter'], params_df['value']))
-        
-        local_params = {k: v for k, v in param_dict.items()
-                       if not k.startswith('basin__') and not k.startswith('routing')}
-        basin_params = {k: v for k, v in param_dict.items()
-                       if k.startswith('basin__') or k.startswith('routing')}
-        
+        def _apply_with_fallback(file_path: Path, updates: Dict[str, Any], label: str) -> int:
+            """Apply updates using adjust_settings, with a syntax-preserving fallback."""
+            if not updates or not file_path.exists():
+                return 0
+
+            result = update_and_reformat_parameter_file(
+                file_path, updates, reformat_all=True, verbose=False
+            )
+            updated_count = int(result.get('updated_count', 0))
+
+            if updated_count > 0:
+                return updated_count
+
+            # Fallback for files where regex-based parser does not match current formatting.
+            with open(file_path, 'r') as f_in:
+                lines = f_in.readlines()
+
+            new_lines = []
+            fallback_updates = 0
+            for line in lines:
+                stripped = line.strip()
+                if not stripped or stripped.startswith('!') or '|' not in line:
+                    new_lines.append(line)
+                    continue
+
+                parts = line.rstrip('\n').split('|')
+                if len(parts) < 4:
+                    new_lines.append(line)
+                    continue
+
+                param_name = parts[0].strip()
+                if param_name in updates:
+                    parts[1] = f" {_format_parameter_value(updates[param_name])} "
+                    line = '|'.join(parts) + '\n'
+                    fallback_updates += 1
+
+                new_lines.append(line)
+
+            if fallback_updates > 0:
+                with open(file_path, 'w') as f_out:
+                    f_out.writelines(new_lines)
+                logger.warning(
+                    f"Primary parser found no matches in {file_path.name}; "
+                    f"applied {fallback_updates} {label} updates via syntax-preserving fallback."
+                )
+
+            return fallback_updates
+
         local_file = self.cfg.settings_dir / 'localParamInfo.txt'
         basin_file = self.cfg.settings_dir / 'basinParamInfo.txt'
-        
-        if local_params and local_file.exists():
-            update_and_reformat_parameter_file(local_file, local_params, reformat_all=True)
-            logger.info(f"Updated {len(local_params)} local parameters")
-        
-        if basin_params and basin_file.exists():
-            update_and_reformat_parameter_file(basin_file, basin_params, reformat_all=True)
-            logger.info(f"Updated {len(basin_params)} basin parameters")
+
+        local_count = _apply_with_fallback(local_file, local_params, 'local')
+        basin_count = _apply_with_fallback(basin_file, basin_params, 'basin')
+
+        logger.info(f"Updated {local_count} local parameters")
+        logger.info(f"Updated {basin_count} basin parameters")
     
     def update_time_period(self, start: str, end: str):
         """Update the simulation time period in SUMMA fileManager."""
@@ -307,11 +379,15 @@ class ModelRunner:
         
         logger.info(f"Running SUMMA: {experiment_id}")
         log_file = log_dir / f'{experiment_id}.log'
-        
+
+        import os as _os
+        run_env = _os.environ.copy()
+        run_env.setdefault('OMP_NUM_THREADS', '1')
+
         with open(log_file, 'w') as lf:
             result = subprocess.run(
                 cmd, shell=True, stdout=lf, stderr=subprocess.STDOUT,
-                timeout=10800  # 3-hour timeout
+                timeout=10800, env=run_env  # 3-hour timeout
             )
         
         if result.returncode != 0:
@@ -339,14 +415,63 @@ class ForcingEnsembleBuilder:
     def __init__(self, exp_config: ExperimentConfig):
         self.cfg = exp_config
     
-    def load_forcing_data(self, forcing_dir: Optional[Path] = None) -> xr.Dataset:
-        """Load all forcing files into a single dataset."""
+    def load_forcing_data(
+        self,
+        forcing_dir: Optional[Path] = None,
+        years: Optional[List[int]] = None,
+        water_year: bool = False,
+    ) -> xr.Dataset:
+        """Load forcing files into a single dataset.
+
+        Parameters
+        ----------
+        forcing_dir : Path, optional
+            Directory containing monthly NetCDF files.
+        years : list of int, optional
+            If given, only load files whose names contain these years
+            (plus Oct-Dec of the preceding year for OND/Fall handling).
+            Dramatically reduces memory for large archives.
+        """
         fdir = forcing_dir or self.cfg.summa_input_dir
-        files = sorted(fdir.glob("*.nc"))
-        if not files:
+        all_files = sorted(fdir.glob("*.nc"))
+        if not all_files:
             raise FileNotFoundError(f"No forcing files in {fdir}")
-        
-        ds = xr.open_mfdataset(files, combine='by_coords')
+
+        if years is not None:
+            # For calendar-year mode include all months for year and Dec of year-1.
+            # For water-year mode include all months of year-1 and year.
+            needed = set()
+            for y in years:
+                for m in range(1, 13):
+                    needed.add(f"{y}{m:02d}")
+                if water_year:
+                    for m in range(1, 13):
+                        needed.add(f"{y - 1}{m:02d}")
+                else:
+                    needed.add(f"{y - 1}12")
+            files = [f for f in all_files if any(tag in f.stem for tag in needed)]
+            files = sorted(files)
+            if not files:
+                logger.warning("Year filter matched no files — loading all")
+                files = all_files
+        else:
+            files = all_files
+
+        logger.info(f"Loading {len(files)} of {len(all_files)} forcing files …")
+
+        # Avoid open_mfdataset hangs on some file/locking setups by loading
+        # files sequentially, then concatenating in-memory.
+        loaded = []
+        for i, fp in enumerate(files, start=1):
+            if i == 1 or i % 25 == 0 or i == len(files):
+                logger.info(f"  Loading forcing file {i}/{len(files)}: {fp.name}")
+            ds_i = xr.open_dataset(fp)
+            loaded.append(ds_i.load())
+            ds_i.close()
+
+        ds = xr.concat(loaded, dim='time').sortby('time')
+        ds = ds.sel(time=~ds.indexes['time'].duplicated())
+
         logger.info(f"Loaded forcing: {ds.time.values[0]} to {ds.time.values[-1]}, "
                     f"{len(ds.time)} timesteps")
         return ds
@@ -367,7 +492,8 @@ class ForcingEnsembleBuilder:
         target_year: int,
         donor_years: List[int],
         season: str,
-        output_dir: Path
+        output_dir: Path,
+        water_year: bool = False,
     ) -> List[Path]:
         """
         Build ensemble forcing files by replacing one season of the target year.
@@ -397,10 +523,28 @@ class ForcingEnsembleBuilder:
         output_dir.mkdir(parents=True, exist_ok=True)
         months = SEASONS[season]['months']
         created_files = []
+
+        # SUMMA expects monthly forcing files listed in forcingFileList.txt.
+        # Build monthly outputs per member instead of a single annual file.
+        if water_year:
+            target_months = [(target_year - 1, 10), (target_year - 1, 11), (target_year - 1, 12)]
+            target_months.extend((target_year, m) for m in range(1, 10))
+        else:
+            target_months = [(target_year, m) for m in range(1, 13)]
+
+        source_monthly = {}
+        for fp in sorted(self.cfg.summa_input_dir.glob('*.nc')):
+            tag = fp.stem.split('_')[-1]
+            if len(tag) == 6 and tag.isdigit():
+                source_monthly[tag] = fp
         
-        # Extract target year forcing as baseline
-        target_start = f"{target_year}-01-01"
-        target_end = f"{target_year}-12-31 23:00"
+        # Extract target window forcing as baseline
+        if water_year:
+            target_start = f"{target_year - 1}-10-01"
+            target_end = f"{target_year}-09-30 23:00"
+        else:
+            target_start = f"{target_year}-01-01"
+            target_end = f"{target_year}-12-31 23:00"
         target_ds = full_forcing.sel(time=slice(target_start, target_end))
         
         for donor_year in donor_years:
@@ -411,8 +555,11 @@ class ForcingEnsembleBuilder:
             
             # Get donor season data
             for month in months:
-                # Handle December crossing year boundary for DJF
-                if season == 'DJF' and month == 12:
+                # Oct-Dec belong to the prior calendar year of the water year;
+                # Jan-Sep belong to the target calendar year.
+                # Seasons are now defined to be entirely within one of these
+                # two groups, so no cross-year mixing is needed.
+                if month >= 10:
                     donor_month_year = donor_year - 1
                 else:
                     donor_month_year = donor_year
@@ -456,17 +603,62 @@ class ForcingEnsembleBuilder:
                     
                     # Apply replacement
                     ensemble_ds[var].values[target_month_mask] = replacement
+
+            ensemble_times = pd.DatetimeIndex(ensemble_ds.time.values)
             
-            # Save ensemble member
             domain = self.cfg.domain_name
-            fname = f"{domain}_{season}_{target_year}_from_{donor_year}.nc"
-            out_path = output_dir / fname
-            
-            # Set encoding for time
-            encoding = {'time': {'units': 'hours since 1900-01-01', 'calendar': 'gregorian'}}
-            ensemble_ds.to_netcdf(out_path, encoding=encoding)
-            created_files.append(out_path)
-            logger.info(f"    Saved: {fname}")
+            member_dir = output_dir / f"from_{donor_year}"
+            member_dir.mkdir(parents=True, exist_ok=True)
+
+            for year_i, month_i in target_months:
+                month_mask = (ensemble_times.year == year_i) & (ensemble_times.month == month_i)
+                month_ds = ensemble_ds.sel(time=month_mask)
+                if month_ds.sizes.get('time', 0) == 0:
+                    continue
+
+                if 'data_step' in month_ds.variables:
+                    month_ds = month_ds.drop_vars('data_step')
+
+                for static_var in ('latitude', 'longitude', 'hruId'):
+                    if static_var in month_ds.variables and 'time' in month_ds[static_var].dims:
+                        month_ds[static_var] = month_ds[static_var].isel(time=0, drop=True)
+
+                month_tag = f"{year_i}{month_i:02d}"
+                template_file = source_monthly.get(month_tag)
+                if template_file is None:
+                    raise FileNotFoundError(f"Missing template forcing file for {month_tag}")
+
+                with xr.open_dataset(template_file) as template_ds:
+                    month_ds.attrs = dict(template_ds.attrs)
+                    encoding = {}
+                    for var_name in month_ds.variables:
+                        if var_name in template_ds.variables:
+                            month_ds[var_name].attrs = dict(template_ds[var_name].attrs)
+                            var_encoding = {
+                                key: value
+                                for key, value in template_ds[var_name].encoding.items()
+                                if key in {'dtype', '_FillValue', 'zlib', 'complevel', 'shuffle', 'fletcher32', 'contiguous', 'chunksizes'}
+                                and value is not None
+                            }
+                            if var_encoding:
+                                encoding[var_name] = var_encoding
+
+                    # Keep SUMMA-native time convention; default xarray encoding
+                    # can switch to relative "hours since month-start".
+                    encoding['time'] = {
+                        'dtype': 'int32',
+                        'units': 'seconds since 1970-01-01',
+                        'calendar': 'proleptic_gregorian',
+                    }
+
+                # Preserve native monthly filenames so members can reuse the
+                # standard forcingFileList.txt entries.
+                out_name = template_file.name
+                out_path = member_dir / out_name
+                month_ds.to_netcdf(out_path, encoding=encoding)
+
+            created_files.append(member_dir)
+            logger.info(f"    Saved member forcing directory: {member_dir.name}")
         
         return created_files
     
@@ -474,7 +666,8 @@ class ForcingEnsembleBuilder:
         self,
         full_forcing: xr.Dataset,
         target_year: int,
-        donor_years: List[int]
+        donor_years: List[int],
+        water_year: bool = False,
     ) -> Dict[str, List[Path]]:
         """Build ensembles for all four seasons."""
         all_files = {}
@@ -482,7 +675,7 @@ class ForcingEnsembleBuilder:
             logger.info(f"\nBuilding {season} ({SEASONS[season]['name']}) ensemble...")
             out_dir = self.cfg.ensemble_dir / 'forcing' / season
             files = self.build_ensemble_for_season(
-                full_forcing, target_year, donor_years, season, out_dir
+                full_forcing, target_year, donor_years, season, out_dir, water_year=water_year
             )
             all_files[season] = files
         return all_files
@@ -520,12 +713,18 @@ class EnsembleRunner:
     def run_target_year_baseline(
         self,
         params_df: pd.DataFrame,
-        target_year: int
+        target_year: int,
+        water_year: bool = False,
     ) -> Path:
         """Run the unperturbed target year simulation."""
-        start = f"{target_year}-01-01 01:00"
-        end = f"{target_year}-12-31 23:00"
-        exp_id = f"target_year_{target_year}"
+        if water_year:
+            start = f"{target_year - 1}-10-01 01:00"
+            end = f"{target_year}-09-30 23:00"
+            exp_id = f"target_wy_{target_year}"
+        else:
+            start = f"{target_year}-01-01 01:00"
+            end = f"{target_year}-12-31 23:00"
+            exp_id = f"target_year_{target_year}"
         
         output_dir = self.cfg.ensemble_dir / 'results' / 'baseline'
         self.runner.apply_parameters(params_df)
@@ -652,7 +851,12 @@ class ParallelEnsembleRunner:
     # ------------------------------------------------------------------
     
     def prepare_member(
-        self, season: str, donor_year: int, target_year: int, forcing_file: Path
+        self,
+        season: str,
+        donor_year: int,
+        target_year: int,
+        forcing_file: Path,
+        water_year: bool = False,
     ) -> str:
         """
         Create an isolated workspace for one ensemble member.
@@ -682,7 +886,36 @@ class ParallelEnsembleRunner:
         ffl = settings_dir / 'forcingFileList.txt'
         if ffl.is_symlink():
             ffl.unlink()
-        ffl.write_text(forcing_file.name + '\n')
+
+        if forcing_file.is_dir():
+            member_files = sorted(forcing_file.glob('*.nc'))
+            if not member_files:
+                raise FileNotFoundError(f"No forcing files found in member directory: {forcing_file}")
+
+            # SUMMA expects the full forcing list indexing behavior; provide
+            # a complete per-member forcing directory by symlinking native
+            # files and replacing only perturbed months.
+            forcing_overlay = run_dir / 'forcing_overlay'
+            forcing_overlay.mkdir(parents=True, exist_ok=True)
+
+            for src in sorted(self.cfg.summa_input_dir.glob('*.nc')):
+                link = forcing_overlay / src.name
+                if link.exists() or link.is_symlink():
+                    link.unlink()
+                link.symlink_to(src.resolve())
+
+            for perturbed in member_files:
+                dst = forcing_overlay / perturbed.name
+                if dst.exists() or dst.is_symlink():
+                    dst.unlink()
+                shutil.copy2(perturbed, dst)
+
+            src_ffl = self.cfg.settings_dir / 'forcingFileList.txt'
+            ffl.write_text(src_ffl.read_text())
+            forcing_path = forcing_overlay
+        else:
+            ffl.write_text(forcing_file.name + '\n')
+            forcing_path = forcing_file.parent
         
         # Override fileManager.txt symlink with a member-specific copy
         fm_link = settings_dir / 'fileManager.txt'
@@ -692,14 +925,21 @@ class ParallelEnsembleRunner:
         # Write the per-member fileManager.txt in the run directory
         prefix = self._output_prefix(season, donor_year)
         fm_path = run_dir / 'fileManager.txt'
+        if water_year:
+            start = f"{target_year - 1}-10-01 01:00"
+            end = f"{target_year}-09-30 23:00"
+        else:
+            start = f"{target_year}-01-01 01:00"
+            end = f"{target_year}-12-31 23:00"
+
         self._write_file_manager(
             fm_path,
             settings_path=str(settings_dir),
-            forcing_path=str(forcing_file.parent),
+            forcing_path=str(forcing_path),
             output_path=str(output_dir),
             prefix=prefix,
-            start=f"{target_year}-01-01 01:00",
-            end=f"{target_year}-12-31 23:00",
+            start=start,
+            end=end,
         )
         
         self.members[mid] = {
@@ -750,6 +990,7 @@ class ParallelEnsembleRunner:
         self,
         target_year: int,
         ensemble_forcing_files: Dict[str, List[Path]],
+        water_year: bool = False,
     ) -> Dict[str, dict]:
         """Prepare workspaces for every ensemble member across all seasons."""
         total = sum(len(ff) for ff in ensemble_forcing_files.values())
@@ -757,9 +998,18 @@ class ParallelEnsembleRunner:
         
         for season, forcing_files in ensemble_forcing_files.items():
             for ff in forcing_files:
-                parts = ff.stem.split('_from_')
-                donor_year = int(parts[-1])
-                self.prepare_member(season, donor_year, target_year, ff)
+                if ff.is_dir() and ff.name.startswith('from_'):
+                    donor_year = int(ff.name.split('_', 1)[1])
+                else:
+                    parts = ff.stem.split('_from_')
+                    donor_year = int(parts[-1])
+                self.prepare_member(
+                    season,
+                    donor_year,
+                    target_year,
+                    ff,
+                    water_year=water_year,
+                )
         
         logger.info(f"  {len(self.members)} workspaces ready in {self.run_base}")
         return self.members
@@ -837,11 +1087,18 @@ class ParallelEnsembleRunner:
                 out_files = sorted(odir.glob(f"{prefix}*_timestep.nc"))
                 if not out_files:
                     out_files = sorted(odir.glob(f"{prefix}*.nc"))
-                self.completed[mid] = {
-                    'returncode': rc,
-                    'output_file': out_files[-1] if out_files else None,
-                }
-                logger.info(f"  DONE: {mid}")
+                if out_files:
+                    self.completed[mid] = {
+                        'returncode': rc,
+                        'output_file': out_files[-1],
+                    }
+                    logger.info(f"  DONE: {mid}")
+                else:
+                    self.failed[mid] = {
+                        'returncode': 99,
+                        'error': 'Process exited 0 but no output NetCDF was produced',
+                    }
+                    logger.warning(f"  FAILED: {mid} (no output file)")
             else:
                 error_tail = ""
                 log_file = self.members[mid]['log_file']
@@ -916,9 +1173,21 @@ class ParallelEnsembleRunner:
             '',
             'declare -a PIDS',
             'declare -a NAMES',
+            'declare -a OUTDIRS',
+            'declare -a PREFIXES',
             'COMPLETED=0',
             'FAILED=0',
             f'TOTAL={total}',
+            '',
+            'member_output_exists() {',
+            '    local idx="$1"',
+            '    local odir="${OUTDIRS[$idx]}"',
+            '    local prefix="${PREFIXES[$idx]}"',
+            '    shopt -s nullglob',
+            '    local files=("$odir"/"$prefix"*_timestep.nc "$odir"/"$prefix"*.nc)',
+            '    shopt -u nullglob',
+            '    [ ${#files[@]} -gt 0 ]',
+            '}',
             '',
             '# ---- concurrency helper ----',
             'wait_for_slot() {',
@@ -927,17 +1196,17 @@ class ParallelEnsembleRunner:
             '            if ! kill -0 "${PIDS[$i]}" 2>/dev/null; then',
             '                wait "${PIDS[$i]}"',
             '                RC=$?',
-            '                if [ $RC -eq 0 ]; then',
+            '                if [ $RC -eq 0 ] && member_output_exists "$i"; then',
             '                    COMPLETED=$((COMPLETED + 1))',
             '                    echo "[$(date +%H:%M:%S)] DONE: ${NAMES[$i]}  ($COMPLETED/$TOTAL)"',
             '                else',
             '                    FAILED=$((FAILED + 1))',
-            '                    echo "[$(date +%H:%M:%S)] FAIL: ${NAMES[$i]}  (rc=$RC)"',
+            '                    echo "[$(date +%H:%M:%S)] FAIL: ${NAMES[$i]}  (rc=$RC or no output)"',
             '                fi',
             '                unset "PIDS[$i]"',
             '                unset "NAMES[$i]"',
-            '                PIDS=("${PIDS[@]}")',
-            '                NAMES=("${NAMES[@]}")',
+            '                unset "OUTDIRS[$i]"',
+            '                unset "PREFIXES[$i]"',
             '                return',
             '            fi',
             '        done',
@@ -961,6 +1230,8 @@ class ParallelEnsembleRunner:
             member_lines.append(f'$SUMMA_EXE -m "{fm}" > "{log}" 2>&1 &')
             member_lines.append(f'PIDS+=($!)')
             member_lines.append(f'NAMES+=("{mid}")')
+            member_lines.append(f'OUTDIRS+=("{info["output_dir"]}")')
+            member_lines.append(f'PREFIXES+=("{info["prefix"]}")')
             member_lines.append('')
         
         footer = '\n'.join([
@@ -968,12 +1239,12 @@ class ParallelEnsembleRunner:
             'for i in "${!PIDS[@]}"; do',
             '    wait "${PIDS[$i]}"',
             '    RC=$?',
-            '    if [ $RC -eq 0 ]; then',
+            '    if [ $RC -eq 0 ] && member_output_exists "$i"; then',
             '        COMPLETED=$((COMPLETED + 1))',
             '        echo "[$(date +%H:%M:%S)] DONE: ${NAMES[$i]}  ($COMPLETED/$TOTAL)"',
             '    else',
             '        FAILED=$((FAILED + 1))',
-            '        echo "[$(date +%H:%M:%S)] FAIL: ${NAMES[$i]}"',
+            '        echo "[$(date +%H:%M:%S)] FAIL: ${NAMES[$i]}  (rc=$RC or no output)"',
             '    fi',
             'done',
             '',
@@ -1294,7 +1565,7 @@ class EnsembleVisualizer:
         season: str,
         target_year: int,
         obs_df: Optional[pd.DataFrame] = None,
-        figsize: Tuple = (16, 10)
+        figsize: Tuple = (11, 7)
     ) -> Path:
         """
         Create a two-panel spaghetti plot showing:
@@ -1312,29 +1583,39 @@ class EnsembleVisualizer:
         bl_ds = xr.open_dataset(baseline_file)
         bl_time = pd.DatetimeIndex(bl_ds.time.values)
         bl_ppt = bl_ds['pptrate'].values.squeeze() if 'pptrate' in bl_ds else None
-        bl_q = bl_ds['averageRoutedRunoff'].values.squeeze() if 'averageRoutedRunoff' in bl_ds else bl_ds['scalarTotalRunoff'].values.squeeze()
+        if 'scalarTotalRunoff' not in bl_ds:
+            raise KeyError("scalarTotalRunoff not found in baseline file for plotting")
+        bl_q = bl_ds['scalarTotalRunoff'].values.squeeze()
         
         # Convert streamflow units if basin area available
         area = self.cfg.basin_area_m2 or 1.0
         if area > 1.0:
             bl_q = bl_q * area
         
-        # Daily resample for clarity
+        # Daily aggregation for plotting
         bl_df = pd.DataFrame({'P': bl_ppt, 'Q': bl_q}, index=bl_time).resample('D').mean()
         bl_ds.close()
         
         # Season highlight region
         season_mask = bl_df.index.month.isin(months)
         
-        # Plot ensemble members
-        alpha_member = max(0.15, 0.8 / max(len(ensemble_files), 1))
+        # Filter observations to water year if provided
+        if obs_df is not None:
+            water_year_start = pd.Timestamp(f'{target_year - 1}-10-01')
+            water_year_end = pd.Timestamp(f'{target_year}-09-30')
+            obs_df = obs_df.loc[water_year_start:water_year_end]
+        
+        # Plot ensemble members with higher opacity for visibility
+        alpha_member = max(0.35, 1.0 / max(len(ensemble_files), 1))
         
         for donor_year, efile in sorted(ensemble_files.items()):
             try:
                 m_ds = xr.open_dataset(efile)
                 m_time = pd.DatetimeIndex(m_ds.time.values)
                 m_ppt = m_ds['pptrate'].values.squeeze() if 'pptrate' in m_ds else None
-                m_q = m_ds['averageRoutedRunoff'].values.squeeze() if 'averageRoutedRunoff' in m_ds else m_ds['scalarTotalRunoff'].values.squeeze()
+                if 'scalarTotalRunoff' not in m_ds:
+                    raise KeyError("scalarTotalRunoff not found in ensemble member file for plotting")
+                m_q = m_ds['scalarTotalRunoff'].values.squeeze()
                 if area > 1.0:
                     m_q = m_q * area
                 
@@ -1357,45 +1638,49 @@ class EnsembleVisualizer:
         
         # Plot observations if available
         if obs_df is not None and 'discharge_cms' in obs_df.columns:
-            obs_period = obs_df.loc[str(target_year)]
+            obs_period = obs_df
             if not obs_period.empty:
                 ax_q.plot(obs_period.index, obs_period['discharge_cms'],
                          color='red', linewidth=1.5, linestyle='--',
                          label='Observed', zorder=6)
         
-        # Shade the perturbed season
+        # Shade the perturbed season.
+        # Oct-Dec (months >= 10) belong to calendar year target_year-1 in the water year.
         for ax in [ax_p, ax_q]:
             for start_month in months:
-                m_start = pd.Timestamp(f'{target_year}-{start_month:02d}-01')
+                shade_year = target_year - 1 if start_month >= 10 else target_year
+                m_start = pd.Timestamp(f'{shade_year}-{start_month:02d}-01')
                 if start_month == 12:
-                    m_end = pd.Timestamp(f'{target_year}-12-31')
+                    m_end = pd.Timestamp(f'{shade_year}-12-31')
                 else:
                     next_month = start_month + 1
-                    m_end = pd.Timestamp(f'{target_year}-{next_month:02d}-01') - timedelta(days=1)
+                    m_end = pd.Timestamp(f'{shade_year}-{next_month:02d}-01') - timedelta(days=1)
                 ax.axvspan(m_start, m_end, alpha=0.08, color=season_color, zorder=0)
         
         # Format axes
-        ax_p.set_ylabel('Precipitation (mm/hr)')
+        ax_p.set_ylabel('Precipitation (mm/hr)', fontsize=12, fontweight='bold')
         ax_p.set_title(
             f'Seasonal Forcing Ensemble: {season_name} ({season})\n'
             f'Target Year {target_year} with forcing replaced from 20 prior years',
-            fontsize=14, fontweight='bold'
+            fontsize=13, fontweight='bold'
         )
-        ax_p.legend(loc='upper right')
+        ax_p.legend(loc='upper right', fontsize=10)
         ax_p.grid(True, alpha=0.3)
         ax_p.invert_yaxis()  # Precipitation convention: bars from top
+        ax_p.tick_params(labelsize=10)
         
         unit = 'm³/s' if area > 1.0 else 'm/s'
-        ax_q.set_ylabel(f'Streamflow ({unit})')
-        ax_q.set_xlabel('Date')
-        ax_q.legend(loc='upper right')
+        ax_q.set_ylabel(f'Streamflow ({unit})', fontsize=12, fontweight='bold')
+        ax_q.set_xlabel('Date', fontsize=12, fontweight='bold')
+        ax_q.legend(loc='upper right', fontsize=10)
         ax_q.grid(True, alpha=0.3)
         ax_q.xaxis.set_major_formatter(mdates.DateFormatter('%b %Y'))
         ax_q.xaxis.set_major_locator(mdates.MonthLocator())
-        plt.setp(ax_q.xaxis.get_majorticklabels(), rotation=45, ha='right')
+        plt.setp(ax_q.xaxis.get_majorticklabels(), rotation=45, ha='right', fontsize=10)
+        ax_q.tick_params(labelsize=10)
         
         # Add ensemble member legend entry
-        ensemble_line = Line2D([0], [0], color=season_color, linewidth=1.5, alpha=0.6)
+        ensemble_line = Line2D([0], [0], color=season_color, linewidth=1.5, alpha=0.75)
         baseline_line = Line2D([0], [0], color='black', linewidth=2.0)
         custom_legend = [baseline_line, ensemble_line]
         labels = [f'Baseline {target_year}', f'Ensemble ({len(ensemble_files)} members)']
@@ -1539,7 +1824,7 @@ class EnsembleVisualizer:
         all_ensemble_results: Dict[str, Dict[int, Path]],
         target_year: int,
         obs_df: Optional[pd.DataFrame] = None,
-        figsize: Tuple = (18, 20)
+        figsize: Tuple = (14, 14)
     ) -> Path:
         """
         Generate a combined 4×2 figure with all seasons.
@@ -1552,12 +1837,19 @@ class EnsembleVisualizer:
         bl_ds = xr.open_dataset(baseline_file)
         bl_time = pd.DatetimeIndex(bl_ds.time.values)
         bl_ppt = bl_ds['pptrate'].values.squeeze() if 'pptrate' in bl_ds else None
-        bl_q_var = 'averageRoutedRunoff' if 'averageRoutedRunoff' in bl_ds else 'scalarTotalRunoff'
-        bl_q = bl_ds[bl_q_var].values.squeeze()
+        if 'scalarTotalRunoff' not in bl_ds:
+            raise KeyError("scalarTotalRunoff not found in baseline file for plotting")
+        bl_q = bl_ds['scalarTotalRunoff'].values.squeeze()
         if area > 1.0:
             bl_q = bl_q * area
         bl_df = pd.DataFrame({'P': bl_ppt, 'Q': bl_q}, index=bl_time).resample('D').mean()
         bl_ds.close()
+        
+        # Filter observations to water year if provided
+        if obs_df is not None:
+            water_year_start = pd.Timestamp(f'{target_year - 1}-10-01')
+            water_year_end = pd.Timestamp(f'{target_year}-09-30')
+            obs_df = obs_df.loc[water_year_start:water_year_end]
         
         for row, season in enumerate(SEASONS):
             ax_p = axes[row, 0]
@@ -1566,7 +1858,7 @@ class EnsembleVisualizer:
             months = SEASONS[season]['months']
             ensemble_files = all_ensemble_results.get(season, {})
             
-            alpha_m = max(0.15, 0.8 / max(len(ensemble_files), 1))
+            alpha_m = max(0.40, 1.0 / max(len(ensemble_files), 1))
             
             # Plot ensemble members
             for donor_year, efile in sorted(ensemble_files.items()):
@@ -1574,52 +1866,58 @@ class EnsembleVisualizer:
                     m_ds = xr.open_dataset(efile)
                     m_time = pd.DatetimeIndex(m_ds.time.values)
                     m_ppt = m_ds['pptrate'].values.squeeze() if 'pptrate' in m_ds else None
-                    m_q = m_ds[bl_q_var].values.squeeze() if bl_q_var in m_ds else m_ds['scalarTotalRunoff'].values.squeeze()
+                    if 'scalarTotalRunoff' not in m_ds:
+                        raise KeyError("scalarTotalRunoff not found in ensemble member file for plotting")
+                    m_q = m_ds['scalarTotalRunoff'].values.squeeze()
                     if area > 1.0:
                         m_q = m_q * area
                     m_df = pd.DataFrame({'P': m_ppt, 'Q': m_q}, index=m_time).resample('D').mean()
                     m_ds.close()
                     
                     ax_p.plot(m_df.index, m_df['P'] * 3600, color=color,
-                             alpha=alpha_m, linewidth=0.6)
+                             alpha=alpha_m, linewidth=0.8)
                     ax_q.plot(m_df.index, m_df['Q'], color=color,
-                             alpha=alpha_m, linewidth=0.6)
+                             alpha=alpha_m, linewidth=0.8)
                 except Exception:
                     pass
             
             # Plot baseline
-            ax_p.plot(bl_df.index, bl_df['P'] * 3600, color='black', linewidth=1.5)
-            ax_q.plot(bl_df.index, bl_df['Q'], color='black', linewidth=1.5)
+            ax_p.plot(bl_df.index, bl_df['P'] * 3600, color='black', linewidth=2.0)
+            ax_q.plot(bl_df.index, bl_df['Q'], color='black', linewidth=2.0)
             
-            # Observations
+            # Observations (filtered to water year)
             if obs_df is not None and 'discharge_cms' in obs_df.columns:
-                obs_period = obs_df.loc[str(target_year)]
+                obs_period = obs_df
                 if not obs_period.empty:
                     ax_q.plot(obs_period.index, obs_period['discharge_cms'],
-                             color='red', linewidth=1.0, linestyle='--', alpha=0.8)
+                             color='red', linewidth=1.2, linestyle='--', alpha=0.8)
             
-            # Shade season months
+            # Shade season months.
+            # Oct-Dec (months >= 10) belong to calendar year target_year-1 in the water year.
             for m in months:
-                m_start = pd.Timestamp(f'{target_year}-{m:02d}-01')
+                shade_year = target_year - 1 if m >= 10 else target_year
+                m_start = pd.Timestamp(f'{shade_year}-{m:02d}-01')
                 if m == 12:
-                    m_end = pd.Timestamp(f'{target_year}-12-31')
+                    m_end = pd.Timestamp(f'{shade_year}-12-31')
                 else:
                     nm = m + 1
-                    m_end = pd.Timestamp(f'{target_year}-{nm:02d}-01') - timedelta(days=1)
+                    m_end = pd.Timestamp(f'{shade_year}-{nm:02d}-01') - timedelta(days=1)
                 ax_p.axvspan(m_start, m_end, alpha=0.08, color=color)
                 ax_q.axvspan(m_start, m_end, alpha=0.08, color=color)
             
-            ax_p.set_ylabel(f'{season}\nmm/hr')
+            ax_p.set_ylabel(f'{season}\nmm/hr', fontsize=11, fontweight='bold')
             ax_p.invert_yaxis()
             ax_p.grid(True, alpha=0.2)
+            ax_p.tick_params(labelsize=9)
             
             unit = 'm³/s' if area > 1.0 else 'm/s'
-            ax_q.set_ylabel(f'{season}\n{unit}')
+            ax_q.set_ylabel(f'{season}\n{unit}', fontsize=11, fontweight='bold')
             ax_q.grid(True, alpha=0.2)
+            ax_q.tick_params(labelsize=9)
             
             if row == 0:
-                ax_p.set_title('Precipitation', fontweight='bold')
-                ax_q.set_title('Streamflow', fontweight='bold')
+                ax_p.set_title('Precipitation', fontweight='bold', fontsize=12)
+                ax_q.set_title('Streamflow', fontweight='bold', fontsize=12)
         
         # Format x-axis
         axes[-1, 0].xaxis.set_major_formatter(mdates.DateFormatter('%b'))
@@ -1627,11 +1925,11 @@ class EnsembleVisualizer:
         axes[-1, 1].xaxis.set_major_formatter(mdates.DateFormatter('%b'))
         axes[-1, 1].xaxis.set_major_locator(mdates.MonthLocator())
         
-        plt.setp(axes[-1, 0].xaxis.get_majorticklabels(), rotation=45, ha='right')
-        plt.setp(axes[-1, 1].xaxis.get_majorticklabels(), rotation=45, ha='right')
+        plt.setp(axes[-1, 0].xaxis.get_majorticklabels(), rotation=45, ha='right', fontsize=9)
+        plt.setp(axes[-1, 1].xaxis.get_majorticklabels(), rotation=45, ha='right', fontsize=9)
         
         # Shared legend
-        ensemble_line = Line2D([0], [0], color='gray', linewidth=1.5, alpha=0.6)
+        ensemble_line = Line2D([0], [0], color='gray', linewidth=1.5, alpha=0.75)
         baseline_line = Line2D([0], [0], color='black', linewidth=2.0)
         handles = [baseline_line, ensemble_line]
         labels = [f'Baseline {target_year}', 'Ensemble members']
@@ -1692,6 +1990,7 @@ class SeasonalEnsembleExperiment:
         self.baseline_output = None
         self.target_baseline_output = None
         self.ensemble_forcing_files = None
+        self.ensemble_water_year = False
         self.ensemble_results = None
         self.eval_results = None
         self.sensitivity_summary = None
@@ -1789,7 +2088,7 @@ class SeasonalEnsembleExperiment:
         end: str = None,
         download_obs: bool = True,
         create_forcing: bool = True,
-        recalc_longwave: bool = True,
+        recalc_longwave: bool = False,
     ):
         """
         Run the complete data preparation pipeline.
@@ -1811,6 +2110,7 @@ class SeasonalEnsembleExperiment:
             Run forcing merge, basin-averaging, and SUMMA input creation.
         recalc_longwave : bool
             Recalculate longwave radiation via Dilley & O'Brien (1998).
+            Default is False to preserve native forcing LWRadAtm values.
         """
         logger.info("\n" + "=" * 70)
         logger.info("STEP 0: DATA PREPARATION")
@@ -1893,19 +2193,26 @@ class SeasonalEnsembleExperiment:
         )
     
     def step1_optimize(self, skip_if_exists: bool = True) -> pd.DataFrame:
-        """Run or load optimization."""
+        """Run or load optimization and apply best parameters to settings files."""
         logger.info("\n" + "=" * 70)
         logger.info("STEP 1: PARAMETER OPTIMIZATION")
         logger.info("=" * 70)
         
+        self.best_params = None
         if skip_if_exists and self.cfg.opt_dir.exists():
             existing = list(self.cfg.opt_dir.glob("*/best_parameters.csv"))
             if existing:
                 logger.info(f"Found existing optimization results, loading...")
                 self.best_params = self.optimizer.get_best_parameters()
-                return self.best_params
+
+        if self.best_params is None:
+            self.best_params = self.optimizer.run_optimization()
         
-        self.best_params = self.optimizer.run_optimization()
+        # Apply best parameters to settings files with correct formatting
+        logger.info("Applying best parameters to SUMMA settings files...")
+        self.ensemble_runner.runner.apply_parameters(self.best_params)
+        logger.info("✓ Best parameters applied to localParamInfo.txt and basinParamInfo.txt")
+        
         return self.best_params
     
     def step2_long_term_run(
@@ -1930,7 +2237,11 @@ class SeasonalEnsembleExperiment:
         )
         return self.baseline_output
     
-    def step2b_create_warm_state(self, summa_output: Path = None) -> Path:
+    def step2b_create_warm_state(
+        self,
+        summa_output: Path = None,
+        extract_time: Optional[str] = None,
+    ) -> Path:
         """
         Extract final state from the long-term run and create a warm-start file.
         
@@ -1961,82 +2272,150 @@ class SeasonalEnsembleExperiment:
         ds_cold = xr.open_dataset(cold_state_path)
         ds_out = xr.open_dataset(output_nc)
         
-        # Last timestep
-        last_time = pd.Timestamp(ds_out.time.values[-1])
-        ds_last = ds_out.isel(time=-1)
+        # Use explicit extract_time when provided, otherwise use last timestep.
+        if extract_time is not None:
+            target_ts = pd.Timestamp(extract_time)
+            all_times = pd.DatetimeIndex(ds_out.time.values)
+            # Use nearest-neighbor to handle nanosecond precision/rounding artifacts
+            t_idx = int(all_times.get_indexer([target_ts], method='nearest')[0])
+            actual_ts = pd.Timestamp(ds_out.time.values[t_idx])
+            time_diff = abs((actual_ts - target_ts).total_seconds())
+            if time_diff > 3600:  # More than 1 hour away
+                raise ValueError(
+                    f"extract_time {target_ts} not found within 1 hour in {output_nc.name}. "
+                    f"Closest available: {actual_ts} ({time_diff:.1f}s away). "
+                    f"Available range: {all_times.min()} to {all_times.max()}"
+                )
+            logger.info(f"extract_time {target_ts} -> nearest available: {actual_ts}")
+        else:
+            t_idx = -1
+
+        last_time = pd.Timestamp(ds_out.time.values[t_idx])
+        ds_last = ds_out.isel(time=t_idx)
         n_soil = int(ds_cold['nSoil'].values.flat[0])
         
         logger.info(f"Extracting state from: {output_nc.name}")
         logger.info(f"Last timestep: {last_time}")
         logger.info(f"Soil layers: {n_soil}")
+
+        def _is_valid_scalar(val: float) -> bool:
+            return np.isfinite(val) and abs(val) < 1e6 and val > -9000
+
+        def _is_valid_array(arr: np.ndarray) -> bool:
+            if arr.size == 0:
+                return False
+            if not np.all(np.isfinite(arr)):
+                return False
+            # SUMMA fill values frequently appear as -9999 in outputs.
+            if np.any(arr <= -9000):
+                return False
+            if np.any(np.abs(arr) > 1e6):
+                return False
+            return True
         
         def get_scalar(var_name, default=0.0):
             """Get scalar value from output, trying multiple suffixes."""
-            for suffix in ['', '_inst', '_sum', '_mean']:
+            for suffix in ['', '_inst', '_mean', '_sum']:
                 name = var_name + suffix
                 if name in ds_last:
                     val = float(ds_last[name].values.flat[0])
-                    logger.info(f"  {var_name:30s} = {val:12.4f}  (from {name})")
-                    return val
+                    if _is_valid_scalar(val):
+                        logger.info(f"  {var_name:30s} = {val:12.4f}  (from {name})")
+                        return val
+                    logger.warning(
+                        f"  {var_name:30s} = {val:12.4f}  (invalid from {name}, using default)"
+                    )
+                    break
             logger.warning(f"  {var_name:30s} = {default:12.4f}  (DEFAULT — not in output)")
             return default
         
-        def get_soil_layers(var_name, n_soil, default_val):
-            """Extract soil-layer values (last n_soil of midToto dim)."""
-            for suffix in ['', '_inst', '_sum', '_mean']:
+        def get_layer_values(var_name, n_target):
+            """Extract the first n_target valid layer values from output arrays.
+
+            SUMMA outputs can include padded snow/soil layers with fill values like -9999.
+            For restart files we want the physically valid soil/interface entries only.
+            """
+            for suffix in ['', '_inst', '_mean', '_sum']:
                 name = var_name + suffix
                 if name in ds_last:
-                    vals = ds_last[name].values.squeeze()
-                    # Soil layers are the last n_soil entries of the midToto dim
-                    soil_vals = vals[-n_soil:]
-                    logger.info(f"  {var_name:30s} = {soil_vals}  (from {name})")
-                    return soil_vals
+                    vals = np.asarray(ds_last[name].values.squeeze(), dtype=float).reshape(-1)
+                    valid_vals = vals[np.isfinite(vals) & (vals > -9000) & (np.abs(vals) < 1e6)]
+                    if valid_vals.size >= n_target:
+                        selected = valid_vals[:n_target]
+                        logger.info(f"  {var_name:30s} = {selected}  (from {name})")
+                        return selected
+                    logger.warning(
+                        f"  {var_name:30s} = only {valid_vals.size} valid values in {name}, keeping defaults"
+                    )
+                    break
             logger.warning(f"  {var_name:30s} = not found, keeping defaults")
             return None
         
-        # Clone the cold state
-        ds_warm = ds_cold.copy(deep=True)
-        
-        # --- Scalar state variables ---
-        ds_warm['scalarCanopyIce'].values[:] = get_scalar('scalarCanopyIce')
-        ds_warm['scalarCanopyLiq'].values[:] = get_scalar('scalarCanopyLiq')
-        ds_warm['scalarSnowDepth'].values[:] = get_scalar('scalarSnowDepth')
-        ds_warm['scalarSWE'].values[:] = get_scalar('scalarSWE')
-        ds_warm['scalarSfcMeltPond'].values[:] = get_scalar('scalarSfcMeltPond')
-        ds_warm['scalarAquiferStorage'].values[:] = get_scalar(
-            'scalarAquiferStorage',
-            default=float(ds_cold['scalarAquiferStorage'].values.flat[0]),
-        )
-        ds_warm['scalarSnowAlbedo'].values[:] = get_scalar('scalarSnowAlbedo')
-        ds_warm['scalarCanairTemp'].values[:] = get_scalar('scalarCanairTemp', default=283.16)
-        ds_warm['scalarCanopyTemp'].values[:] = get_scalar('scalarCanopyTemp', default=283.16)
-        
-        # --- Layer state variables (extract soil layers only) ---
-        layer_vars = {
-            'mLayerTemp': 283.16,
-            'mLayerVolFracIce': 0.0,
-            'mLayerVolFracLiq': 0.2,
-            'mLayerMatricHead': -1.0,
+        # Copy cold state file and update values in place to preserve exact
+        # NetCDF structure SUMMA expects for restart files.
+        shutil.copy2(cold_state_path, warm_state_path)
+
+        scalar_updates = {
+            'scalarCanopyIce': get_scalar('scalarCanopyIce'),
+            'scalarCanopyLiq': get_scalar('scalarCanopyLiq'),
+            'scalarSnowDepth': get_scalar('scalarSnowDepth'),
+            'scalarSWE': get_scalar('scalarSWE'),
+            'scalarSfcMeltPond': get_scalar('scalarSfcMeltPond'),
+            'scalarAquiferStorage': get_scalar(
+                'scalarAquiferStorage',
+                default=float(ds_cold['scalarAquiferStorage'].values.flat[0]),
+            ),
+            'scalarSnowAlbedo': get_scalar('scalarSnowAlbedo'),
+            'scalarCanairTemp': get_scalar('scalarCanairTemp', default=283.16),
+            'scalarCanopyTemp': get_scalar('scalarCanopyTemp', default=283.16),
         }
-        for var, default in layer_vars.items():
-            soil_vals = get_soil_layers(var, n_soil, default)
-            if soil_vals is not None:
-                ds_warm[var].values[:] = soil_vals.reshape(ds_warm[var].shape)
-        
-        # Keep nSnow=0 — SUMMA will create snow layers dynamically from SWE/depth
-        ds_warm['nSnow'].values[:] = 0
-        
-        # Update metadata
-        ds_warm.attrs['Author'] = 'Created by seasonal_ensemble_experiment.py'
-        ds_warm.attrs['History'] = (
-            f'Warm state extracted from {output_nc.name}, '
-            f'last timestep {last_time}'
-        )
-        ds_warm.attrs['Purpose'] = (
-            'Warm start initial conditions from long-term baseline run'
-        )
-        
-        ds_warm.to_netcdf(warm_state_path)
+
+        layer_vars = [
+            'mLayerTemp',
+            'mLayerVolFracIce',
+            'mLayerVolFracLiq',
+            'mLayerMatricHead',
+        ]
+        layer_updates = {
+            var: get_layer_values(var, n_soil)
+            for var in layer_vars
+        }
+        interface_updates = {
+            'iLayerHeight': get_layer_values('iLayerHeight', n_soil + 1),
+            'mLayerDepth': get_layer_values('mLayerDepth', n_soil),
+        }
+
+        with nc.Dataset(warm_state_path, 'r+') as ds_warm:
+            for var, val in scalar_updates.items():
+                if var in ds_warm.variables:
+                    ds_warm.variables[var][:] = val
+
+            for var, soil_vals in layer_updates.items():
+                if soil_vals is None or var not in ds_warm.variables:
+                    continue
+                var_data = ds_warm.variables[var]
+                var_data[:] = np.asarray(soil_vals, dtype=var_data.dtype).reshape(var_data.shape)
+
+            for var, vals in interface_updates.items():
+                if vals is None or var not in ds_warm.variables:
+                    continue
+                var_data = ds_warm.variables[var]
+                var_data[:] = np.asarray(vals, dtype=var_data.dtype).reshape(var_data.shape)
+
+            # Keep nSnow=0 — SUMMA will create snow layers dynamically.
+            if 'nSnow' in ds_warm.variables:
+                ds_warm.variables['nSnow'][:] = 0
+
+            ds_warm.setncattr('Author', 'Created by seasonal_ensemble_experiment.py')
+            ds_warm.setncattr(
+                'History',
+                f'Warm state extracted from {output_nc.name}, last timestep {last_time}'
+            )
+            ds_warm.setncattr(
+                'Purpose',
+                'Warm start initial conditions from long-term baseline run'
+            )
+
         ds_cold.close()
         ds_out.close()
         
@@ -2061,7 +2440,9 @@ class SeasonalEnsembleExperiment:
         with open(oc_path, 'a') as f:
             f.write('\n! State variables for warm start extraction\n')
             for var in to_add:
-                f.write(f'{var:40s} | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0\n')
+                # Request time-mean output to avoid invalid integration flags
+                # for prognostic/non-time variables in some SUMMA builds.
+                f.write(f'{var:40s} | 1 | 0 | 0 | 1 | 0 | 0 | 0 | 0\n')
         
         logger.info(f"Added {len(to_add)} state variables to outputControl.txt")
     
@@ -2082,14 +2463,60 @@ class SeasonalEnsembleExperiment:
             f.writelines(new_lines)
         logger.info(f"initConditionFile → {filename}")
     
-    def step3_target_year_baseline(self, target_year: int) -> Path:
-        """Run the unperturbed target year."""
+    def _slice_target_year_from_continuous(self, target_year: int) -> Optional[Path]:
+        """Create target-year baseline by slicing from a continuous baseline run.
+
+        Returns None when the continuous baseline does not cover the target water year.
+        """
+        if self.baseline_output is None or not Path(self.baseline_output).exists():
+            return None
+
+        wy_start = pd.Timestamp(f"{target_year - 1}-10-01 01:00")
+        wy_end = pd.Timestamp(f"{target_year}-09-30 23:00")
+
+        with xr.open_dataset(self.baseline_output) as ds:
+            times = pd.DatetimeIndex(ds.time.values)
+            if wy_start < times.min() or wy_end > times.max():
+                logger.info(
+                    "Continuous baseline does not cover target WY window "
+                    f"({wy_start} to {wy_end}); falling back to standalone target-year run."
+                )
+                return None
+
+            ds_wy = ds.sel(time=slice(wy_start, wy_end)).load()
+
+        out_dir = self.cfg.ensemble_dir / 'results' / 'baseline'
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f'target_wy_{target_year}_timestep.nc'
+        ds_wy.to_netcdf(out_path)
+        ds_wy.close()
+
+        logger.info(f"Created target WY baseline by slicing continuous run: {out_path}")
+        return out_path
+
+    def step3_target_year_baseline(
+        self,
+        target_year: int,
+        prefer_continuous: bool = False,
+    ) -> Path:
+        """Create or run the unperturbed target year baseline.
+
+        If prefer_continuous=True and the long-term baseline output covers the
+        target water year, this method slices that window directly instead of
+        running a second standalone SUMMA simulation.
+        """
         logger.info("\n" + "=" * 70)
         logger.info(f"STEP 3: TARGET YEAR BASELINE ({target_year})")
         logger.info("=" * 70)
+
+        if prefer_continuous:
+            sliced = self._slice_target_year_from_continuous(target_year)
+            if sliced is not None:
+                self.target_baseline_output = sliced
+                return self.target_baseline_output
         
         self.target_baseline_output = self.ensemble_runner.run_target_year_baseline(
-            self.best_params, target_year
+            self.best_params, target_year, water_year=True
         )
         return self.target_baseline_output
     
@@ -2097,16 +2524,23 @@ class SeasonalEnsembleExperiment:
         self,
         target_year: int,
         donor_years: List[int],
-        forcing_dir: Optional[Path] = None
+        forcing_dir: Optional[Path] = None,
+        water_year: bool = True,
     ) -> Dict[str, List[Path]]:
         """Build seasonal forcing ensemble files."""
         logger.info("\n" + "=" * 70)
         logger.info("STEP 4: BUILD SEASONAL FORCING ENSEMBLES")
         logger.info("=" * 70)
         
-        full_forcing = self.ensemble_builder.load_forcing_data(forcing_dir)
+        needed_years = sorted(set(donor_years) | {target_year})
+        self.ensemble_water_year = water_year
+        full_forcing = self.ensemble_builder.load_forcing_data(
+            forcing_dir,
+            years=needed_years,
+            water_year=water_year,
+        )
         self.ensemble_forcing_files = self.ensemble_builder.build_all_season_ensembles(
-            full_forcing, target_year, donor_years
+            full_forcing, target_year, donor_years, water_year=water_year
         )
         full_forcing.close()
         return self.ensemble_forcing_files
@@ -2143,7 +2577,11 @@ class SeasonalEnsembleExperiment:
         if parallel:
             workers = max_workers or self.max_workers
             self.parallel_runner = ParallelEnsembleRunner(self.cfg, max_workers=workers)
-            self.parallel_runner.prepare_all(target_year, self.ensemble_forcing_files)
+            self.parallel_runner.prepare_all(
+                target_year,
+                self.ensemble_forcing_files,
+                water_year=self.ensemble_water_year,
+            )
             self.parallel_runner.launch_all(poll_interval=poll_interval)
             self.ensemble_results = self.parallel_runner.get_results()
         else:
@@ -2176,7 +2614,11 @@ class SeasonalEnsembleExperiment:
         
         workers = max_workers or self.max_workers
         self.parallel_runner = ParallelEnsembleRunner(self.cfg, max_workers=workers)
-        self.parallel_runner.prepare_all(target_year, self.ensemble_forcing_files)
+        self.parallel_runner.prepare_all(
+            target_year,
+            self.ensemble_forcing_files,
+            water_year=self.ensemble_water_year,
+        )
         return self.parallel_runner.generate_run_script(script_path)
     
     def step5_collect_results(self) -> Dict[str, Dict[int, Path]]:
@@ -2243,6 +2685,12 @@ class SeasonalEnsembleExperiment:
             obs_files = list(self.cfg.obs_dir.glob(f"*streamflow*.csv"))
             if obs_files:
                 obs_df = pd.read_csv(obs_files[0], parse_dates=['datetime']).set_index('datetime')
+        
+        # Filter observations to water year (Oct of previous year through Sep of target year)
+        if obs_df is not None:
+            water_year_start = pd.Timestamp(f'{target_year - 1}-10-01')
+            water_year_end = pd.Timestamp(f'{target_year}-09-30')
+            obs_df = obs_df.loc[water_year_start:water_year_end]
         
         plots = []
         

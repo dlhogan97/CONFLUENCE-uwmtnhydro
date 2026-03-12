@@ -2310,10 +2310,16 @@ echo "Completed all GRUs for this job at $(date)"
         # Run SUMMA
         os.makedirs(summa_log_path, exist_ok=True)
         summa_command = f"{str(summa_path / summa_exe)} -m {str(settings_path / filemanager)}"
+
+        # Respect OMP_NUM_THREADS from environment; default to 1 for serial runs
+        # to avoid OpenMP spawning all available cores on the system.
+        run_env = os.environ.copy()
+        run_env.setdefault('OMP_NUM_THREADS', '1')
         
         try:
             with open(summa_log_path / summa_log_name, 'w') as log_file:
-                subprocess.run(summa_command, shell=True, check=True, stdout=log_file, stderr=subprocess.STDOUT)
+                subprocess.run(summa_command, shell=True, check=True, stdout=log_file,
+                               stderr=subprocess.STDOUT, env=run_env)
             self.logger.info("SUMMA run completed successfully")
             return summa_out_path
         

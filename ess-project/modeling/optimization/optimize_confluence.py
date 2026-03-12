@@ -108,6 +108,15 @@ def load_config(config_path):
         return yaml.safe_load(f)
 
 
+def _resolve_decision_option(option_value, default):
+    """Return a single decision value from either a scalar or a candidate list."""
+    if option_value is None:
+        return default
+    if isinstance(option_value, (list, tuple)):
+        return option_value[0] if option_value else default
+    return option_value
+
+
 def setup_parameters(confluence, config_dict, use_previous=False):
     """Setup parameter files with values from base settings or previous optimization"""
     logger.info("\n" + "=" * 70)
@@ -142,10 +151,10 @@ def setup_parameters(confluence, config_dict, use_previous=False):
     # Extract model decisions from SUMMA_DECISION_OPTIONS in config
     summa_decisions = config_dict.get('SUMMA_DECISION_OPTIONS', {})
     modelDecision_updates = {
-        'groundwatr': summa_decisions.get('groundwatr', ['bigBuckt'])[0] if summa_decisions.get('groundwatr') else 'bigBuckt',
-        'bcLowrSoiH': summa_decisions.get('bcLowrSoiH', ['drainage'])[0] if summa_decisions.get('bcLowrSoiH') else 'drainage',
-        'spatial_gw': summa_decisions.get('spatial_gw', ['localColumn'])[0] if summa_decisions.get('spatial_gw') else 'localColumn',
-        'alb_method': summa_decisions.get('alb_method', ['varDecay'])[0] if summa_decisions.get('alb_method') else 'varDecay'
+        'groundwatr': _resolve_decision_option(summa_decisions.get('groundwatr'), 'bigBuckt'),
+        'bcLowrSoiH': _resolve_decision_option(summa_decisions.get('bcLowrSoiH'), 'drainage'),
+        'spatial_gw': _resolve_decision_option(summa_decisions.get('spatial_gw'), 'localColumn'),
+        'alb_method': _resolve_decision_option(summa_decisions.get('alb_method'), 'varDecay'),
     }
     logger.info(f"   - groundwatr: {modelDecision_updates['groundwatr']}")
     logger.info(f"   - bcLowrSoiH: {modelDecision_updates['bcLowrSoiH']}")

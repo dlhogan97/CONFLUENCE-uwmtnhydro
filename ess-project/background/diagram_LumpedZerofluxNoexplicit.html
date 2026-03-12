@@ -1,0 +1,635 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;600;700&family=Source+Code+Pro:wght@400;600&display=swap');
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: #ffffff;
+    font-family: 'Source Sans 3', sans-serif;
+    padding: 36px 40px 40px 40px;
+    width: 860px;
+  }
+
+  h2 {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: #444;
+    margin-bottom: 6px;
+    border-bottom: 1.5px solid #ccc;
+    padding-bottom: 7px;
+  }
+
+  .subtitle {
+    font-size: 10.5px;
+    color: #888;
+    margin-bottom: 28px;
+    font-style: italic;
+  }
+
+  .columns {
+    display: flex;
+    gap: 32px;
+    align-items: flex-start;
+  }
+
+  .col {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+
+  .col-header {
+    width: 100%;
+    text-align: center;
+    padding: 8px 12px;
+    border-radius: 3px;
+    margin-bottom: 16px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .col-header.zero {
+    background: #f0f0f0;
+    color: #333;
+    border: 1.5px solid #bbb;
+  }
+
+  .col-header.drain {
+    background: #e8f4fb;
+    color: #1a5c82;
+    border: 1.5px solid #7ab8d8;
+  }
+
+  .box {
+    width: 100%;
+    border: 1.5px solid #333;
+    border-radius: 4px;
+    padding: 9px 14px;
+    background: #fff;
+  }
+
+  .box-label {
+    font-size: 10.5px;
+    font-weight: 700;
+    color: #111;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 3px;
+  }
+
+  .box-sub {
+    font-size: 9.5px;
+    color: #555;
+    line-height: 1.55;
+  }
+
+  .box.shaded { background: #f5f5f5; }
+
+  .soil-box {
+    width: 100%;
+    border: 1.5px solid #333;
+    border-radius: 4px 4px 0 0;
+    padding: 10px 14px 14px 14px;
+    background: #fff;
+    border-bottom: none;
+  }
+
+  .soil-layers {
+    margin-top: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .soil-layer {
+    height: 18px;
+    border-radius: 2px;
+    background: #e8e0d0;
+    border: 1px solid #c8b89a;
+    display: flex;
+    align-items: center;
+    padding: 0 8px;
+  }
+
+  .soil-layer span {
+    font-size: 8.5px;
+    color: #7a6040;
+    font-family: 'Source Code Pro', monospace;
+  }
+
+  .soil-layer.wet {
+    background: #d0e8f0;
+    border-color: #7ab8d8;
+  }
+  .soil-layer.wet span { color: #1a5c82; }
+
+  .boundary-zero {
+    width: 100%;
+    border: 2px solid #333;
+    border-top: none;
+    border-radius: 0 0 4px 4px;
+    padding: 8px 14px;
+    background: #e8e8e8;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .boundary-drain {
+    width: 100%;
+    border: 2px solid #7ab8d8;
+    border-top: none;
+    border-radius: 0 0 4px 4px;
+    padding: 8px 14px;
+    background: #d8eef8;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .boundary-label {
+    font-size: 9.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+  }
+
+  .boundary-zero .boundary-label { color: #444; }
+  .boundary-drain .boundary-label { color: #1a5c82; }
+
+  .boundary-sub {
+    font-size: 9px;
+    color: #777;
+    font-style: italic;
+  }
+
+  .boundary-drain .boundary-sub { color: #4a8caa; }
+
+  .block-sym {
+    font-size: 16px;
+    color: #555;
+    line-height: 1;
+  }
+
+  .v-arrow {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+
+  .v-line {
+    width: 1.5px;
+    height: 16px;
+    background: #333;
+  }
+
+  .v-tip {
+    width: 0; height: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 6px solid #333;
+  }
+
+  .v-label {
+    font-size: 9px;
+    color: #666;
+    font-style: italic;
+    margin: 2px 0;
+  }
+
+  .flux-row {
+    display: flex;
+    align-items: center;
+    width: 100%;
+  }
+
+  .flux-row .box { flex: 1; }
+
+  .h-arrow {
+    display: flex;
+    align-items: center;
+    margin-left: 6px;
+    flex-shrink: 0;
+  }
+
+  .h-line {
+    height: 1.5px;
+    width: 20px;
+    background: #333;
+  }
+
+  .h-tip {
+    width: 0; height: 0;
+    border-top: 4px solid transparent;
+    border-bottom: 4px solid transparent;
+    border-left: 6px solid #333;
+  }
+
+  .flux-label {
+    margin-left: 5px;
+    font-size: 9px;
+    color: #333;
+    white-space: nowrap;
+  }
+
+  .flux-label strong { font-weight: 700; color: #111; }
+
+  .drain-arrow-wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    margin-top: 0;
+  }
+
+  .drain-v-line {
+    width: 1.5px;
+    height: 18px;
+    background: #1a5c82;
+  }
+
+  .drain-v-tip {
+    width: 0; height: 0;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 7px solid #1a5c82;
+  }
+
+  .drain-label {
+    font-size: 9px;
+    color: #1a5c82;
+    font-weight: 600;
+    margin-top: 4px;
+    font-style: italic;
+  }
+
+  .blocked-wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    margin-top: 2px;
+  }
+
+  .blocked-line {
+    width: 1.5px;
+    height: 14px;
+    background: #999;
+  }
+
+  .blocked-bar {
+    width: 22px;
+    height: 3.5px;
+    background: #555;
+    border-radius: 2px;
+  }
+
+  .blocked-label {
+    font-size: 9px;
+    color: #888;
+    font-style: italic;
+    margin-top: 4px;
+  }
+
+  .divider {
+    width: 1px;
+    background: #ddd;
+    align-self: stretch;
+    margin: 0 4px;
+  }
+
+  .wbal-row {
+    display: flex;
+    gap: 32px;
+    margin-top: 24px;
+  }
+
+  .wbal {
+    flex: 1;
+    border: 1.5px solid #bbb;
+    border-radius: 4px;
+    padding: 9px 14px;
+    background: #fafafa;
+    text-align: center;
+  }
+
+  .wbal-title {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.10em;
+    color: #888;
+    margin-bottom: 4px;
+  }
+
+  .wbal-eq {
+    font-family: 'Source Code Pro', monospace;
+    font-size: 11px;
+    font-weight: 600;
+    color: #111;
+  }
+
+  .wbal-note {
+    font-size: 9px;
+    color: #999;
+    margin-top: 4px;
+    font-style: italic;
+  }
+
+  .wbal.drain-wbal { border-color: #7ab8d8; background: #f2f9fd; }
+  .wbal.drain-wbal .wbal-eq { color: #1a5c82; }
+
+  .key-diff {
+    margin-top: 22px;
+    border: 1.5px solid #ddd;
+    border-radius: 4px;
+    padding: 11px 16px;
+    background: #fafafa;
+  }
+
+  .key-diff-title {
+    font-size: 9.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.10em;
+    color: #555;
+    margin-bottom: 8px;
+  }
+
+  .diff-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 9.5px;
+  }
+
+  .diff-table th {
+    text-align: left;
+    font-weight: 700;
+    color: #333;
+    padding: 3px 10px 3px 0;
+    border-bottom: 1px solid #ddd;
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+  }
+
+  .diff-table td {
+    padding: 4px 10px 4px 0;
+    color: #444;
+    vertical-align: top;
+    border-bottom: 1px solid #f0f0f0;
+    line-height: 1.45;
+  }
+
+  .diff-table td:first-child { color: #666; font-weight: 600; }
+  .diff-table td.zero-col { color: #444; }
+  .diff-table td.drain-col { color: #1a5c82; }
+</style>
+</head>
+<body>
+
+<h2>SUMMA — Lower Soil Boundary Condition Comparison</h2>
+<p class="subtitle">bcLowrSoiH: zeroFlux vs. drainage &nbsp;·&nbsp; noExplicit aquifer &nbsp;·&nbsp; Sandy loam &nbsp;·&nbsp; mHeight = 2 m</p>
+
+<div class="columns">
+
+  <!-- LEFT: zeroFlux -->
+  <div class="col">
+
+    <div class="col-header zero">bcLowrSoiH = zeroFlux</div>
+
+    <div class="box shaded" style="width:100%;">
+      <div class="box-label">Atmosphere</div>
+      <div class="box-sub">Precip · Radiation · Wind</div>
+    </div>
+
+    <div class="v-arrow"><div class="v-line"></div><div class="v-label">rain + snow</div><div class="v-tip"></div></div>
+
+    <div class="flux-row">
+      <div class="box">
+        <div class="box-label">Canopy</div>
+        <div class="box-sub">Interception · Rad transfer</div>
+      </div>
+      <div class="h-arrow"><div class="h-line"></div><div class="h-tip"></div>
+        <div class="flux-label"><strong>Canopy ET</strong></div>
+      </div>
+    </div>
+
+    <div class="v-arrow"><div class="v-line"></div><div class="v-label">throughfall</div><div class="v-tip"></div></div>
+
+    <div class="flux-row">
+      <div class="box">
+        <div class="box-label">Snow (≤5 layers)</div>
+        <div class="box-sub">CLM_2010 dynamic layering</div>
+      </div>
+      <div class="h-arrow"><div class="h-line"></div><div class="h-tip"></div>
+        <div class="flux-label"><strong>Sublimation</strong></div>
+      </div>
+    </div>
+
+    <div class="v-arrow"><div class="v-line"></div><div class="v-label">melt + rain</div><div class="v-tip"></div></div>
+
+    <div class="flux-row">
+      <div class="box">
+        <div class="box-label">Saturation Excess Runoff</div>
+        <div class="box-sub">Green-Ampt · qSurfScale</div>
+      </div>
+      <div class="h-arrow"><div class="h-line"></div><div class="h-tip"></div>
+        <div class="flux-label"><strong>Q</strong> → routing</div>
+      </div>
+    </div>
+
+    <div class="v-arrow"><div class="v-line"></div><div class="v-label">infiltration</div><div class="v-tip"></div></div>
+
+    <div class="flux-row" style="align-items:flex-start;">
+      <div style="flex:1; display:flex; flex-direction:column;">
+        <div class="soil-box">
+          <div class="box-label">Soil Column (2 m)</div>
+          <div class="box-sub">Richards Eq. · van Genuchten</div>
+          <div class="soil-layers">
+            <div class="soil-layer"><span>layer 1</span></div>
+            <div class="soil-layer"><span>layer 2</span></div>
+            <div class="soil-layer"><span>layer 3</span></div>
+            <div class="soil-layer"><span>layer 4 ← residual ΔS</span></div>
+          </div>
+        </div>
+        <div class="boundary-zero">
+          <span class="block-sym">▬</span>
+          <div>
+            <div class="boundary-label">Zero Flux Boundary</div>
+            <div class="boundary-sub">No water exits the base</div>
+          </div>
+        </div>
+      </div>
+      <div style="display:flex; flex-direction:column; gap:6px; margin-left:6px; padding-top:10px;">
+        <div class="h-arrow"><div class="h-line"></div><div class="h-tip"></div>
+          <div class="flux-label"><strong>Soil evap</strong></div>
+        </div>
+        <div class="h-arrow"><div class="h-line"></div><div class="h-tip"></div>
+          <div class="flux-label"><strong>Root uptake</strong></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="blocked-wrap">
+      <div class="blocked-line"></div>
+      <div class="blocked-bar"></div>
+      <div class="blocked-label">no drainage exits</div>
+    </div>
+
+  </div>
+
+  <div class="divider"></div>
+
+  <!-- RIGHT: drainage -->
+  <div class="col">
+
+    <div class="col-header drain">bcLowrSoiH = drainage</div>
+
+    <div class="box shaded" style="width:100%;">
+      <div class="box-label">Atmosphere</div>
+      <div class="box-sub">Precip · Radiation · Wind</div>
+    </div>
+
+    <div class="v-arrow"><div class="v-line"></div><div class="v-label">rain + snow</div><div class="v-tip"></div></div>
+
+    <div class="flux-row">
+      <div class="box">
+        <div class="box-label">Canopy</div>
+        <div class="box-sub">Interception · Rad transfer</div>
+      </div>
+      <div class="h-arrow"><div class="h-line"></div><div class="h-tip"></div>
+        <div class="flux-label"><strong>Canopy ET</strong></div>
+      </div>
+    </div>
+
+    <div class="v-arrow"><div class="v-line"></div><div class="v-label">throughfall</div><div class="v-tip"></div></div>
+
+    <div class="flux-row">
+      <div class="box">
+        <div class="box-label">Snow (≤5 layers)</div>
+        <div class="box-sub">CLM_2010 dynamic layering</div>
+      </div>
+      <div class="h-arrow"><div class="h-line"></div><div class="h-tip"></div>
+        <div class="flux-label"><strong>Sublimation</strong></div>
+      </div>
+    </div>
+
+    <div class="v-arrow"><div class="v-line"></div><div class="v-label">melt + rain</div><div class="v-tip"></div></div>
+
+    <div class="flux-row">
+      <div class="box">
+        <div class="box-label">Saturation Excess Runoff</div>
+        <div class="box-sub">Green-Ampt · qSurfScale</div>
+      </div>
+      <div class="h-arrow"><div class="h-line"></div><div class="h-tip"></div>
+        <div class="flux-label"><strong>Q</strong> → routing</div>
+      </div>
+    </div>
+
+    <div class="v-arrow"><div class="v-line"></div><div class="v-label">infiltration</div><div class="v-tip"></div></div>
+
+    <div class="flux-row" style="align-items:flex-start;">
+      <div style="flex:1; display:flex; flex-direction:column;">
+        <div class="soil-box" style="border-color:#7ab8d8;">
+          <div class="box-label">Soil Column (2 m)</div>
+          <div class="box-sub">Richards Eq. · van Genuchten</div>
+          <div class="soil-layers">
+            <div class="soil-layer wet"><span>layer 1</span></div>
+            <div class="soil-layer wet"><span>layer 2</span></div>
+            <div class="soil-layer wet"><span>layer 3</span></div>
+            <div class="soil-layer wet"><span>layer 4 ← drains freely</span></div>
+          </div>
+        </div>
+        <div class="boundary-drain">
+          <span class="block-sym" style="color:#1a5c82;">↓</span>
+          <div>
+            <div class="boundary-label">Free Drainage Boundary</div>
+            <div class="boundary-sub">Unit head gradient · kAnisotropic (φ_b = 1, Eq. 139)</div>
+          </div>
+        </div>
+      </div>
+      <div style="display:flex; flex-direction:column; gap:6px; margin-left:6px; padding-top:10px;">
+        <div class="h-arrow"><div class="h-line"></div><div class="h-tip"></div>
+          <div class="flux-label"><strong>Soil evap</strong></div>
+        </div>
+        <div class="h-arrow"><div class="h-line"></div><div class="h-tip"></div>
+          <div class="flux-label"><strong>Root uptake</strong></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="drain-arrow-wrap">
+      <div class="drain-v-line"></div>
+      <div class="drain-v-tip"></div>
+      <div class="drain-label">deep drainage → slow recession</div>
+    </div>
+
+  </div>
+
+</div>
+
+<!-- water balance row -->
+<div class="wbal-row">
+  <div class="wbal">
+    <div class="wbal-title">Water Balance — zeroFlux</div>
+    <div class="wbal-eq">Q = P − ET − ΔS_soil</div>
+    <div class="wbal-note">ΔS_soil accumulates — no late-season drainage</div>
+  </div>
+  <div class="wbal drain-wbal">
+    <div class="wbal-title">Water Balance — drainage</div>
+    <div class="wbal-eq">Q = P − ET − ΔS_soil − D_base</div>
+    <div class="wbal-note">D_base provides slow recession signal</div>
+  </div>
+</div>
+
+<!-- key differences table -->
+<div class="key-diff">
+  <div class="key-diff-title">Key Differences</div>
+  <table class="diff-table">
+    <tr>
+      <th style="width:22%;">Property</th>
+      <th style="width:39%;">zeroFlux</th>
+      <th style="width:39%;">drainage</th>
+    </tr>
+    <tr>
+      <td>Lower BC</td>
+      <td class="zero-col">No flux — sealed base</td>
+      <td class="drain-col">Unit head gradient — free drainage (Eq. 139, Clark et al. 2015c)</td>
+    </tr>
+    <tr>
+      <td>Recession</td>
+      <td class="zero-col">None — only ET empties the column</td>
+      <td class="drain-col">Slow drainage driven by K_soil at column base</td>
+    </tr>
+    <tr>
+      <td>Late-season flows</td>
+      <td class="zero-col">Structurally absent</td>
+      <td class="drain-col">Partially represented via deep soil drainage</td>
+    </tr>
+    <tr>
+      <td>New parameters</td>
+      <td class="zero-col">None</td>
+      <td class="drain-col">kAnisotropic (φ_b) — default 1.0 (free drainage)</td>
+    </tr>
+    <tr>
+      <td>Aquifer needed?</td>
+      <td class="zero-col">No</td>
+      <td class="drain-col">No — compatible with noExplicit</td>
+    </tr>
+    <tr>
+      <td>Residual storage</td>
+      <td class="zero-col">Accumulates indefinitely</td>
+      <td class="drain-col">Slowly depletes between events</td>
+    </tr>
+  </table>
+</div>
+
+</body>
+</html>
