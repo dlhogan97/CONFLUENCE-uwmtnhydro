@@ -695,6 +695,109 @@ class ETTarget(CalibrationTarget):
 
 class StreamflowTarget(CalibrationTarget):
     """Streamflow calibration target"""
+
+    def __init__(self, config: Dict, project_dir: Path, logger: logging.Logger):
+        super().__init__(config, project_dir, logger)
+        self.streamflow_timescale = self._parse_streamflow_timescale(
+            config.get('STREAMFLOW_OPTIMIZATION_TIMESCALE', config.get('STREAMFLOW_EVAL_TIMESCALE', 'native'))
+        )
+        self.logger.info(
+            f"Streamflow optimization timescale set to '{self.streamflow_timescale}'"
+        )
+
+    @staticmethod
+    def _parse_streamflow_timescale(raw_value: Any) -> str:
+        """Normalize configured streamflow timescale to canonical values."""
+        if raw_value is None:
+            return 'native'
+
+        value = str(raw_value).strip().lower()
+        alias_map = {
+            'native': 'native',
+            'daily': '1D',
+            '1d': '1D',
+            '3d': '3D',
+            '5d': '5D',
+            '7d': '7D',
+            'monthly': '1M',
+            'month': '1M',
+            '1m': '1M',
+        }
+
+        if value in alias_map:
+            return alias_map[value]
+
+        # Accept already-canonical values with optional whitespace.
+        match = re.fullmatch(r'(\d+)\s*([dm])', value)
+        if match:
+            n = int(match.group(1))
+            unit = match.group(2).upper()
+            candidate = f"{n}{unit}"
+            if candidate in {'1D', '3D', '5D', '7D', '1M'}:
+                return candidate
+
+            if unit == 'D':
+                raise ValueError(
+                    f"STREAMFLOW_OPTIMIZATION_TIMESCALE='{raw_value}' is outside acceptable day-window bounds. "
+                    "Use one of: 1D, 3D, 5D, 7D."
+                )
+
+            if unit == 'M':
+                raise ValueError(
+                    f"STREAMFLOW_OPTIMIZATION_TIMESCALE='{raw_value}' is outside acceptable month-window bounds. "
+                    "Only 1M is currently supported."
+                )
+
+        raise ValueError(
+            f"Invalid STREAMFLOW_OPTIMIZATION_TIMESCALE='{raw_value}'. "
+            "Acceptable values: native, daily, monthly, 1D, 3D, 5D, 7D, 1M."
+        )
+
+    def _aggregate_streamflow_series(self, series: pd.Series) -> pd.Series:
+        """Aggregate streamflow series to configured optimization timescale."""
+        if series is None or len(series) == 0:
+            return pd.Series(dtype=float)
+
+        s = pd.to_numeric(series.copy(), errors='coerce')
+        s = s.dropna()
+        s.index = pd.to_datetime(s.index, errors='coerce')
+        s = s[~s.index.isna()].sort_index()
+
+        if len(s) == 0:
+            return s
+
+        # In this workflow, "native" corresponds to daily evaluation.
+        if self.streamflow_timescale == 'native':
+            return s.resample('D').mean().dropna()
+
+        # Build from daily means so 3/5/7-day windows are comparable and stable.
+        daily = s.resample('D').mean().dropna()
+
+        if self.streamflow_timescale == '1D':
+            return daily
+
+        if self.streamflow_timescale in {'3D', '5D', '7D'}:
+            window = int(self.streamflow_timescale[:-1])
+            return daily.rolling(window=window, min_periods=window).mean().dropna()
+
+        if self.streamflow_timescale == '1M':
+            return daily.resample('MS').mean().dropna()
+
+        return s
+
+    def _calculate_period_metrics(self, obs_data: pd.Series, sim_data: pd.Series,
+                                period: Tuple, prefix: str) -> Dict[str, float]:
+        """Apply streamflow aggregation before period filtering and metric calculation."""
+        obs_agg = self._aggregate_streamflow_series(obs_data)
+        sim_agg = self._aggregate_streamflow_series(sim_data)
+
+        if len(obs_agg) == 0 or len(sim_agg) == 0:
+            self.logger.warning(
+                f"No data after streamflow aggregation (timescale={self.streamflow_timescale})"
+            )
+            return {}
+
+        return super()._calculate_period_metrics(obs_agg, sim_agg, period, prefix)
     
     def get_simulation_files(self, sim_dir: Path) -> List[Path]:
         """Get SUMMA timestep files or mizuRoute output files"""

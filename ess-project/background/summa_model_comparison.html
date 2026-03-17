@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;600;700&family=Source+Code+Pro:wght@500&display=swap');
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: #ffffff;
+    font-family: 'Source Sans 3', sans-serif;
+    padding: 36px 40px 48px 40px;
+    width: 1100px;
+  }
+
+  h2 {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: #333;
+    border-bottom: 1.5px solid #ccc;
+    padding-bottom: 7px;
+    margin-bottom: 5px;
+  }
+  .subtitle {
+    font-size: 10px;
+    color: #999;
+    font-style: italic;
+    margin-bottom: 22px;
+  }
+
+  /* ── section label ── */
+  .section-label {
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: #777;
+    margin-bottom: 10px;
+  }
+
+  /* ── outer flex wrapper ── */
+  .grid-wrapper {
+    display: flex;
+    gap: 0;
+    align-items: start;
+  }
+
+  /* ── SUMMA side: 4 equal columns ── */
+  .grid-summa {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 0 14px;
+    align-items: start;
+    flex: 0 0 auto;
+    width: 560px;
+  }
+
+  /* ── vertical divider between SUMMA and external ── */
+  .grid-divider {
+    width: 1px;
+    background: #ddd;
+    align-self: stretch;
+    margin: 0 12px;
+    flex-shrink: 0;
+  }
+
+  /* ── external models side: 3 equal columns ── */
+  .grid-ext {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0 14px;
+    align-items: start;
+    flex: 1;
+  }
+
+  /* ── column header ── */
+  .col-hdr {
+    text-align: center;
+    padding: 6px 8px;
+    border-radius: 3px;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+    line-height: 1.45;
+  }
+  .h-nz  { background:#f5f5f5; color:#444;    border:1.5px solid #bbb; }
+  .h-nd  { background:#e8f4fb; color:#1a5c82; border:1.5px solid #7ab8d8; }
+  .h-bz  { background:#fff3e0; color:#7a4000; border:1.5px solid #f0a040; }
+  .h-bd  { background:#eaf6ee; color:#1a5c2a; border:1.5px solid #5dab6e; }
+  .h-vic { background:#f5f0ff; color:#4a1a82; border:1.5px solid #9d80d8; }
+  .h-hbv { background:#fff0f5; color:#82001a; border:1.5px solid #d87898; }
+  .h-top { background:#f0f5e8; color:#3a5c00; border:1.5px solid #90b840; }
+
+  /* ── model col ── */
+  .mcol { display:flex; flex-direction:column; }
+
+  /* ── config badge ── */
+  .badge {
+    font-family: 'Source Code Pro', monospace;
+    font-size: 7.5px;
+    background: #f8f8f8;
+    border: 1px solid #e0e0e0;
+    border-radius: 2px;
+    padding: 3px 6px;
+    margin-bottom: 8px;
+    color: #666;
+    line-height: 1.6;
+  }
+
+  /* ── soil/gw boxes ── */
+  .box {
+    border: 1.5px solid #ccc;
+    border-radius: 3px;
+    padding: 7px 9px;
+    margin-bottom: 3px;
+    background: #fff;
+  }
+  .box-title {
+    font-size: 8.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 3px;
+  }
+  .box-body {
+    font-size: 8px;
+    color: #555;
+    line-height: 1.55;
+  }
+  .box-param {
+    font-family: 'Source Code Pro', monospace;
+    font-size: 7.5px;
+    color: #999;
+    margin-top: 2px;
+  }
+  .box-eq {
+    font-family: 'Source Code Pro', monospace;
+    font-size: 7.5px;
+    color: #555;
+    background: #f5f5f5;
+    border-radius: 2px;
+    padding: 2px 5px;
+    margin-top: 3px;
+    display: inline-block;
+  }
+
+  /* color variants */
+  .soil-dry  { border-color:#c8a060; background:#fdf8f0; }
+  .soil-wet  { border-color:#7ab8d8; background:#f0f8fd; }
+  .soil-vic  { border-color:#9d80d8; background:#f8f5ff; }
+  .soil-hbv  { border-color:#d87898; background:#fff5f8; }
+  .soil-top  { border-color:#90b840; background:#f5faee; }
+
+  .aq-active { border-color:#5dab6e; background:#f0faf2; }
+  .aq-empty  { border-color:#ddd;    background:#fafafa; }
+  .aq-vic    { border-color:#9d80d8; background:#f8f5ff; }
+  .aq-hbv    { border-color:#d87898; background:#fff5f8; }
+
+  .bc-zero  { background:#ebebeb; border-color:#999;   color:#555; }
+  .bc-drain { background:#d8eef8; border-color:#7ab8d8; color:#1a5c82; }
+
+  /* ── vertical arrow ── */
+  .varrow {
+    display:flex; flex-direction:column; align-items:center;
+    margin: 2px 0;
+  }
+  .va-line { width:1.5px; height:12px; }
+  .va-tip  { width:0; height:0;
+    border-left:4px solid transparent;
+    border-right:4px solid transparent; }
+  .va-label { font-size:7.5px; font-style:italic; margin:1px 0; }
+
+  .arr-gray   .va-line { background:#aaa; }
+  .arr-gray   .va-tip  { border-top:5px solid #aaa; }
+  .arr-gray   .va-label { color:#aaa; }
+  .arr-blue   .va-line { background:#1a5c82; }
+  .arr-blue   .va-tip  { border-top:5px solid #1a5c82; }
+  .arr-blue   .va-label { color:#1a5c82; }
+  .arr-green  .va-line { background:#2e7d32; }
+  .arr-green  .va-tip  { border-top:5px solid #2e7d32; }
+  .arr-orange .va-line { background:#e07820; }
+  .arr-orange .va-tip  { border-top:5px solid #e07820; }
+  .arr-purple .va-line { background:#6a3cb0; }
+  .arr-purple .va-tip  { border-top:5px solid #6a3cb0; }
+  .arr-pink   .va-line { background:#c03060; }
+  .arr-pink   .va-tip  { border-top:5px solid #c03060; }
+  .arr-lime   .va-line { background:#5a8c00; }
+  .arr-lime   .va-tip  { border-top:5px solid #5a8c00; }
+  .arr-dash   .va-line { background:none; border-left:1.5px dashed #ccc; width:0; }
+  .arr-dash   .va-tip  { border-top:5px solid #ccc; }
+  .arr-dash   .va-label { color:#ccc; }
+
+  /* ── right-exit arrow ── */
+  .rout {
+    display:flex; align-items:center;
+    margin-top:4px;
+  }
+  .ro-line { height:1.5px; width:14px; }
+  .ro-tip  { width:0; height:0;
+    border-top:3px solid transparent;
+    border-bottom:3px solid transparent; }
+  .ro-label { font-size:7.5px; font-weight:700; margin-left:4px; }
+
+  .ro-red    .ro-line { background:#c0392b; }
+  .ro-red    .ro-tip  { border-left:5px solid #c0392b; }
+  .ro-red    .ro-label { color:#c0392b; }
+  .ro-blue   .ro-line { background:#1a5c82; }
+  .ro-blue   .ro-tip  { border-left:5px solid #1a5c82; }
+  .ro-blue   .ro-label { color:#1a5c82; }
+  .ro-green  .ro-line { background:#2e7d32; }
+  .ro-green  .ro-tip  { border-left:5px solid #2e7d32; }
+  .ro-green  .ro-label { color:#2e7d32; }
+  .ro-purple .ro-line { background:#6a3cb0; }
+  .ro-purple .ro-tip  { border-left:5px solid #6a3cb0; }
+  .ro-purple .ro-label { color:#6a3cb0; }
+  .ro-pink   .ro-line { background:#c03060; }
+  .ro-pink   .ro-tip  { border-left:5px solid #c03060; }
+  .ro-pink   .ro-label { color:#c03060; }
+  .ro-lime   .ro-line { background:#5a8c00; }
+  .ro-lime   .ro-tip  { border-left:5px solid #5a8c00; }
+  .ro-lime   .ro-label { color:#5a8c00; }
+
+  /* ── blocked ── */
+  .blocked { display:flex; flex-direction:column; align-items:center; margin-top:3px; }
+  .bl-line { width:1.5px; height:8px; background:#bbb; }
+  .bl-bar  { width:20px; height:3px; background:#888; border-radius:1px; }
+  .bl-label { font-size:7.5px; color:#bbb; font-style:italic; margin-top:2px; }
+
+  /* ── warn ── */
+  .warn {
+    font-size:7.5px; color:#7a4000;
+    background:#fff3e0; border:1px solid #f0a040;
+    border-radius:2px; padding:3px 6px;
+    margin-top:4px; line-height:1.5;
+  }
+
+  /* ── water balance ── */
+  .wb {
+    border:1px solid #e0e0e0; border-radius:3px;
+    padding:5px 8px; background:#fafafa;
+    margin-top:6px;
+  }
+  .wb-title { font-size:7.5px; text-transform:uppercase; letter-spacing:0.08em; color:#aaa; margin-bottom:2px; }
+  .wb-eq { font-family:'Source Code Pro', monospace; font-size:8.5px; font-weight:600; color:#333; }
+  .wb-note { font-size:7.5px; color:#bbb; margin-top:2px; font-style:italic; }
+
+  /* ── section hr ── */
+  hr { border:none; border-top:1.5px solid #e8e8e8; margin:22px 0 18px 0; }
+
+  /* ── comparison table ── */
+  .cmp { width:100%; border-collapse:collapse; font-size:8.5px; }
+  .cmp th {
+    text-align:left; font-size:8px; font-weight:700;
+    text-transform:uppercase; letter-spacing:0.08em; color:#777;
+    padding:4px 8px 4px 0; border-bottom:1.5px solid #ddd;
+  }
+  .cmp td {
+    padding:4px 8px 4px 0; vertical-align:top;
+    border-bottom:1px solid #f0f0f0; color:#444;
+    line-height:1.45; font-size:8.5px;
+  }
+  .cmp td:first-child { font-weight:700; color:#333; width:14%; }
+  .td-nz { color:#555; }
+  .td-nd { color:#1a5c82; }
+  .td-bz { color:#7a4000; font-style:italic; }
+  .td-bd { color:#1a5c2a; }
+  .td-vic { color:#4a1a82; }
+  .td-hbv { color:#82001a; }
+  .td-top { color:#3a5c00; }
+</style>
+</head>
+<body>
+
+<h2>Soil &amp; Groundwater Structure — SUMMA Configurations vs. External Models</h2>
+<p class="subtitle">Focused on subsurface flow pathways only · inputs from above shown as forcing arrows</p>
+
+<div class="grid-wrapper">
+<div class="grid-summa">
+
+  <!-- ════════ COL 1: noExplicit + zeroFlux ════════ -->
+  <div class="mcol">
+    <div class="col-hdr h-nz">noExplicit<br>+ zeroFlux</div>
+    <div class="badge">groundwatr = noXplict<br>bcLowrSoiH = zeroFlux</div>
+
+    <!-- input arrow -->
+    <div class="varrow arr-gray">
+      <div class="va-label">rain + melt</div>
+      <div class="va-line"></div><div class="va-tip"></div>
+    </div>
+
+    <!-- soil -->
+    <div class="box soil-dry">
+      <div class="box-title">Soil Column</div>
+      <div class="box-body">Richards Eq. (mixed form)<br>van Genuchten K(θ,ψ)<br>Vertical redistribution only</div>
+      <div class="box-param">θ_sat · θ_res · k_soil<br>vGn_alpha · vGn_n</div>
+      <div class="rout ro-green"><div class="ro-line"></div><div class="ro-tip"></div><div class="ro-label">ET</div></div>
+      <div style="margin-top:4px;font-size:7.5px;color:#aaa;font-style:italic;">ΔS accumulates — no exit</div>
+    </div>
+
+    <!-- boundary -->
+    <div class="box bc-zero" style="text-align:center;font-size:8px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;">
+      ▬ Zero Flux Boundary
+    </div>
+
+    <!-- blocked -->
+    <div class="blocked">
+      <div class="bl-line"></div><div class="bl-bar"></div>
+      <div class="bl-label">no drainage</div>
+    </div>
+
+    <div class="wb">
+      <div class="wb-title">Subsurface Q</div>
+      <div class="wb-eq">Q_sub = 0</div>
+      <div class="wb-note">Only ET removes soil water</div>
+    </div>
+  </div>
+
+  <!-- ════════ COL 2: noExplicit + drainage ════════ -->
+  <div class="mcol">
+    <div class="col-hdr h-nd">noExplicit<br>+ drainage</div>
+    <div class="badge">groundwatr = noXplict<br>bcLowrSoiH = drainage</div>
+
+    <div class="varrow arr-gray">
+      <div class="va-label">rain + melt</div>
+      <div class="va-line"></div><div class="va-tip"></div>
+    </div>
+
+    <div class="box soil-wet">
+      <div class="box-title">Soil Column</div>
+      <div class="box-body">Richards Eq. (mixed form)<br>van Genuchten K(θ,ψ)<br>Vertical redistribution</div>
+      <div class="box-param">θ_sat · θ_res · k_soil<br>vGn_alpha · vGn_n · kAnisotropic</div>
+      <div class="rout ro-green"><div class="ro-line"></div><div class="ro-tip"></div><div class="ro-label">ET</div></div>
+    </div>
+
+    <div class="box bc-drain" style="text-align:center;font-size:8px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;">
+      ↓ Free Drainage BC
+    </div>
+
+    <div class="varrow arr-blue">
+      <div class="va-line"></div>
+      <div class="va-label">K(θ_bot) × kAnisotropic</div>
+      <div class="va-tip"></div>
+    </div>
+
+    <!-- direct to Q -->
+    <div class="box" style="border-color:#1a5c82;background:#e8f4fb;">
+      <div class="box-title" style="color:#1a5c82;">Direct to Stream</div>
+      <div class="box-body">No intermediate storage.<br>Drainage rate = f(θ_bottom)</div>
+      <div class="box-eq">Q = K(θ_bot) × kAnis</div>
+      <div class="rout ro-blue"><div class="ro-line"></div><div class="ro-tip"></div><div class="ro-label">→ Q</div></div>
+    </div>
+
+    <div class="wb">
+      <div class="wb-title">Subsurface Q</div>
+      <div class="wb-eq">Q_sub = K(θ) × kAnis</div>
+      <div class="wb-note">Recession tied to soil moisture</div>
+    </div>
+  </div>
+
+  <!-- ════════ COL 3: bigBucket + zeroFlux ════════ -->
+  <div class="mcol">
+    <div class="col-hdr h-bz">bigBucket<br>+ zeroFlux ⚠</div>
+    <div class="badge">groundwatr = bigBuckt<br>bcLowrSoiH = zeroFlux</div>
+
+    <div class="varrow arr-gray">
+      <div class="va-label">rain + melt</div>
+      <div class="va-line"></div><div class="va-tip"></div>
+    </div>
+
+    <div class="box soil-dry">
+      <div class="box-title">Soil Column</div>
+      <div class="box-body">Richards Eq. (mixed form)<br>van Genuchten K(θ,ψ)</div>
+      <div class="box-param">θ_sat · θ_res · k_soil<br>vGn_alpha · vGn_n</div>
+      <div class="rout ro-green"><div class="ro-line"></div><div class="ro-tip"></div><div class="ro-label">ET</div></div>
+    </div>
+
+    <div class="box bc-zero" style="text-align:center;font-size:8px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;">
+      ▬ Zero Flux Boundary
+    </div>
+
+    <div class="varrow arr-dash">
+      <div class="va-line"></div>
+      <div class="va-label">recharge = 0</div>
+      <div class="va-tip"></div>
+    </div>
+
+    <div class="box aq-empty">
+      <div class="box-title" style="color:#bbb;">Aquifer (isolated)</div>
+      <div class="box-body" style="color:#ccc;">No recharge path from soil.<br>Drains to zero, then idle.</div>
+      <div class="box-param" style="color:#ddd;">aquiferBaseflowRate<br>aquiferScaleFactor · aquiferBaseflowExp</div>
+    </div>
+
+    <div class="warn">⚠ Aquifer receives no recharge — physically inconsistent. Avoid this combination.</div>
+
+    <div class="wb">
+      <div class="wb-title">Subsurface Q</div>
+      <div class="wb-eq">Q_sub → 0</div>
+      <div class="wb-note">Aquifer drains to empty</div>
+    </div>
+  </div>
+
+  <!-- ════════ COL 4: bigBucket + drainage ════════ -->
+  <div class="mcol">
+    <div class="col-hdr h-bd">bigBucket<br>+ drainage ✓</div>
+    <div class="badge">groundwatr = bigBuckt<br>bcLowrSoiH = drainage</div>
+
+    <div class="varrow arr-gray">
+      <div class="va-label">rain + melt</div>
+      <div class="va-line"></div><div class="va-tip"></div>
+    </div>
+
+    <div class="box soil-wet">
+      <div class="box-title">Soil Column</div>
+      <div class="box-body">Richards Eq. (mixed form)<br>van Genuchten K(θ,ψ)</div>
+      <div class="box-param">θ_sat · θ_res · k_soil<br>vGn_alpha · vGn_n · kAnisotropic</div>
+      <div class="rout ro-green"><div class="ro-line"></div><div class="ro-tip"></div><div class="ro-label">ET</div></div>
+    </div>
+
+    <div class="box bc-drain" style="text-align:center;font-size:8px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;">
+      ↓ Free Drainage BC
+    </div>
+
+    <div class="varrow arr-blue">
+      <div class="va-line"></div>
+      <div class="va-label">scalarAquiferRecharge</div>
+      <div class="va-tip"></div>
+    </div>
+
+    <div class="box aq-active">
+      <div class="box-title" style="color:#1a5c2a;">Aquifer (bigBucket)</div>
+      <div class="box-body">Explicit storage buffer.<br>Power-law recession independent<br>of current soil moisture state.<br>Roots can extend below soil column.</div>
+      <div class="box-param">aquiferBaseflowRate · aquiferScaleFactor<br>aquiferBaseflowExp · critAquiferTranspire</div>
+      <div class="box-eq">Q = rate × (S/scale)^exp</div>
+      <div class="rout ro-green" style="margin-top:4px;">
+        <div class="ro-line"></div><div class="ro-tip"></div>
+        <div class="ro-label">→ ET (aquifer transpire)</div>
+      </div>
+      <div style="font-size:7px;color:#888;margin-left:4px;margin-top:1px;font-style:italic;">
+        scalarAquiferTranspire = f(rootFrac, transpireLim)
+      </div>
+      <div class="rout ro-blue" style="margin-top:4px;"><div class="ro-line"></div><div class="ro-tip"></div><div class="ro-label">→ Q (baseflow)</div></div>
+    </div>
+
+    <div class="wb">
+      <div class="wb-title">Subsurface Q</div>
+      <div class="wb-eq">Q_sub = f(S_aq)</div>
+      <div class="wb-note">Aquifer → baseflow to Q + transpire to ET</div>
+    </div>
+  </div>
+
+  <!-- ════════ COLUMN DIVIDER ════════ -->
+  </div><!-- end grid-summa -->
+  <div class="grid-divider"></div>
+  <div class="grid-ext">
+
+  <!-- ════════ COL 5: VIC ════════ -->
+  <div class="mcol">
+    <div class="col-hdr h-vic">VIC</div>
+    <div class="badge">3-layer soil · ARNO baseflow<br>Brooks-Corey drainage</div>
+
+    <div class="varrow arr-gray">
+      <div class="va-label">rain + melt</div>
+      <div class="va-line"></div><div class="va-tip"></div>
+    </div>
+
+    <div class="box soil-vic">
+      <div class="box-title">Upper Soil Layers (1–2)</div>
+      <div class="box-body">Brooks-Corey gravity drainage between layers. Variable infiltration curve (b_inf) generates surface runoff.</div>
+      <div class="box-param">b_inf · Ksat · θ_sat</div>
+      <div class="rout ro-green"><div class="ro-line"></div><div class="ro-tip"></div><div class="ro-label">ET</div></div>
+    </div>
+
+    <div class="varrow arr-purple">
+      <div class="va-line"></div>
+      <div class="va-label">gravity drainage</div>
+      <div class="va-tip"></div>
+    </div>
+
+    <div class="box aq-vic">
+      <div class="box-title" style="color:#4a1a82;">Lower Soil Layer (3)</div>
+      <div class="box-body">ARNO nonlinear baseflow scheme. No separate aquifer — bottom layer is implicit store. Two-phase recession: linear below Ws·Wmax, nonlinear above.</div>
+      <div class="box-param">Ds · Dsmax · Ws</div>
+      <div class="box-eq">Q = Ds·Dsmax + (Dsmax−Ds·Dsmax)<br>&nbsp;&nbsp;×((θ−Ws·θmax)/(θmax−Ws·θmax))^c</div>
+      <div class="rout ro-purple"><div class="ro-line"></div><div class="ro-tip"></div><div class="ro-label">→ Q</div></div>
+    </div>
+
+    <div class="wb">
+      <div class="wb-title">Analog</div>
+      <div class="wb-eq">≈ noExplicit+drainage</div>
+      <div class="wb-note">+ nonlinear ARNO recession shape</div>
+    </div>
+  </div>
+
+  <!-- ════════ COL 6: HBV ════════ -->
+  <div class="mcol">
+    <div class="col-hdr h-hbv">HBV</div>
+    <div class="badge">conceptual 2-reservoir<br>linear GW recession</div>
+
+    <div class="varrow arr-gray">
+      <div class="va-label">rain + melt</div>
+      <div class="va-line"></div><div class="va-tip"></div>
+    </div>
+
+    <div class="box soil-hbv">
+      <div class="box-title">Upper Reservoir (SM zone)</div>
+      <div class="box-body">Beta-function controls soil moisture recharge. Fast runoff Q1 triggered above threshold L. Interflow Q2 from upper reservoir.</div>
+      <div class="box-param">FC · β · LP · K1 · L</div>
+      <div class="rout ro-green"><div class="ro-line"></div><div class="ro-tip"></div><div class="ro-label">ET + Q1 + Q2</div></div>
+    </div>
+
+    <div class="varrow arr-pink">
+      <div class="va-line"></div>
+      <div class="va-label">percolation (PERC)</div>
+      <div class="va-tip"></div>
+    </div>
+
+    <div class="box aq-hbv">
+      <div class="box-title" style="color:#82001a;">Lower Reservoir (GW zone)</div>
+      <div class="box-body">Explicit groundwater store. Linear recession only — baseflow proportional to storage. Fully decoupled from current soil state.</div>
+      <div class="box-param">K2</div>
+      <div class="box-eq">Q3 = K2 × S2</div>
+      <div class="rout ro-pink"><div class="ro-line"></div><div class="ro-tip"></div><div class="ro-label">→ Q3</div></div>
+    </div>
+
+    <div class="wb">
+      <div class="wb-title">Analog</div>
+      <div class="wb-eq">≈ bigBucket+drainage</div>
+      <div class="wb-note">with aquiferBaseflowExp = 1</div>
+    </div>
+  </div>
+
+  <!-- ════════ COL 7: TOPMODEL ════════ -->
+  <div class="mcol">
+    <div class="col-hdr h-top">TOPMODEL</div>
+    <div class="badge">topographic wetness index<br>transmissivity profile</div>
+
+    <div class="varrow arr-gray">
+      <div class="va-label">rain + melt</div>
+      <div class="va-line"></div><div class="va-tip"></div>
+    </div>
+
+    <div class="box soil-top">
+      <div class="box-title">Soil / Saturated Zone</div>
+      <div class="box-body">No explicit soil column layering. Saturation deficit D controls soil moisture state spatially. TWI (ln a/tanβ) defines saturation pattern across the basin.</div>
+      <div class="box-param">m (decay) · T0 (transmissivity)</div>
+      <div class="rout ro-green"><div class="ro-line"></div><div class="ro-tip"></div><div class="ro-label">ET</div></div>
+    </div>
+
+    <div class="varrow arr-lime">
+      <div class="va-line"></div>
+      <div class="va-label">transmissivity profile</div>
+      <div class="va-tip"></div>
+    </div>
+
+    <div class="box" style="border-color:#90b840;background:#f0f7e0;">
+      <div class="box-title" style="color:#3a5c00;">Lateral Subsurface Flow</div>
+      <div class="box-body">Exponentially decaying Ksat with depth. Flow proportional to mean water table depth across catchment. Spatial connectivity is fundamental.</div>
+      <div class="box-param">zScale_TOPMODEL · kAnisotropic<br>tan_slope · contourLength</div>
+      <div class="box-eq">Q = T0 × exp(−D/m)</div>
+      <div class="rout ro-lime"><div class="ro-line"></div><div class="ro-tip"></div><div class="ro-label">→ Q</div></div>
+    </div>
+
+    <div class="wb">
+      <div class="wb-title">SUMMA equivalent</div>
+      <div class="wb-eq">groundwatr = qTopmodl</div>
+      <div class="wb-note">Requires pow_prof + spatial attrs</div>
+    </div>
+  </div>
+
+</div><!-- end grid-ext -->
+</div><!-- end grid-wrapper -->
+
+<hr>
+
+<!-- comparison table -->
+<table class="cmp">
+  <tr>
+    <th>Property</th>
+    <th>noX + zeroFlux</th>
+    <th>noX + drainage</th>
+    <th>bigBkt + zeroFlux</th>
+    <th>bigBkt + drainage</th>
+    <th>VIC</th>
+    <th>HBV</th>
+    <th>TOPMODEL</th>
+  </tr>
+  <tr>
+    <td>Soil physics</td>
+    <td class="td-nz">Richards Eq.</td>
+    <td class="td-nd">Richards Eq.</td>
+    <td class="td-bz">Richards Eq.</td>
+    <td class="td-bd">Richards Eq.</td>
+    <td class="td-vic">Brooks-Corey gravity</td>
+    <td class="td-hbv">Beta-function conceptual</td>
+    <td class="td-top">Implicit via deficit D</td>
+  </tr>
+  <tr>
+    <td>Subsurface drainage</td>
+    <td class="td-nz">None</td>
+    <td class="td-nd">K(θ) × kAnis → Q</td>
+    <td class="td-bz">None (zeroFlux)</td>
+    <td class="td-bd">K(θ) × kAnis → aquifer</td>
+    <td class="td-vic">Gravity drainage between layers</td>
+    <td class="td-hbv">Percolation rate PERC</td>
+    <td class="td-top">Exponential transmissivity</td>
+  </tr>
+  <tr>
+    <td>GW store</td>
+    <td class="td-nz">None</td>
+    <td class="td-nd">None</td>
+    <td class="td-bz">Bucket (no recharge)</td>
+    <td class="td-bd">Explicit bucket → Q + ET</td>
+    <td class="td-vic">Implicit (bottom layer)</td>
+    <td class="td-hbv">Explicit lower reservoir</td>
+    <td class="td-top">Implicit (water table)</td>
+  </tr>
+  <tr>
+    <td>Baseflow equation</td>
+    <td class="td-nz">—</td>
+    <td class="td-nd">K(θ_bot)</td>
+    <td class="td-bz">—</td>
+    <td class="td-bd">rate × (S/scale)^exp</td>
+    <td class="td-vic">ARNO: linear + nonlinear</td>
+    <td class="td-hbv">K2 × S2 (linear)</td>
+    <td class="td-top">T0 × exp(−D/m)</td>
+  </tr>
+  <tr>
+    <td>Recession type</td>
+    <td class="td-nz">None</td>
+    <td class="td-nd">Fast — coupled to θ_bot</td>
+    <td class="td-bz">Decays to zero</td>
+    <td class="td-bd">Sustained nonlinear</td>
+    <td class="td-vic">Two-phase nonlinear</td>
+    <td class="td-hbv">Sustained linear</td>
+    <td class="td-top">Exponential (spatial)</td>
+  </tr>
+  <tr>
+    <td>Storage decoupling</td>
+    <td class="td-nz">No</td>
+    <td class="td-nd">No</td>
+    <td class="td-bz">No (starved)</td>
+    <td class="td-bd">Yes</td>
+    <td class="td-vic">Partial</td>
+    <td class="td-hbv">Yes</td>
+    <td class="td-top">Yes (spatial)</td>
+  </tr>
+  <tr>
+    <td>Key calibration params</td>
+    <td class="td-nz">θ_sat · k_soil</td>
+    <td class="td-nd">+ kAnisotropic · vGn_n</td>
+    <td class="td-bz">aquifer params unused</td>
+    <td class="td-bd">+ aqRate · aqScale · aqExp · critAquiferTranspire</td>
+    <td class="td-vic">Ds · Dsmax · Ws</td>
+    <td class="td-hbv">PERC · K2 · FC</td>
+    <td class="td-top">m · T0 · tan_slope</td>
+  </tr>
+</table>
+
+</body>
+</html>

@@ -11,11 +11,25 @@ This module implements an experiment that:
 5. Evaluates sensitivity via water balance (ET, storage change) and runoff ratio
 6. Produces spaghetti plots of precipitation and streamflow signals
 
+Each run creates a dated experiment folder (YYYYMMDD_experiment_name/) under simulations/
+containing all outputs, settings, and configuration for reproducibility.
+
 Usage:
     from seasonal_ensemble_experiment import SeasonalEnsembleExperiment
     
-    exp = SeasonalEnsembleExperiment(config_path="path/to/config.yaml")
-    exp.run_full_workflow()
+    exp = SeasonalEnsembleExperiment(
+        config_path="path/to/config.yaml",
+        experiment_name="test_run"  # optional; defaults to config EXPERIMENT_ID
+    )
+    exp.run_full_workflow(
+        baseline_start="2003-01-01 01:00",
+        baseline_end="2022-12-31 23:00",
+        target_year=2023
+    )
+    
+Utilities:
+    backup_experiment_results(project_dir, domain_name, backup_name=None)
+        - Moves non-dated result directories to a timestamped backup
 """
 
 import sys
@@ -51,6 +65,71 @@ if not logger.handlers:
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     handler.setFormatter(formatter)
     logger.addHandler(handler)
+
+
+# =============================================================================
+# Utility Functions
+# =============================================================================
+
+def backup_experiment_results(project_dir: Path, domain_name: str, backup_name: str = None) -> Path:
+    """
+    Move existing (non-dated) results to a timestamped backup.
+    
+    Useful before starting a new workflow to preserve old runs that don't yet
+    follow the YYYYMMDD_name naming convention.
+    
+    Parameters
+    ----------
+    project_dir : Path
+        Base project directory (data_dir/domain_xyz)
+    domain_name : str
+        Domain name (e.g., 'East_River_lumped')
+    backup_name : str, optional
+        Name for backup folder. If None, uses 'backup_pre_dated_<YYYYMMDD>'.
+    
+    Returns
+    -------
+    Path
+        Path to backup folder, or None if no results to backup.
+    """
+    sim_dir = project_dir / 'simulations'
+    if not sim_dir.exists():
+        return None
+    
+    # Find folders that don't follow YYYYMMDD_name pattern
+    old_results = []
+    for item in sim_dir.iterdir():
+        if not item.is_dir():
+            continue
+        name = item.name
+        # Skip if already dated (starts with YYYYMMDD_)
+        if len(name) >= 9 and name[:8].isdigit() and name[8] == '_':
+            continue
+        old_results.append(item)
+    
+    if not old_results:
+        logger.info("No old (non-dated) results to backup.")
+        return None
+    
+    # Create backup folder
+    if backup_name is None:
+        now = datetime.now()
+        backup_name = f"backup_pre_dated_{now.strftime('%Y%m%d_%H%M%S')}"
+    
+    backup_dir = sim_dir / backup_name
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    
+    logger.info(f"Backing up {len(old_results)} old result folders to: {backup_name}")
+    for item in old_results:
+        dst = backup_dir / item.name
+        if dst.exists():
+            logger.warning(f"  Destination exists, skipping: {item.name}")
+            continue
+        shutil.move(str(item), str(dst))
+        logger.info(f"  Moved: {item.name}")
+    
+    return backup_dir
+
 
 # Season definitions aligned to the water year (Oct–Sep).
 # Each season spans exactly 3 months within a single calendar year,
@@ -115,14 +194,130 @@ class ExperimentConfig:
         self.hydro_model = self.raw.get('HYDROLOGICAL_MODEL', 'SUMMA')
         self.basin_area_m2 = self.raw.get('BASIN_AREA_M2', None)
         
-        # Paths
+        # Shared paths (not experiment-specific)
         self.forcing_dir = self.project_dir / 'forcing'
         self.summa_input_dir = self.forcing_dir / 'SUMMA_input'
-        self.settings_dir = self.project_dir / 'settings' / 'SUMMA'
         self.obs_dir = self.project_dir / 'observations' / 'streamflow' / 'preprocessed'
         self.opt_dir = self.project_dir / 'optimisation'
-        self.ensemble_dir = self.project_dir / 'seasonal_ensemble'
-        self.plots_dir = self.project_dir / 'plots' / 'seasonal_ensemble'
+        
+        # Base settings dir (will be copied to experiment folder)
+        self.base_settings_dir = self.project_dir / 'settings' / 'SUMMA'
+        
+        # Experiment-specific paths (initialized by initialize_experiment_workspace)
+        self.settings_dir = None
+        self.ensemble_dir = None
+        self.plots_dir = None
+        self.experiment_workspace = None
+    
+    def initialize_experiment_workspace(self, experiment_name: str = None) -> Path:
+        """
+        Initialize a dated experiment workspace.
+        
+        Creates a folder: YYYYMMDD_experiment_name/
+        with subdirectories for settings, results, and plots.
+        
+        Copies config file and SUMMA settings to the workspace.
+        
+        Parameters
+        ----------
+        experiment_name : str, optional
+            Name to include in folder name. Defaults to base_experiment_id.
+        
+        Returns
+        -------
+        Path
+            Root path of the experiment workspace
+        """
+        if experiment_name is None:
+            experiment_name = self.base_experiment_id
+        
+        # Create dated folder name: YYYYMMDD_experiment_name
+        now = datetime.now()
+        date_str = now.strftime('%Y%m%d')
+        exp_folder_name = f"{date_str}_{experiment_name}"
+        
+        self.experiment_workspace = self.project_dir / 'simulations' / exp_folder_name
+        self.experiment_workspace.mkdir(parents=True, exist_ok=True)
+        
+        logger.info(f"Initialized experiment workspace: {self.experiment_workspace.name}")
+        
+        # Create subdirectories
+        self.settings_dir = self.experiment_workspace / 'settings'
+        ensemble_base = self.experiment_workspace / 'ensemble'
+        self.ensemble_dir = ensemble_base / 'results'
+        self.plots_dir = ensemble_base / 'plots'
+        
+        for d in [self.settings_dir, self.ensemble_dir, self.plots_dir]:
+            d.mkdir(parents=True, exist_ok=True)
+        
+        # Copy config file to experiment folder for reproducibility
+        config_backup = self.experiment_workspace / f"config_{now.strftime('%Y%m%d_%H%M%S')}.yaml"
+        shutil.copy2(self.config_path, config_backup)
+        logger.info(f"Backed up config: {config_backup.name}")
+        
+        # Copy base SUMMA settings to experiment folder
+        if self.base_settings_dir.exists():
+            for item in self.base_settings_dir.iterdir():
+                dst = self.settings_dir / item.name
+                if item.is_file():
+                    shutil.copy2(item, dst)
+                elif item.is_dir():
+                    if dst.exists():
+                        shutil.rmtree(dst)
+                    shutil.copytree(item, dst)
+            logger.info(f"Copied SUMMA settings to: {self.settings_dir}")
+        else:
+            logger.warning(f"Base settings dir not found: {self.base_settings_dir}")
+        
+        # Update fileManager.txt paths to point to experiment workspace
+        self._update_file_manager_paths()
+        
+        # Create README.md to document the experiment
+        readme_path = self.experiment_workspace / 'README.md'
+        with open(readme_path, 'w') as f:
+            f.write(f"# Experiment: {exp_folder_name}\n\n")
+            f.write(f"**Date:** {now.isoformat()}\n\n")
+            f.write(f"**Config:** {self.config_path.name}\n\n")
+            f.write(f"**Domain:** {self.domain_name}\n\n")
+            f.write("## Directory Structure\n\n")
+            f.write("- `settings/` - SUMMA configuration and parameters\n")
+            f.write("- `ensemble/results/` - Model simulation outputs\n")
+            f.write("- `ensemble/plots/` - Visualization outputs\n")
+            f.write("- `config_*.yaml` - Configuration snapshot\n")
+        
+        return self.experiment_workspace
+
+    def _update_file_manager_paths(self):
+        """Update fileManager.txt to use experiment-specific settings/results paths."""
+        fm_path = self.settings_dir / 'fileManager.txt'
+        if not fm_path.exists():
+            logger.warning(f"fileManager.txt not found at {fm_path}")
+            return
+
+        with open(fm_path, 'r') as f:
+            lines = f.readlines()
+
+        new_lines = []
+        for line in lines:
+            s = line.strip()
+            if s.startswith('settingsPath'):
+                new_lines.append(f"settingsPath         '{self.settings_dir}/'\n")
+            elif s.startswith('forcingPath'):
+                new_lines.append(f"forcingPath          '{self.summa_input_dir}/'\n")
+            elif s.startswith('outputPath'):
+                new_lines.append(f"outputPath           '{self.ensemble_dir}/'\n")
+            else:
+                new_lines.append(line)
+
+        with open(fm_path, 'w') as f:
+            f.writelines(new_lines)
+
+        logger.info(
+            f"Updated fileManager.txt paths:\n"
+            f"  settingsPath -> {self.settings_dir}/\n"
+            f"  forcingPath  -> {self.summa_input_dir}/\n"
+            f"  outputPath   -> {self.ensemble_dir}/"
+        )
     
     def get_confluence_config(self, **overrides) -> dict:
         """Return a copy of the config with optional overrides."""
@@ -147,7 +342,12 @@ class ParameterOptimizer:
         logger.info("PHASE 1: PARAMETER OPTIMIZATION")
         logger.info("=" * 70)
         
-        confluence = CONFLUENCE(config_path=str(self.cfg.config_path))
+        run_label = datetime.now().strftime('%Y%m%d_%H%M%S')
+        confluence = CONFLUENCE(
+            config_path=str(self.cfg.config_path),
+            config_overrides={'OPTIMIZATION_RUN_LABEL': run_label}
+        )
+        logger.info(f"Optimization run label: {run_label}")
         confluence.managers['optimization'].calibrate_model()
         
         logger.info("Optimization complete.")
@@ -697,9 +897,13 @@ class EnsembleRunner:
         params_df: pd.DataFrame,
         start: str,
         end: str,
-        experiment_id: str = 'baseline'
+        experiment_id: str = 'longterm_baseline'
     ) -> Path:
-        """Run the baseline (unperturbed) simulation."""
+        """Run the baseline (unperturbed) simulation.
+        
+        Saves to experiment-specific folder to ensure reproducibility
+        and avoid conflicts with other experiments using different configs.
+        """
         logger.info("=" * 70)
         logger.info(f"RUNNING BASELINE: {start} to {end}")
         logger.info("=" * 70)
@@ -707,7 +911,8 @@ class EnsembleRunner:
         self.runner.apply_parameters(params_df)
         self.runner.update_time_period(start, end)
         
-        output_dir = self.cfg.project_dir / 'simulations' / experiment_id / 'SUMMA'
+        # Save to experiment-specific folder, not shared simulations folder
+        output_dir = self.cfg.ensemble_dir / 'results' / 'baseline_longterm'
         return self.runner.run_summa(experiment_id, output_dir)
     
     def run_target_year_baseline(
@@ -716,7 +921,11 @@ class EnsembleRunner:
         target_year: int,
         water_year: bool = False,
     ) -> Path:
-        """Run the unperturbed target year simulation."""
+        """Run the unperturbed target year simulation.
+        
+        Saves to separate 'baseline_target' subfolder to keep distinct
+        from the longterm baseline (baseline_longterm).
+        """
         if water_year:
             start = f"{target_year - 1}-10-01 01:00"
             end = f"{target_year}-09-30 23:00"
@@ -726,7 +935,8 @@ class EnsembleRunner:
             end = f"{target_year}-12-31 23:00"
             exp_id = f"target_year_{target_year}"
         
-        output_dir = self.cfg.ensemble_dir / 'results' / 'baseline'
+        # Save to separate folder to distinguish from longterm baseline
+        output_dir = self.cfg.ensemble_dir / 'results' / 'baseline_target'
         self.runner.apply_parameters(params_df)
         self.runner.update_time_period(start, end)
         return self.runner.run_summa(exp_id, output_dir)
@@ -1417,13 +1627,13 @@ class EnsembleEvaluator:
                     'swe_mean': member_seasonal['swe'].mean() if 'swe' in member_seasonal else np.nan,
                 }
                 
-                # KGE of daily streamflow vs baseline
+                # NSE of daily streamflow vs baseline
                 if 'Q' in member_seasonal and 'Q' in baseline_seasonal:
                     common_idx = member_seasonal.index.intersection(baseline_seasonal.index)
                     if len(common_idx) > 10:
                         obs = baseline_seasonal.loc[common_idx, 'Q'].values
                         sim = member_seasonal.loc[common_idx, 'Q'].values
-                        record['KGE_vs_baseline'] = get_KGE(obs, sim)
+                        record['NSE_vs_baseline'] = get_NSE(obs, sim)
                 
                 # Compute deviation from baseline
                 bl = {
@@ -1975,9 +2185,13 @@ class SeasonalEnsembleExperiment:
     - generate_run_script() → bash script for nohup / overnight runs
     """
     
-    def __init__(self, config_path: str, max_workers: int = 4):
+    def __init__(self, config_path: str, max_workers: int = 4, experiment_name: str = None):
         self.cfg = ExperimentConfig(config_path)
         self.max_workers = max_workers
+        
+        # Initialize experiment workspace with dated folder
+        self.cfg.initialize_experiment_workspace(experiment_name)
+        
         self.optimizer = ParameterOptimizer(self.cfg)
         self.ensemble_builder = ForcingEnsembleBuilder(self.cfg)
         self.ensemble_runner = EnsembleRunner(self.cfg)
@@ -2088,7 +2302,7 @@ class SeasonalEnsembleExperiment:
         end: str = None,
         download_obs: bool = True,
         create_forcing: bool = True,
-        recalc_longwave: bool = False,
+        recalc_longwave: bool = True,
     ):
         """
         Run the complete data preparation pipeline.
@@ -2212,7 +2426,12 @@ class SeasonalEnsembleExperiment:
         logger.info("Applying best parameters to SUMMA settings files...")
         self.ensemble_runner.runner.apply_parameters(self.best_params)
         logger.info("✓ Best parameters applied to localParamInfo.txt and basinParamInfo.txt")
-        
+
+        # Save a copy of the best parameters alongside the settings files
+        params_out = self.cfg.settings_dir / 'best_parameters.csv'
+        self.best_params.to_csv(params_out, index=False)
+        logger.info(f"✓ Best parameters saved to: {params_out.relative_to(self.cfg.project_dir)}")
+
         return self.best_params
     
     def step2_long_term_run(
@@ -2267,7 +2486,7 @@ class SeasonalEnsembleExperiment:
             raise ValueError("No baseline output available. Run step2_long_term_run first.")
         
         warm_state_path = self.cfg.settings_dir / 'warmState.nc'
-        cold_state_path = self.cfg.settings_dir / 'coldState.nc'
+        cold_state_path = self.cfg.settings_dir / 'coldState_updated.nc'
         
         ds_cold = xr.open_dataset(cold_state_path)
         ds_out = xr.open_dataset(output_nc)
@@ -2462,6 +2681,47 @@ class SeasonalEnsembleExperiment:
         with open(fm_path, 'w') as f:
             f.writelines(new_lines)
         logger.info(f"initConditionFile → {filename}")
+    
+    def _update_file_manager_paths(self):
+        """
+        Update fileManager.txt to point to experiment workspace paths.
+        
+        Called after settings are copied to experiment workspace.
+        Updates:
+        - settingsPath → experiment settings directory
+        - forcingPath → SUMMA input forcing directory
+        - outputPath → ensemble results directory
+        """
+        fm_path = self.cfg.settings_dir / 'fileManager.txt'
+        if not fm_path.exists():
+            logger.warning(f"fileManager.txt not found at {fm_path}")
+            return
+        
+        with open(fm_path, 'r') as f:
+            lines = f.readlines()
+        
+        new_lines = []
+        for line in lines:
+            s = line.strip()
+            # Update main directory paths to use experiment workspace paths
+            if s.startswith('settingsPath'):
+                new_lines.append(f"settingsPath         '{self.cfg.settings_dir}/'\n")
+            elif s.startswith('forcingPath'):
+                new_lines.append(f"forcingPath          '{self.cfg.summa_input_dir}/'\n")
+            elif s.startswith('outputPath'):
+                new_lines.append(f"outputPath           '{self.cfg.ensemble_dir}/'\n")
+            else:
+                new_lines.append(line)
+        
+        with open(fm_path, 'w') as f:
+            f.writelines(new_lines)
+        
+        logger.info(
+            f"Updated fileManager.txt paths:\n"
+            f"  settingsPath → {self.cfg.settings_dir}/\n"
+            f"  forcingPath → {self.cfg.summa_input_dir}/\n"
+            f"  outputPath → {self.cfg.ensemble_dir}/"
+        )
     
     def _slice_target_year_from_continuous(self, target_year: int) -> Optional[Path]:
         """Create target-year baseline by slicing from a continuous baseline run.

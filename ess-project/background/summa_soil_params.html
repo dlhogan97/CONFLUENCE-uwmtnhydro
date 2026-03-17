@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;600;700&family=Source+Code+Pro:wght@500&display=swap');
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: #ffffff;
+    font-family: 'Source Sans 3', sans-serif;
+    padding: 36px 40px 44px 40px;
+    width: 900px;
+  }
+
+  /* ── page header ── */
+  h2 {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: #333;
+    border-bottom: 1.5px solid #ccc;
+    padding-bottom: 7px;
+    margin-bottom: 5px;
+  }
+  .subtitle {
+    font-size: 10px;
+    color: #999;
+    font-style: italic;
+    margin-bottom: 26px;
+  }
+
+  /* ── legend ── */
+  .legend {
+    display: flex;
+    gap: 20px;
+    margin-bottom: 22px;
+    flex-wrap: wrap;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 9.5px;
+    color: #444;
+  }
+  .legend-swatch {
+    width: 28px;
+    height: 10px;
+    border-radius: 2px;
+    flex-shrink: 0;
+  }
+
+  /* ── two-column wrapper ── */
+  .cols {
+    display: flex;
+    gap: 28px;
+  }
+  .col {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ── column header ── */
+  .col-hdr {
+    text-align: center;
+    padding: 7px 10px;
+    border-radius: 3px;
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-bottom: 14px;
+  }
+  .col-hdr.zero { background:#f0f0f0; color:#333; border:1.5px solid #bbb; }
+  .col-hdr.drain { background:#e8f4fb; color:#1a5c82; border:1.5px solid #7ab8d8; }
+
+  /* ── soil column box ── */
+  .soil-wrap {
+    position: relative;
+    border: 1.5px solid #888;
+    border-radius: 4px;
+    background: #faf8f4;
+    padding: 12px 14px 14px 14px;
+    flex: 1;
+  }
+  .soil-wrap.drain-col { border-color: #7ab8d8; }
+
+  .soil-title {
+    font-size: 9.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: #555;
+    margin-bottom: 10px;
+  }
+
+  /* soil layers */
+  .layers {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    margin-bottom: 10px;
+  }
+  .layer {
+    height: 28px;
+    border-radius: 2px;
+    border: 1px solid #c8b89a;
+    background: #e8e0d0;
+    display: flex;
+    align-items: center;
+    padding: 0 8px;
+    font-size: 8.5px;
+    font-family: 'Source Code Pro', monospace;
+    color: #7a6040;
+  }
+
+  /* ── flux rows: parameter tags + arrow ── */
+  .flux-block {
+    margin-top: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+  }
+
+  .flux-row {
+    display: flex;
+    align-items: center;
+    gap: 0;
+  }
+
+  /* arrow */
+  .f-arrow {
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+    margin-right: 8px;
+  }
+  .f-line {
+    height: 1.5px;
+    width: 22px;
+  }
+  .f-tip {
+    width: 0; height: 0;
+    border-top: 4px solid transparent;
+    border-bottom: 4px solid transparent;
+  }
+
+  /* flux label */
+  .f-label {
+    font-size: 9.5px;
+    font-weight: 700;
+    margin-right: 8px;
+    white-space: nowrap;
+    flex-shrink: 0;
+    min-width: 72px;
+  }
+
+  /* parameter tags */
+  .tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px;
+  }
+  .tag {
+    font-size: 8px;
+    font-family: 'Source Code Pro', monospace;
+    padding: 2px 5px;
+    border-radius: 2px;
+    white-space: nowrap;
+    border: 1px solid transparent;
+  }
+
+  /* ── color scheme by flux type ── */
+
+  /* Surface runoff */
+  .c-runoff .f-line  { background: #c0392b; }
+  .c-runoff .f-tip   { border-left-color: #c0392b; }
+  .c-runoff .f-label { color: #c0392b; }
+  .c-runoff .tag     { background: #fdecea; border-color: #e8a09a; color: #922b21; }
+
+  /* ET - transpiration */
+  .c-trans .f-line  { background: #1a7a3a; }
+  .c-trans .f-tip   { border-left-color: #1a7a3a; }
+  .c-trans .f-label { color: #1a7a3a; }
+  .c-trans .tag     { background: #eaf6ee; border-color: #8ec9a0; color: #1a5c2a; }
+
+  /* ET - soil evaporation */
+  .c-evap .f-line  { background: #2e7d32; }
+  .c-evap .f-tip   { border-left-color: #2e7d32; }
+  .c-evap .f-label { color: #2e7d32; }
+  .c-evap .tag     { background: #f0faf2; border-color: #a5d6b0; color: #1b5e20; }
+
+  /* Drainage */
+  .c-drain .f-line  { background: #1a5c82; }
+  .c-drain .f-tip   { border-left-color: #1a5c82; }
+  .c-drain .f-label { color: #1a5c82; }
+  .c-drain .tag     { background: #e8f4fb; border-color: #7ab8d8; color: #0d3d58; }
+
+  /* Storage change */
+  .c-store .f-line  { background: #888; border-top: 1.5px dashed #888; background: none; width: 22px; height: 0; }
+  .c-store .f-tip   { border-left-color: #888; }
+  .c-store .f-label { color: #888; }
+  .c-store .tag     { background: #f5f5f5; border-color: #ccc; color: #555; }
+
+  /* ── bottom boundary ── */
+  .boundary {
+    margin-top: 10px;
+    padding: 7px 10px;
+    border-radius: 3px;
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .boundary.zero  { background: #eee; color: #555; border: 1.5px solid #999; }
+  .boundary.drain-bc { background: #d8eef8; color: #1a5c82; border: 1.5px solid #7ab8d8; }
+  .boundary-sub { font-size: 8.5px; font-weight: 400; font-style: italic; }
+
+  /* ── divider ── */
+  .divider {
+    width: 1px;
+    background: #e0e0e0;
+    align-self: stretch;
+  }
+
+  /* ── notes section ── */
+  .notes {
+    margin-top: 22px;
+    border: 1.5px solid #e0e0e0;
+    border-radius: 4px;
+    padding: 11px 16px;
+    background: #fafafa;
+  }
+  .notes-title {
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.10em;
+    color: #666;
+    margin-bottom: 8px;
+  }
+  .notes-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 9px;
+  }
+  .notes-table th {
+    text-align: left;
+    padding: 2px 10px 4px 0;
+    border-bottom: 1px solid #ddd;
+    font-size: 8.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: #777;
+  }
+  .notes-table td {
+    padding: 3px 10px 3px 0;
+    vertical-align: top;
+    border-bottom: 1px solid #f0f0f0;
+    color: #444;
+    line-height: 1.45;
+    font-size: 9px;
+  }
+  .notes-table td:first-child {
+    font-family: 'Source Code Pro', monospace;
+    font-size: 8.5px;
+    color: #333;
+    white-space: nowrap;
+    padding-right: 12px;
+  }
+  .only-drain {
+    font-size: 8px;
+    font-style: italic;
+    color: #1a5c82;
+    white-space: nowrap;
+  }
+</style>
+</head>
+<body>
+
+<h2>SUMMA Soil Parameter Effects on Fluxes — zeroFlux vs. drainage</h2>
+<p class="subtitle">Sandy loam · noExplicit aquifer · Parameters shown next to the flux they govern</p>
+
+<!-- legend -->
+<div class="legend">
+  <div class="legend-item">
+    <div class="legend-swatch" style="background:#fdecea;border:1px solid #e8a09a;"></div>
+    Surface runoff
+  </div>
+  <div class="legend-item">
+    <div class="legend-swatch" style="background:#eaf6ee;border:1px solid #8ec9a0;"></div>
+    ET (transpiration)
+  </div>
+  <div class="legend-item">
+    <div class="legend-swatch" style="background:#f0faf2;border:1px solid #a5d6b0;"></div>
+    ET (soil evaporation)
+  </div>
+  <div class="legend-item">
+    <div class="legend-swatch" style="background:#e8f4fb;border:1px solid #7ab8d8;"></div>
+    Drainage (drainage only)
+  </div>
+  <div class="legend-item">
+    <div class="legend-swatch" style="background:#f5f5f5;border:1px solid #ccc;"></div>
+    Storage change ΔS
+  </div>
+</div>
+
+<div class="cols">
+
+  <!-- ══════════════ LEFT: zeroFlux ══════════════ -->
+  <div class="col">
+    <div class="col-hdr zero">bcLowrSoiH = zeroFlux</div>
+
+    <div class="soil-wrap">
+      <div class="soil-title">Soil Column (1 m · 3 layers)</div>
+
+      <div class="layers">
+        <div class="layer">layer 1 · 0.20 m</div>
+        <div class="layer">layer 2 · 0.30 m</div>
+        <div class="layer">layer 3 · 0.50 m</div>
+      </div>
+
+      <div class="flux-block">
+
+        <!-- Surface runoff -->
+        <div class="flux-row c-runoff">
+          <div class="f-arrow"><div class="f-line" style="background:#c0392b;"></div><div class="f-tip" style="border-left-color:#c0392b;"></div></div>
+          <div class="f-label">Sfc. Runoff</div>
+          <div class="tags">
+            <span class="tag">qSurfScale</span>
+            <span class="tag">k_soil</span>
+            <span class="tag">theta_sat</span>
+            <span class="tag">wettingFrontSuction</span>
+            <span class="tag">rootingDepth</span>
+            <span class="tag">soilIceScale</span>
+            <span class="tag">soilIceCV</span>
+            <span class="tag">f_impede</span>
+          </div>
+        </div>
+
+        <!-- Transpiration -->
+        <div class="flux-row c-trans">
+          <div class="f-arrow"><div class="f-line" style="background:#1a7a3a;"></div><div class="f-tip" style="border-left-color:#1a7a3a;"></div></div>
+          <div class="f-label">Transpiration</div>
+          <div class="tags">
+            <span class="tag">rootingDepth</span>
+            <span class="tag">rootDistExp</span>
+            <span class="tag">critSoilTranspire</span>
+            <span class="tag">critSoilWilting</span>
+            <span class="tag">theta_sat</span>
+            <span class="tag">theta_res</span>
+            <span class="tag">vGn_alpha</span>
+            <span class="tag">vGn_n</span>
+          </div>
+        </div>
+
+        <!-- Soil evaporation -->
+        <div class="flux-row c-evap">
+          <div class="f-arrow"><div class="f-line" style="background:#2e7d32;"></div><div class="f-tip" style="border-left-color:#2e7d32;"></div></div>
+          <div class="f-label">Soil Evap</div>
+          <div class="tags">
+            <span class="tag">theta_sat</span>
+            <span class="tag">theta_res</span>
+            <span class="tag">vGn_alpha</span>
+            <span class="tag">vGn_n</span>
+          </div>
+        </div>
+
+        <!-- Storage change -->
+        <div class="flux-row c-store">
+          <div class="f-arrow">
+            <div style="width:22px;height:0;border-top:1.5px dashed #888;"></div>
+            <div class="f-tip" style="border-left-color:#888;"></div>
+          </div>
+          <div class="f-label">ΔS_soil</div>
+          <div class="tags">
+            <span class="tag">theta_sat</span>
+            <span class="tag">theta_res</span>
+            <span class="tag">mLayerDepth</span>
+          </div>
+        </div>
+
+      </div><!-- flux-block -->
+
+      <div class="boundary zero">
+        <span>▬</span>
+        <span>Zero Flux &nbsp;·&nbsp; <span class="boundary-sub">no water exits base · ΔS accumulates</span></span>
+      </div>
+
+    </div><!-- soil-wrap -->
+  </div><!-- col -->
+
+  <div class="divider"></div>
+
+  <!-- ══════════════ RIGHT: drainage ══════════════ -->
+  <div class="col">
+    <div class="col-hdr drain">bcLowrSoiH = drainage</div>
+
+    <div class="soil-wrap drain-col">
+      <div class="soil-title">Soil Column (1 m · 3 layers)</div>
+
+      <div class="layers">
+        <div class="layer" style="background:#d0e8f0;border-color:#7ab8d8;color:#1a5c82;">layer 1 · 0.20 m</div>
+        <div class="layer" style="background:#d0e8f0;border-color:#7ab8d8;color:#1a5c82;">layer 2 · 0.30 m</div>
+        <div class="layer" style="background:#d0e8f0;border-color:#7ab8d8;color:#1a5c82;">layer 3 · 0.50 m ← drainage source</div>
+      </div>
+
+      <div class="flux-block">
+
+        <!-- Surface runoff -->
+        <div class="flux-row c-runoff">
+          <div class="f-arrow"><div class="f-line" style="background:#c0392b;"></div><div class="f-tip" style="border-left-color:#c0392b;"></div></div>
+          <div class="f-label">Sfc. Runoff</div>
+          <div class="tags">
+            <span class="tag">qSurfScale</span>
+            <span class="tag">k_soil</span>
+            <span class="tag">theta_sat</span>
+            <span class="tag">wettingFrontSuction</span>
+            <span class="tag">rootingDepth</span>
+            <span class="tag">soilIceScale</span>
+            <span class="tag">soilIceCV</span>
+            <span class="tag">f_impede</span>
+          </div>
+        </div>
+
+        <!-- Transpiration -->
+        <div class="flux-row c-trans">
+          <div class="f-arrow"><div class="f-line" style="background:#1a7a3a;"></div><div class="f-tip" style="border-left-color:#1a7a3a;"></div></div>
+          <div class="f-label">Transpiration</div>
+          <div class="tags">
+            <span class="tag">rootingDepth</span>
+            <span class="tag">rootDistExp</span>
+            <span class="tag">critSoilTranspire</span>
+            <span class="tag">critSoilWilting</span>
+            <span class="tag">theta_sat</span>
+            <span class="tag">theta_res</span>
+            <span class="tag">vGn_alpha</span>
+            <span class="tag">vGn_n</span>
+          </div>
+        </div>
+
+        <!-- Soil evaporation -->
+        <div class="flux-row c-evap">
+          <div class="f-arrow"><div class="f-line" style="background:#2e7d32;"></div><div class="f-tip" style="border-left-color:#2e7d32;"></div></div>
+          <div class="f-label">Soil Evap</div>
+          <div class="tags">
+            <span class="tag">theta_sat</span>
+            <span class="tag">theta_res</span>
+            <span class="tag">vGn_alpha</span>
+            <span class="tag">vGn_n</span>
+          </div>
+        </div>
+
+        <!-- Drainage -->
+        <div class="flux-row c-drain">
+          <div class="f-arrow"><div class="f-line" style="background:#1a5c82;"></div><div class="f-tip" style="border-left-color:#1a5c82;"></div></div>
+          <div class="f-label">Drainage</div>
+          <div class="tags">
+            <span class="tag">k_soil</span>
+            <span class="tag">kAnisotropic</span>
+            <span class="tag">vGn_n</span>
+            <span class="tag">vGn_alpha</span>
+            <span class="tag">theta_sat</span>
+            <span class="tag">theta_res</span>
+            <span class="tag">k_macropore</span>
+            <span class="tag">theta_mp</span>
+            <span class="tag">mpExp</span>
+            <span class="tag">compactedDepth</span>
+          </div>
+        </div>
+
+        <!-- Storage change -->
+        <div class="flux-row c-store">
+          <div class="f-arrow">
+            <div style="width:22px;height:0;border-top:1.5px dashed #888;"></div>
+            <div class="f-tip" style="border-left-color:#888;"></div>
+          </div>
+          <div class="f-label">ΔS_soil</div>
+          <div class="tags">
+            <span class="tag">theta_sat</span>
+            <span class="tag">theta_res</span>
+            <span class="tag">mLayerDepth</span>
+          </div>
+        </div>
+
+      </div><!-- flux-block -->
+
+      <div class="boundary drain-bc">
+        <span>↓</span>
+        <span>Free Drainage &nbsp;·&nbsp; <span class="boundary-sub">scalarDrainage = nodeHydCond × kAnisotropic (Eq. 139)</span></span>
+      </div>
+
+    </div><!-- soil-wrap -->
+  </div><!-- col -->
+
+</div><!-- cols -->
+
+<!-- parameter reference table -->
+<div class="notes">
+  <div class="notes-title">Parameter Reference</div>
+  <table class="notes-table">
+    <tr>
+      <th style="width:18%;">Parameter</th>
+      <th style="width:10%;">Default</th>
+      <th style="width:10%;">Sandy loam</th>
+      <th>Role in soil fluxes</th>
+    </tr>
+    <tr>
+      <td>qSurfScale</td>
+      <td>50.0</td>
+      <td>—</td>
+      <td>Exponential scaling of infiltrating area. Higher → more infiltration → less runoff. Lower → more runoff even when soil is dry.</td>
+    </tr>
+    <tr>
+      <td>k_soil</td>
+      <td>9.4×10⁻⁶</td>
+      <td>1–5×10⁻⁵</td>
+      <td>Saturated hydraulic conductivity. Sets ceiling on infiltration rate (Green-Ampt) and drainage flux.</td>
+    </tr>
+    <tr>
+      <td>theta_sat</td>
+      <td>0.516</td>
+      <td>0.38–0.44</td>
+      <td>Porosity. Sets total storage capacity and bounds the van Genuchten K(θ) function.</td>
+    </tr>
+    <tr>
+      <td>theta_res</td>
+      <td>0.027</td>
+      <td>0.05–0.08</td>
+      <td>Residual water content. Lower bound on plant-available water; affects K at dry end and ET stress.</td>
+    </tr>
+    <tr>
+      <td>vGn_alpha</td>
+      <td>−0.84</td>
+      <td>−4.0 – −1.5</td>
+      <td>Van Genuchten capillary length scale. Controls air-entry point; shifts where K begins to decline with drying.</td>
+    </tr>
+    <tr>
+      <td>vGn_n</td>
+      <td>1.30</td>
+      <td>1.35–1.70</td>
+      <td>Van Genuchten pore-size distribution. Higher n → steeper K(θ) falloff → faster drainage when wet, near-zero when dry.</td>
+    </tr>
+    <tr>
+      <td>rootingDepth</td>
+      <td>6.876</td>
+      <td>≤ 1.0 m</td>
+      <td>Depth of root zone. Controls ET draw-down volume and fracCap denominator in qSurfScale calculation. Bound to soil column depth.</td>
+    </tr>
+    <tr>
+      <td>rootDistExp</td>
+      <td>1.0</td>
+      <td>0.1–2.0</td>
+      <td>Shape of root density profile. Higher → roots concentrated near surface; lower → more uniform distribution with depth.</td>
+    </tr>
+    <tr>
+      <td>critSoilTranspire</td>
+      <td>0.175</td>
+      <td>0.10–0.30</td>
+      <td>θ above which transpiration is unstressed (NoahType). Higher → ET shuts down earlier → more residual storage.</td>
+    </tr>
+    <tr>
+      <td>critSoilWilting</td>
+      <td>0.075</td>
+      <td>—</td>
+      <td>θ at wilting point. Below this, transpiration ceases. Lower bound on ET stress function.</td>
+    </tr>
+    <tr>
+      <td>wettingFrontSuction</td>
+      <td>0.30</td>
+      <td>0.10–0.30</td>
+      <td>Green-Ampt capillary suction. Higher → more infiltration capacity into dry soil → less infiltration-excess runoff.</td>
+    </tr>
+    <tr>
+      <td>kAnisotropic</td>
+      <td>1.0</td>
+      <td>—</td>
+      <td><span class="only-drain">drainage only —</span> Direct linear multiplier on drainage flux. Values &lt;1 restrict drainage independently of soil moisture state.</td>
+    </tr>
+    <tr>
+      <td>k_macropore</td>
+      <td>0.001</td>
+      <td>—</td>
+      <td><span class="only-drain">drainage only —</span> Fast-path conductivity above theta_mp. At default, dominates drainage near saturation. Set = k_soil to disable.</td>
+    </tr>
+    <tr>
+      <td>theta_mp</td>
+      <td>0.401</td>
+      <td>—</td>
+      <td><span class="only-drain">drainage only —</span> Moisture threshold activating macropore flow. Set = theta_sat to disable macropore contribution.</td>
+    </tr>
+    <tr>
+      <td>f_impede</td>
+      <td>2.0</td>
+      <td>—</td>
+      <td>Ice impedance exponent. Reduces K when soil ice is present. Relevant in cold seasons only.</td>
+    </tr>
+    <tr>
+      <td>soilIceScale / soilIceCV</td>
+      <td>0.13 / 0.45</td>
+      <td>—</td>
+      <td>Gamma distribution parameters for frozen area fraction. Controls how much of basin is impermeable during freeze events.</td>
+    </tr>
+    <tr>
+      <td>compactedDepth</td>
+      <td>1.0</td>
+      <td>—</td>
+      <td><span class="only-drain">drainage only (pow_prof) —</span> Anchors Ksat depth-decay. At default = column depth, has no effect on 1m column.</td>
+    </tr>
+  </table>
+</div>
+
+</body>
+</html>

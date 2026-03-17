@@ -284,6 +284,7 @@ ITERATIVE_OPTIMIZATION_ALGORITHM: DE                           # Options DDS, DE
 NUMBER_OF_ITERATIONS: 100                                       # Number of iterations for calibration 
 POPULATION_SIZE: 30                                            # Population size for genetic algorithms
 OPTIMIZATION_METRIC: KGE                                       # Options: Root mean square error : "RMSE", Nash-Suthcliffe efficiency: "NSE", Kling-Gupta Efficiency: "KGE", KGE projected: "KGEp", Mean absolute error: "MAE"
+STREAMFLOW_OPTIMIZATION_TIMESCALE: native                     # Streamflow metric timescale: native(daily), 1D, 3D, 5D, 7D, 1M
   # -- DDS specific settings
 DDS_R:  0.4                                                    # DDS perturbation parameter
   # -- SCE-UA specific settings

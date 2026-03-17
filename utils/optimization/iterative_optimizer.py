@@ -1045,11 +1045,22 @@ class BaseOptimizer(ABC):
         
         # Algorithm-specific directory setup
         self.algorithm_name = self.get_algorithm_name().lower()
-        self.optimization_dir = self.project_dir / "simulations" / f"run_{self.algorithm_name}"
+        self.optimization_run_label = (
+            self.config.get('OPTIMIZATION_RUN_LABEL')
+            or self.config.get('OPTIMISATION_RUN_LABEL')
+            or ''
+        )
+        run_dir_name = f"run_{self.algorithm_name}"
+        if self.optimization_run_label:
+            run_dir_name = f"{self.optimization_run_label}_{run_dir_name}"
+        self.optimization_dir = self.project_dir / "simulations" / run_dir_name
         self.summa_sim_dir = self.optimization_dir / "SUMMA"
         self.mizuroute_sim_dir = self.optimization_dir / "mizuRoute"
         self.optimization_settings_dir = self.optimization_dir / "settings" / "SUMMA"
-        self.output_dir = self.project_dir / "optimisation" / f"{self.algorithm_name}_{self.experiment_id}"
+        output_dir_name = f"{self.algorithm_name}_{self.experiment_id}"
+        if self.optimization_run_label:
+            output_dir_name = f"{self.optimization_run_label}_{output_dir_name}"
+        self.output_dir = self.project_dir / "optimisation" / output_dir_name
         
         # Initialize component managers
         self.parameter_manager = ParameterManager(config, logger, self.optimization_settings_dir)
@@ -1124,6 +1135,7 @@ class BaseOptimizer(ABC):
     def _copy_settings_files(self) -> None:
         """Copy necessary settings files to optimization directory"""
         source_settings_dir = self.project_dir / "settings" / "SUMMA"
+        configured_coldstate = self.config.get('SETTINGS_SUMMA_COLDSTATE', 'coldState.nc')
         
         if not source_settings_dir.exists():
             raise FileNotFoundError(f"Source settings directory not found: {source_settings_dir}")
@@ -1132,7 +1144,7 @@ class BaseOptimizer(ABC):
         required_files = [
             'fileManager.txt', 'modelDecisions.txt', 'outputControl.txt',
             'localParamInfo.txt', 'basinParamInfo.txt',
-            'attributes.nc','coldState.nc'  # This is always required
+            'attributes.nc', configured_coldstate
         ]
         
         optional_files = [
@@ -1155,6 +1167,16 @@ class BaseOptimizer(ABC):
                 self.logger.debug(f"Copied required file: {file_name}")
             else:
                 raise FileNotFoundError(f"Required SUMMA settings file not found: {source_path}")
+
+        # Keep backward compatibility for code paths that still expect coldState.nc.
+        if configured_coldstate != 'coldState.nc':
+            alt_coldstate = self.optimization_settings_dir / configured_coldstate
+            default_coldstate = self.optimization_settings_dir / 'coldState.nc'
+            if alt_coldstate.exists() and not default_coldstate.exists():
+                shutil.copy2(alt_coldstate, default_coldstate)
+                self.logger.debug(
+                    f"Created coldState.nc alias from configured cold state: {configured_coldstate}"
+                )
         
         # Copy optional files (warn if missing)
         for file_name in optional_files:
