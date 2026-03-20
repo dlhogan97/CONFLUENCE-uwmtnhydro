@@ -38,6 +38,7 @@ import logging
 import shutil
 import subprocess
 import time as _time
+from collections import deque
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Tuple, Optional
@@ -129,6 +130,28 @@ def backup_experiment_results(project_dir: Path, domain_name: str, backup_name: 
         logger.info(f"  Moved: {item.name}")
     
     return backup_dir
+
+
+def split_optimized_parameter_groups(
+    params_df: pd.DataFrame,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Split optimization output into local and basin/routing parameter groups."""
+    local_params: Dict[str, Any] = {}
+    basin_params: Dict[str, Any] = {}
+
+    for raw_name, value in zip(params_df['parameter'], params_df['value']):
+        name = str(raw_name).strip()
+
+        if name.startswith('basin__'):
+            basin_params[name.split('basin__', 1)[1]] = value
+        elif name.startswith('routing__'):
+            basin_params[name.split('routing__', 1)[1]] = value
+        elif name.startswith('routing'):
+            basin_params[name] = value
+        else:
+            local_params[name] = value
+
+    return local_params, basin_params
 
 
 # Season definitions aligned to the water year (Oct–Sep).
@@ -244,10 +267,11 @@ class ExperimentConfig:
         # Create subdirectories
         self.settings_dir = self.experiment_workspace / 'settings'
         ensemble_base = self.experiment_workspace / 'ensemble'
-        self.ensemble_dir = ensemble_base / 'results'
+        self.ensemble_dir = ensemble_base
         self.plots_dir = ensemble_base / 'plots'
+        results_dir = ensemble_base / 'results'
         
-        for d in [self.settings_dir, self.ensemble_dir, self.plots_dir]:
+        for d in [self.settings_dir, self.ensemble_dir, self.plots_dir, results_dir]:
             d.mkdir(parents=True, exist_ok=True)
         
         # Copy config file to experiment folder for reproducibility
@@ -271,6 +295,7 @@ class ExperimentConfig:
         
         # Update fileManager.txt paths to point to experiment workspace
         self._update_file_manager_paths()
+        self._apply_summa_decisions_from_config()
         
         # Create README.md to document the experiment
         readme_path = self.experiment_workspace / 'README.md'
@@ -286,6 +311,79 @@ class ExperimentConfig:
             f.write("- `config_*.yaml` - Configuration snapshot\n")
         
         return self.experiment_workspace
+
+    def use_existing_experiment_workspace(self, experiment_ref: str) -> Path:
+        """
+        Attach to an existing experiment workspace for analysis/restart runs.
+
+        Parameters
+        ----------
+        experiment_ref : str
+            Either an absolute path to an experiment folder, or a folder name
+            under project_dir/simulations (e.g., '20260316_bigBuckt').
+
+        Returns
+        -------
+        Path
+            Resolved experiment workspace path.
+        """
+        candidate = Path(experiment_ref).expanduser()
+        if not candidate.is_absolute():
+            candidate = self.project_dir / 'simulations' / candidate
+        candidate = candidate.resolve()
+
+        if not candidate.exists():
+            raise FileNotFoundError(f"Existing experiment workspace not found: {candidate}")
+
+        settings_dir = candidate / 'settings'
+        ensemble_dir = candidate / 'ensemble'
+        plots_dir = ensemble_dir / 'plots'
+        results_dir = ensemble_dir / 'results'
+
+        if not settings_dir.exists():
+            raise FileNotFoundError(f"Missing settings directory in existing workspace: {settings_dir}")
+        if not ensemble_dir.exists():
+            raise FileNotFoundError(f"Missing ensemble directory in existing workspace: {ensemble_dir}")
+
+        plots_dir.mkdir(parents=True, exist_ok=True)
+        results_dir.mkdir(parents=True, exist_ok=True)
+
+        self.experiment_workspace = candidate
+        self.settings_dir = settings_dir
+        self.ensemble_dir = ensemble_dir
+        self.plots_dir = plots_dir
+
+        # Ensure workspace decisions match the active YAML when reusing an experiment.
+        self._apply_summa_decisions_from_config()
+
+        logger.info(f"Using existing experiment workspace: {self.experiment_workspace}")
+        return self.experiment_workspace
+
+    def _apply_summa_decisions_from_config(self):
+        """Apply SUMMA_DECISION_OPTIONS from config to workspace modelDecisions.txt."""
+        decisions_cfg = self.raw.get('SUMMA_DECISION_OPTIONS', {})
+        if not decisions_cfg:
+            return
+
+        model_decisions = self.settings_dir / 'modelDecisions.txt'
+        if not model_decisions.exists():
+            logger.warning(f"modelDecisions.txt not found in workspace settings: {model_decisions}")
+            return
+
+        updates = {}
+        for key, value in decisions_cfg.items():
+            if isinstance(value, list):
+                if value:
+                    updates[key] = str(value[0])
+            elif value is not None:
+                updates[key] = str(value)
+
+        if not updates:
+            return
+
+        from utils.custom.adjust_settings import edit_modelDecisions
+        edit_modelDecisions(model_decisions, updates)
+        logger.info(f"Applied {len(updates)} SUMMA decision options to {model_decisions}")
 
     def _update_file_manager_paths(self):
         """Update fileManager.txt to use experiment-specific settings/results paths."""
@@ -305,7 +403,7 @@ class ExperimentConfig:
             elif s.startswith('forcingPath'):
                 new_lines.append(f"forcingPath          '{self.summa_input_dir}/'\n")
             elif s.startswith('outputPath'):
-                new_lines.append(f"outputPath           '{self.ensemble_dir}/'\n")
+                new_lines.append(f"outputPath           '{self.ensemble_dir / 'results'}/'\n")
             else:
                 new_lines.append(line)
 
@@ -316,7 +414,7 @@ class ExperimentConfig:
             f"Updated fileManager.txt paths:\n"
             f"  settingsPath -> {self.settings_dir}/\n"
             f"  forcingPath  -> {self.summa_input_dir}/\n"
-            f"  outputPath   -> {self.ensemble_dir}/"
+            f"  outputPath   -> {self.ensemble_dir / 'results'}/"
         )
     
     def get_confluence_config(self, **overrides) -> dict:
@@ -335,17 +433,193 @@ class ParameterOptimizer:
     
     def __init__(self, exp_config: ExperimentConfig):
         self.cfg = exp_config
+        self.last_run_label: Optional[str] = None
+
+    def seed_default_settings_from_best(self, params_csv: str) -> pd.DataFrame:
+        """
+        Apply a prior best-parameter CSV to experiment-local SUMMA settings.
+
+        This affects optimization initialization because iterative optimization
+        copies from the source settings directory when creating a run workspace.
+        """
+        params_path = Path(params_csv).expanduser()
+        if not params_path.is_absolute():
+            params_path = (Path.cwd() / params_path).resolve()
+        if not params_path.exists():
+            raise FileNotFoundError(f"Seed parameters CSV not found: {params_path}")
+
+        params_df = pd.read_csv(params_path)
+        if 'parameter' not in params_df.columns or 'value' not in params_df.columns:
+            raise ValueError("Seed CSV must contain 'parameter' and 'value' columns")
+
+        from utils.custom.adjust_settings import update_and_reformat_parameter_file
+
+        local_updates, basin_updates = split_optimized_parameter_groups(params_df)
+        settings_dir = self.cfg.settings_dir
+        if settings_dir is None:
+            raise RuntimeError('Experiment settings directory is not initialized.')
+
+        local_file = settings_dir / 'localParamInfo.txt'
+        basin_file = settings_dir / 'basinParamInfo.txt'
+
+        if not local_file.exists() or not basin_file.exists():
+            raise FileNotFoundError(
+                "Default settings files not found for optimization seeding: "
+                f"{local_file}, {basin_file}"
+            )
+
+        local_result = update_and_reformat_parameter_file(
+            local_file, local_updates, reformat_all=True, verbose=False
+        )
+        basin_result = update_and_reformat_parameter_file(
+            basin_file, basin_updates, reformat_all=True, verbose=False
+        )
+
+        logger.info(
+            "Seeded optimization defaults from prior best parameters: "
+            f"{params_path}"
+        )
+        logger.info(
+            f"  Updated default local params: {int(local_result.get('updated_count', 0))}"
+        )
+        logger.info(
+            f"  Updated default basin params: {int(basin_result.get('updated_count', 0))}"
+        )
+
+        return params_df
+
+    def _validate_workspace_settings(self, seed_params_df: Optional[pd.DataFrame] = None):
+        """Fail fast if workspace settings drift from config expectations."""
+        settings_dir = self.cfg.settings_dir
+        if settings_dir is None:
+            raise RuntimeError('Experiment settings directory is not initialized.')
+
+        required_files = [
+            settings_dir / 'modelDecisions.txt',
+            settings_dir / 'localParamInfo.txt',
+            settings_dir / 'basinParamInfo.txt',
+            settings_dir / 'fileManager.txt',
+        ]
+        missing_files = [str(path) for path in required_files if not path.exists()]
+        if missing_files:
+            raise FileNotFoundError(
+                'Workspace settings validation failed. Missing required files:\n'
+                + '\n'.join(missing_files)
+            )
+
+        # Validate model decisions against active YAML choices.
+        decisions_cfg = self.cfg.raw.get('SUMMA_DECISION_OPTIONS', {})
+        expected_decisions = {}
+        for key, value in decisions_cfg.items():
+            if isinstance(value, list):
+                if value:
+                    expected_decisions[key] = str(value[0])
+            elif value is not None:
+                expected_decisions[key] = str(value)
+
+        actual_decisions = {}
+        with open(settings_dir / 'modelDecisions.txt', 'r') as fin:
+            for line in fin:
+                stripped = line.lstrip()
+                if stripped.startswith('!') or stripped.strip() == '':
+                    continue
+                code = line.split('!', 1)[0].strip()
+                tokens = code.split()
+                if len(tokens) >= 2:
+                    actual_decisions[tokens[0]] = tokens[1]
+
+        decision_mismatches = []
+        for key, expected in expected_decisions.items():
+            actual = actual_decisions.get(key)
+            if actual != expected:
+                decision_mismatches.append(f'{key}: expected={expected}, actual={actual}')
+
+        if decision_mismatches:
+            preview = '\n'.join(decision_mismatches[:20])
+            raise RuntimeError(
+                'Workspace modelDecisions.txt does not match SUMMA_DECISION_OPTIONS. '
+                'Refusing to start optimization.\n'
+                + preview
+            )
+
+        # Validate fileManager settingsPath points to this workspace.
+        fm_settings_path = None
+        with open(settings_dir / 'fileManager.txt', 'r') as fin:
+            for line in fin:
+                if line.strip().startswith('settingsPath'):
+                    parts = line.split("'", 2)
+                    if len(parts) >= 2:
+                        fm_settings_path = parts[1]
+                    break
+        expected_settings_prefix = str(settings_dir) + '/'
+        if fm_settings_path is None or fm_settings_path != expected_settings_prefix:
+            raise RuntimeError(
+                'Workspace fileManager.txt settingsPath mismatch. '
+                f'expected={expected_settings_prefix}, actual={fm_settings_path}'
+            )
+
+        # If seeding was requested, verify parameters exist in workspace parameter files.
+        if seed_params_df is not None and len(seed_params_df) > 0:
+            def _read_param_names(path: Path) -> set:
+                names = set()
+                with open(path, 'r') as fin:
+                    for raw in fin:
+                        s = raw.strip()
+                        if not s or s.startswith('!'):
+                            continue
+                        if '|' in raw:
+                            names.add(raw.split('|', 1)[0].strip())
+                        else:
+                            names.add(s.split()[0])
+                return names
+
+            local_names = _read_param_names(settings_dir / 'localParamInfo.txt')
+            basin_names = _read_param_names(settings_dir / 'basinParamInfo.txt')
+
+            missing_seed = []
+            for raw_name in seed_params_df['parameter']:
+                name = str(raw_name).strip()
+                if name.startswith('basin__'):
+                    candidate = name.split('basin__', 1)[1]
+                    present = candidate in basin_names
+                elif name.startswith('routing__'):
+                    candidate = name.split('routing__', 1)[1]
+                    present = candidate in basin_names
+                else:
+                    candidate = name
+                    present = (candidate in local_names) or (candidate in basin_names)
+                if not present:
+                    missing_seed.append(name)
+
+            if missing_seed:
+                preview = ', '.join(missing_seed[:25])
+                raise RuntimeError(
+                    'Seed parameters could not be mapped to workspace parameter files. '
+                    'Refusing to start optimization. Missing (sample): '
+                    + preview
+                )
     
-    def run_optimization(self) -> pd.DataFrame:
+    def run_optimization(self, seed_params_csv: Optional[str] = None) -> pd.DataFrame:
         """Run optimization via the existing CONFLUENCE optimization pipeline."""
         logger.info("=" * 70)
         logger.info("PHASE 1: PARAMETER OPTIMIZATION")
         logger.info("=" * 70)
+
+        seed_params_df: Optional[pd.DataFrame] = None
+        if seed_params_csv:
+            seed_params_df = self.seed_default_settings_from_best(seed_params_csv)
+
+        # Guardrail: ensure workspace settings match active config before launching DDS.
+        self._validate_workspace_settings(seed_params_df)
         
         run_label = datetime.now().strftime('%Y%m%d_%H%M%S')
+        self.last_run_label = run_label
         confluence = CONFLUENCE(
             config_path=str(self.cfg.config_path),
-            config_overrides={'OPTIMIZATION_RUN_LABEL': run_label}
+            config_overrides={
+                'OPTIMIZATION_RUN_LABEL': run_label,
+                'OPTIMIZATION_SOURCE_SETTINGS_DIR': str(self.cfg.settings_dir),
+            }
         )
         logger.info(f"Optimization run label: {run_label}")
         confluence.managers['optimization'].calibrate_model()
@@ -419,24 +693,7 @@ class ModelRunner:
         if 'parameter' not in params_df.columns or 'value' not in params_df.columns:
             raise ValueError("params_df must contain 'parameter' and 'value' columns")
 
-        local_params = {}
-        basin_params = {}
-
-        for raw_name, value in zip(params_df['parameter'], params_df['value']):
-            name = str(raw_name).strip()
-
-            # Optimization outputs may use prefixes like basin__paramName.
-            # SUMMA parameter files store plain parameter names.
-            if name.startswith('basin__'):
-                file_name = name.split('basin__', 1)[1]
-                basin_params[file_name] = value
-            elif name.startswith('routing__'):
-                file_name = name.split('routing__', 1)[1]
-                basin_params[file_name] = value
-            elif name.startswith('routing'):
-                basin_params[name] = value
-            else:
-                local_params[name] = value
+        local_params, basin_params = split_optimized_parameter_groups(params_df)
         
         def _apply_with_fallback(file_path: Path, updates: Dict[str, Any], label: str) -> int:
             """Apply updates using adjust_settings, with a syntax-preserving fallback."""
@@ -525,6 +782,22 @@ class ModelRunner:
             for fname in forcing_files:
                 f.write(f"{fname}\n")
         logger.info(f"Updated forcing file list: {len(forcing_files)} files")
+
+    def update_forcing_path(self, forcing_dir: Path):
+        """Update forcingPath in SUMMA fileManager."""
+        fm_path = self.cfg.settings_dir / 'fileManager.txt'
+        with open(fm_path, 'r') as f:
+            lines = f.readlines()
+
+        new_lines = []
+        for line in lines:
+            if line.strip().startswith('forcingPath'):
+                new_lines.append(f"forcingPath     '{forcing_dir}/'\n")
+            else:
+                new_lines.append(line)
+
+        with open(fm_path, 'w') as f:
+            f.writelines(new_lines)
     
     def update_output_path(self, output_dir: str):
         """Update the output path in the SUMMA fileManager."""
@@ -665,9 +938,8 @@ class ForcingEnsembleBuilder:
         for i, fp in enumerate(files, start=1):
             if i == 1 or i % 25 == 0 or i == len(files):
                 logger.info(f"  Loading forcing file {i}/{len(files)}: {fp.name}")
-            ds_i = xr.open_dataset(fp)
-            loaded.append(ds_i.load())
-            ds_i.close()
+            with xr.open_dataset(fp) as ds_i:
+                loaded.append(ds_i.load())
 
         ds = xr.concat(loaded, dim='time').sortby('time')
         ds = ds.sel(time=~ds.indexes['time'].duplicated())
@@ -675,16 +947,6 @@ class ForcingEnsembleBuilder:
         logger.info(f"Loaded forcing: {ds.time.values[0]} to {ds.time.values[-1]}, "
                     f"{len(ds.time)} timesteps")
         return ds
-    
-    def get_season_mask(self, times: xr.DataArray, season: str) -> np.ndarray:
-        """Create a boolean mask for timesteps belonging to a season."""
-        months = SEASONS[season]['months']
-        return np.isin(pd.DatetimeIndex(times.values).month, months)
-    
-    def get_year_range(self, ds: xr.Dataset) -> Tuple[int, int]:
-        """Return (first_year, last_year) of the dataset."""
-        years = pd.DatetimeIndex(ds.time.values).year
-        return int(years.min()), int(years.max())
     
     def build_ensemble_for_season(
         self,
@@ -724,6 +986,10 @@ class ForcingEnsembleBuilder:
         months = SEASONS[season]['months']
         created_files = []
 
+        forcing_times = pd.DatetimeIndex(full_forcing.time.values)
+        forcing_years = forcing_times.year
+        forcing_months = forcing_times.month
+
         # SUMMA expects monthly forcing files listed in forcingFileList.txt.
         # Build monthly outputs per member instead of a single annual file.
         if water_year:
@@ -746,6 +1012,47 @@ class ForcingEnsembleBuilder:
             target_start = f"{target_year}-01-01"
             target_end = f"{target_year}-12-31 23:00"
         target_ds = full_forcing.sel(time=slice(target_start, target_end))
+        target_times = pd.DatetimeIndex(target_ds.time.values)
+
+        # Reuse masks because each ensemble member has the same target timeline.
+        season_target_masks = {
+            month: (target_times.month == month)
+            for month in set(months)
+        }
+        output_month_masks = {
+            (year_i, month_i): (target_times.year == year_i) & (target_times.month == month_i)
+            for year_i, month_i in target_months
+        }
+
+        template_meta = {}
+        for year_i, month_i in target_months:
+            month_tag = f"{year_i}{month_i:02d}"
+            template_file = source_monthly.get(month_tag)
+            if template_file is None:
+                raise FileNotFoundError(f"Missing template forcing file for {month_tag}")
+            if month_tag in template_meta:
+                continue
+
+            with xr.open_dataset(template_file) as template_ds:
+                var_attrs = {}
+                var_encoding = {}
+                for var_name in template_ds.variables:
+                    var_attrs[var_name] = dict(template_ds[var_name].attrs)
+                    filtered_encoding = {
+                        key: value
+                        for key, value in template_ds[var_name].encoding.items()
+                        if key in {'dtype', '_FillValue', 'zlib', 'complevel', 'shuffle', 'fletcher32', 'contiguous', 'chunksizes'}
+                        and value is not None
+                    }
+                    if filtered_encoding:
+                        var_encoding[var_name] = filtered_encoding
+
+                template_meta[month_tag] = {
+                    'template_name': template_file.name,
+                    'dataset_attrs': dict(template_ds.attrs),
+                    'variable_attrs': var_attrs,
+                    'variable_encoding': var_encoding,
+                }
         
         for donor_year in donor_years:
             logger.info(f"  Building ensemble: {season} from {donor_year} → {target_year}")
@@ -765,23 +1072,20 @@ class ForcingEnsembleBuilder:
                     donor_month_year = donor_year
                 
                 # Select the donor month
-                donor_data = full_forcing.sel(
-                    time=(pd.DatetimeIndex(full_forcing.time.values).month == month) &
-                         (pd.DatetimeIndex(full_forcing.time.values).year == donor_month_year)
-                )
+                donor_mask = (forcing_months == month) & (forcing_years == donor_month_year)
+                donor_indices = np.flatnonzero(donor_mask)
                 
                 # Select matching month in target
-                target_month_mask = (
-                    (pd.DatetimeIndex(ensemble_ds.time.values).month == month)
-                )
+                target_month_mask = season_target_masks[month]
                 
-                if len(donor_data.time) == 0:
+                if donor_indices.size == 0:
                     logger.warning(f"    No data for {donor_month_year}-{month:02d}, skipping")
                     continue
+
+                donor_data = full_forcing.isel(time=donor_indices)
                 
                 # Match timestep count — handle leap year differences
-                target_times = ensemble_ds.time.values[target_month_mask]
-                n_target = len(target_times)
+                n_target = int(np.count_nonzero(target_month_mask))
                 n_donor = len(donor_data.time)
                 
                 if n_donor == 0 or n_target == 0:
@@ -803,15 +1107,12 @@ class ForcingEnsembleBuilder:
                     
                     # Apply replacement
                     ensemble_ds[var].values[target_month_mask] = replacement
-
-            ensemble_times = pd.DatetimeIndex(ensemble_ds.time.values)
             
-            domain = self.cfg.domain_name
             member_dir = output_dir / f"from_{donor_year}"
             member_dir.mkdir(parents=True, exist_ok=True)
 
             for year_i, month_i in target_months:
-                month_mask = (ensemble_times.year == year_i) & (ensemble_times.month == month_i)
+                month_mask = output_month_masks[(year_i, month_i)]
                 month_ds = ensemble_ds.sel(time=month_mask)
                 if month_ds.sizes.get('time', 0) == 0:
                     continue
@@ -824,36 +1125,26 @@ class ForcingEnsembleBuilder:
                         month_ds[static_var] = month_ds[static_var].isel(time=0, drop=True)
 
                 month_tag = f"{year_i}{month_i:02d}"
-                template_file = source_monthly.get(month_tag)
-                if template_file is None:
-                    raise FileNotFoundError(f"Missing template forcing file for {month_tag}")
+                metadata = template_meta[month_tag]
+                month_ds.attrs = dict(metadata['dataset_attrs'])
+                encoding = {}
+                for var_name in month_ds.variables:
+                    if var_name in metadata['variable_attrs']:
+                        month_ds[var_name].attrs = dict(metadata['variable_attrs'][var_name])
+                    if var_name in metadata['variable_encoding']:
+                        encoding[var_name] = dict(metadata['variable_encoding'][var_name])
 
-                with xr.open_dataset(template_file) as template_ds:
-                    month_ds.attrs = dict(template_ds.attrs)
-                    encoding = {}
-                    for var_name in month_ds.variables:
-                        if var_name in template_ds.variables:
-                            month_ds[var_name].attrs = dict(template_ds[var_name].attrs)
-                            var_encoding = {
-                                key: value
-                                for key, value in template_ds[var_name].encoding.items()
-                                if key in {'dtype', '_FillValue', 'zlib', 'complevel', 'shuffle', 'fletcher32', 'contiguous', 'chunksizes'}
-                                and value is not None
-                            }
-                            if var_encoding:
-                                encoding[var_name] = var_encoding
-
-                    # Keep SUMMA-native time convention; default xarray encoding
-                    # can switch to relative "hours since month-start".
-                    encoding['time'] = {
-                        'dtype': 'int32',
-                        'units': 'seconds since 1970-01-01',
-                        'calendar': 'proleptic_gregorian',
-                    }
+                # Keep SUMMA-native time convention; default xarray encoding
+                # can switch to relative "hours since month-start".
+                encoding['time'] = {
+                    'dtype': 'int32',
+                    'units': 'seconds since 1970-01-01',
+                    'calendar': 'proleptic_gregorian',
+                }
 
                 # Preserve native monthly filenames so members can reuse the
                 # standard forcingFileList.txt entries.
-                out_name = template_file.name
+                out_name = metadata['template_name']
                 out_path = member_dir / out_name
                 month_ds.to_netcdf(out_path, encoding=encoding)
 
@@ -897,7 +1188,7 @@ class EnsembleRunner:
         params_df: pd.DataFrame,
         start: str,
         end: str,
-        experiment_id: str = 'longterm_baseline'
+        experiment_id: str = 'baseline_longterm'
     ) -> Path:
         """Run the baseline (unperturbed) simulation.
         
@@ -934,7 +1225,6 @@ class EnsembleRunner:
             start = f"{target_year}-01-01 01:00"
             end = f"{target_year}-12-31 23:00"
             exp_id = f"target_year_{target_year}"
-        
         # Save to separate folder to distinguish from longterm baseline
         output_dir = self.cfg.ensemble_dir / 'results' / 'baseline_target'
         self.runner.apply_parameters(params_df)
@@ -970,20 +1260,7 @@ class EnsembleRunner:
             
             # Point SUMMA at this specific forcing file
             self.runner.update_forcing_file_list([forcing_file.name])
-            
-            # Update forcing path to the ensemble forcing directory
-            fm_path = self.cfg.settings_dir / 'fileManager.txt'
-            with open(fm_path, 'r') as f:
-                lines = f.readlines()
-            
-            new_lines = []
-            for line in lines:
-                if line.strip().startswith('forcingPath'):
-                    new_lines.append(f"forcingPath     '{forcing_file.parent}/'\n")
-                else:
-                    new_lines.append(line)
-            with open(fm_path, 'w') as f:
-                f.writelines(new_lines)
+            self.runner.update_forcing_path(forcing_file.parent)
             
             try:
                 output_file = self.runner.run_summa(exp_id, output_dir)
@@ -1314,7 +1591,7 @@ class ParallelEnsembleRunner:
                 log_file = self.members[mid]['log_file']
                 if log_file.exists():
                     with open(log_file) as f:
-                        error_tail = ''.join(f.readlines()[-5:])
+                        error_tail = ''.join(deque(f, maxlen=5))
                 self.failed[mid] = {'returncode': rc, 'error': error_tail}
                 logger.warning(f"  FAILED: {mid} (rc={rc})")
         
@@ -2185,12 +2462,21 @@ class SeasonalEnsembleExperiment:
     - generate_run_script() → bash script for nohup / overnight runs
     """
     
-    def __init__(self, config_path: str, max_workers: int = 4, experiment_name: str = None):
+    def __init__(
+        self,
+        config_path: str,
+        max_workers: int = 4,
+        experiment_name: str = None,
+        existing_experiment: Optional[str] = None,
+    ):
         self.cfg = ExperimentConfig(config_path)
         self.max_workers = max_workers
         
-        # Initialize experiment workspace with dated folder
-        self.cfg.initialize_experiment_workspace(experiment_name)
+        # Either attach to an existing workspace or create a new dated one.
+        if existing_experiment:
+            self.cfg.use_existing_experiment_workspace(existing_experiment)
+        else:
+            self.cfg.initialize_experiment_workspace(experiment_name)
         
         self.optimizer = ParameterOptimizer(self.cfg)
         self.ensemble_builder = ForcingEnsembleBuilder(self.cfg)
@@ -2406,11 +2692,22 @@ class SeasonalEnsembleExperiment:
             f"({files[0]} … {files[-1]})"
         )
     
-    def step1_optimize(self, skip_if_exists: bool = True) -> pd.DataFrame:
+    def step1_optimize(
+        self,
+        skip_if_exists: bool = True,
+        seed_params_csv: Optional[str] = None,
+    ) -> pd.DataFrame:
         """Run or load optimization and apply best parameters to settings files."""
         logger.info("\n" + "=" * 70)
         logger.info("STEP 1: PARAMETER OPTIMIZATION")
         logger.info("=" * 70)
+
+        if seed_params_csv and skip_if_exists:
+            logger.info(
+                "seed_params_csv provided; forcing a new optimization run "
+                "(skip_if_exists=False)."
+            )
+            skip_if_exists = False
         
         self.best_params = None
         if skip_if_exists and self.cfg.opt_dir.exists():
@@ -2420,7 +2717,7 @@ class SeasonalEnsembleExperiment:
                 self.best_params = self.optimizer.get_best_parameters()
 
         if self.best_params is None:
-            self.best_params = self.optimizer.run_optimization()
+            self.best_params = self.optimizer.run_optimization(seed_params_csv=seed_params_csv)
         
         # Apply best parameters to settings files with correct formatting
         logger.info("Applying best parameters to SUMMA settings files...")
@@ -2438,7 +2735,7 @@ class SeasonalEnsembleExperiment:
         self,
         start: str,
         end: str,
-        experiment_id: str = 'longterm_baseline'
+        experiment_id: str = 'baseline_longterm'
     ) -> Path:
         """Run the 20-year baseline simulation."""
         logger.info("\n" + "=" * 70)
@@ -2681,47 +2978,6 @@ class SeasonalEnsembleExperiment:
         with open(fm_path, 'w') as f:
             f.writelines(new_lines)
         logger.info(f"initConditionFile → {filename}")
-    
-    def _update_file_manager_paths(self):
-        """
-        Update fileManager.txt to point to experiment workspace paths.
-        
-        Called after settings are copied to experiment workspace.
-        Updates:
-        - settingsPath → experiment settings directory
-        - forcingPath → SUMMA input forcing directory
-        - outputPath → ensemble results directory
-        """
-        fm_path = self.cfg.settings_dir / 'fileManager.txt'
-        if not fm_path.exists():
-            logger.warning(f"fileManager.txt not found at {fm_path}")
-            return
-        
-        with open(fm_path, 'r') as f:
-            lines = f.readlines()
-        
-        new_lines = []
-        for line in lines:
-            s = line.strip()
-            # Update main directory paths to use experiment workspace paths
-            if s.startswith('settingsPath'):
-                new_lines.append(f"settingsPath         '{self.cfg.settings_dir}/'\n")
-            elif s.startswith('forcingPath'):
-                new_lines.append(f"forcingPath          '{self.cfg.summa_input_dir}/'\n")
-            elif s.startswith('outputPath'):
-                new_lines.append(f"outputPath           '{self.cfg.ensemble_dir}/'\n")
-            else:
-                new_lines.append(line)
-        
-        with open(fm_path, 'w') as f:
-            f.writelines(new_lines)
-        
-        logger.info(
-            f"Updated fileManager.txt paths:\n"
-            f"  settingsPath → {self.cfg.settings_dir}/\n"
-            f"  forcingPath → {self.cfg.summa_input_dir}/\n"
-            f"  outputPath → {self.cfg.ensemble_dir}/"
-        )
     
     def _slice_target_year_from_continuous(self, target_year: int) -> Optional[Path]:
         """Create target-year baseline by slicing from a continuous baseline run.

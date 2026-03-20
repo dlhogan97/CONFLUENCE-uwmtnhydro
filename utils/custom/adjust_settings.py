@@ -68,14 +68,14 @@ def update_and_reformat_parameter_file(
         >>> update_and_reformat_parameter_file(localParamInfo_file, {})
     """
     pattern = re.compile(r'^(\s*[^!][A-Za-z0-9_]+)(\s*\|)([^|]+)(\|)([^|]+)(\|)([^|]+)(\|.*)$')
-    
+
     with open(file_path, 'r') as fin:
         lines = fin.readlines()
-    
+
     new_lines = []
     updated_count = 0
     reformatted_count = 0
-    
+
     for line in lines:
         m = pattern.match(line)
         if m:
@@ -87,13 +87,13 @@ def update_and_reformat_parameter_file(
             pipe3 = m.group(6)
             upper_str = m.group(7).strip()
             rest = m.group(8)
-            
+
             # Step 1: Update with new value if provided
             var = param_name.strip()
             if var in parameter_updates:
                 value_str = str(parameter_updates[var])
                 updated_count += 1
-            
+
             # Step 2: Reformat all values to 4-decimal precision
             if reformat_all:
                 value_formatted = _format_parameter_value(value_str)

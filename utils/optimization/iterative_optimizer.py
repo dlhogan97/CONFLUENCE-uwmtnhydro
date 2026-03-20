@@ -1134,7 +1134,8 @@ class BaseOptimizer(ABC):
         
     def _copy_settings_files(self) -> None:
         """Copy necessary settings files to optimization directory"""
-        source_settings_dir = self.project_dir / "settings" / "SUMMA"
+        source_settings_dir_cfg = self.config.get('OPTIMIZATION_SOURCE_SETTINGS_DIR', '')
+        source_settings_dir = Path(source_settings_dir_cfg).expanduser() if source_settings_dir_cfg else (self.project_dir / "settings" / "SUMMA")
         configured_coldstate = self.config.get('SETTINGS_SUMMA_COLDSTATE', 'coldState.nc')
         
         if not source_settings_dir.exists():
@@ -1207,7 +1208,9 @@ class BaseOptimizer(ABC):
         #        self.logger.debug(f"Conditional file not required: {file_name}")
         
         # Copy mizuRoute settings if they exist
-        source_mizu_dir = self.project_dir / "settings" / "mizuRoute"
+        source_mizu_dir = source_settings_dir.parent / "mizuRoute"
+        if not source_mizu_dir.exists():
+            source_mizu_dir = self.project_dir / "settings" / "mizuRoute"
         dest_mizu_dir = self.optimization_dir / "settings" / "mizuRoute"
         
         if source_mizu_dir.exists():
@@ -2693,8 +2696,11 @@ if __name__ == "__main__":
         finally:
             # Always restore optimization settings
             self._restore_model_decisions_for_optimization()
-            # Reset file manager back to optimization mode
-            self._update_summa_file_manager(self.optimization_settings_dir / 'fileManager.txt')
+            # Reset file manager back to optimization mode (guard against missing file
+            # if the settings dir was cleaned up by a concurrent process or exception handler)
+            _fm = self.optimization_settings_dir / 'fileManager.txt'
+            if _fm.exists():
+                self._update_summa_file_manager(_fm)
 
     def _log_final_optimization_summary(self, algorithm_name: str, best_score: float, 
                                     final_result: Optional[Dict], duration) -> None:

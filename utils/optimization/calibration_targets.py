@@ -39,6 +39,13 @@ class CalibrationTarget(ABC):
         # Parse time periods
         self.calibration_period = self._parse_date_range(config.get('CALIBRATION_PERIOD', ''))
         self.evaluation_period = self._parse_date_range(config.get('EVALUATION_PERIOD', ''))
+
+        # Optional month filter: restrict calibration to specific months (e.g. [4,5,6,7,8] for Apr-Aug)
+        raw_months = config.get('CALIBRATION_MONTHS', None)
+        if raw_months:
+            self.calibration_months = set(int(m) for m in raw_months)
+        else:
+            self.calibration_months = None
     
     def calculate_metrics(self, sim_dir: Path, mizuroute_dir: Optional[Path] = None, 
                          calibration_only: bool = True) -> Optional[Dict[str, float]]:
@@ -183,6 +190,13 @@ class CalibrationTarget(ABC):
                 sim_period = sim_data
                 sim_period.index = sim_period.index.round('h')
             
+            # Optional: restrict to specific calendar months (e.g. Apr-Aug for snowmelt focus)
+            if self.calibration_months:
+                obs_period = obs_period[obs_period.index.month.isin(self.calibration_months)]
+                sim_period = sim_period[sim_period.index.month.isin(self.calibration_months)]
+                self.logger.debug(f"{prefix} month filter {sorted(self.calibration_months)}: "
+                                  f"{len(obs_period)} obs, {len(sim_period)} sim points retained")
+
             # Find common time indices
             common_idx = obs_period.index.intersection(sim_period.index)
             

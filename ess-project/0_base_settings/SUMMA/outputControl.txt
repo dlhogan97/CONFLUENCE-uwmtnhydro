@@ -71,6 +71,25 @@ mLayerTemp                           | 1 | 0 | 0 | 1 | 0 | 0 | 0 | 0
 mLayerDepth                          | 1 | 0 | 0 | 1 | 0 | 0 | 0 | 0
 !
 ! -----------------------------------------------------------------------
+! AQUIFER STATE AND FLUXES
+! Active under bigBuckt groundwater decision only.
+! Zero under noXplict -- retained so the same file works across both configs.
+! -----------------------------------------------------------------------
+! Aquifer storage state (m water equivalent)
+scalarAquiferStorage                 | 1 | 0 | 0 | 1 | 0 | 0 | 0 | 0
+! Recharge from soil column into aquifer (= scalarSoilDrainage when bigBuckt active)
+scalarAquiferRecharge                | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0
+! Baseflow from aquifer to stream: Q = rate x (S/scale)^exp
+scalarAquiferBaseflow                | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0
+! ET loss from aquifer via roots below soil column
+scalarAquiferTranspire               | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0
+! Fraction of roots extending below the lowest soil layer
+scalarAquiferRootFrac                | 1 | 0 | 0 | 1 | 0 | 0 | 0 | 0
+! Aquifer transpiration stress factor: 0=full stress, 1=unstressed
+! Controlled by critAquiferTranspire parameter
+scalarTranspireLimAqfr               | 1 | 0 | 0 | 1 | 0 | 0 | 0 | 0
+!
+! -----------------------------------------------------------------------
 ! RUNOFF AND ET TOTALS
 ! -----------------------------------------------------------------------
 scalarTotalET                        | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0
