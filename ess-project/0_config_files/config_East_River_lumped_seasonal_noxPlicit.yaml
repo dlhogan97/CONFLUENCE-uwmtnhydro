@@ -1,7 +1,7 @@
 CONFLUENCE_DATA_DIR: /scratch/dlhogan/ess-project-data
 CONFLUENCE_CODE_DIR: /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro
 DOMAIN_NAME: East_River_lumped
-EXPERIMENT_ID: noXplict
+EXPERIMENT_ID: noXplict_drainage
 EXPERIMENT_TIME_START: 1999-10-01 00:00
 EXPERIMENT_TIME_END: 2021-09-30 23:00
 CALIBRATION_PERIOD: 2003-10-01, 2007-09-30
@@ -32,14 +32,21 @@ FORCING_SHAPE_LAT_NAME: lat
 FORCING_SHAPE_LON_NAME: lon
 HYDROLOGICAL_MODEL: SUMMA
 ROUTING_MODEL: mizuRoute
+
+# Optional routing alternative to mizuRoute for lumped/point streamflow scoring
+# Set ROUTING_MODEL to linear_reservoir to route SUMMA runoff in-memory during calibration.
+USE_LINEAR_RESERVOIR_ROUTING: true
+LINEAR_RESERVOIR_K_FAST_DEFAULT: 0.025
+LINEAR_RESERVOIR_K_SLOW_DEFAULT: 0.02
+LINEAR_RESERVOIR_F_FAST_DEFAULT: 0.75
 SUMMA_EXE: summa
 SETTINGS_SUMMA_USE_PARALLEL_SUMMA: false
 SETTINGS_SUMMA_PARALLEL_EXE: summa
 SETTINGS_SUMMA_CONNECT_HRUS: true
 SETTINGS_SUMMA_TRIALPARAM_N: 0
 SETTINGS_SUMMA_TRIALPARAM_1: null
-PARAMS_TO_CALIBRATE: k_soil, vGn_n, vGn_alpha, theta_sat, theta_res, qSurfScale, kAnisotropic
-BASIN_PARAMS_TO_CALIBRATE: routingGammaScale
+PARAMS_TO_CALIBRATE: k_soil, qSurfScale, frozenPrecipMultip, vGn_n, vGn_alpha, rootingDepth, albedoDecayRate, kAnisotropic
+BASIN_PARAMS_TO_CALIBRATE: routingGammaScale, routingGammaShape
 SUMMA_DECISION_OPTIONS:
   snowIncept:
   - lightSnow
@@ -75,9 +82,9 @@ SUMMA_DECISION_OPTIONS:
   groundwatr:
   - noXplict
   hc_profile:
-  - constant
+  - pow_prof
   bcLowrSoiH:
-  - zeroFlux
+  - drainage
   thCondSoil:
   - funcSoilWet
   spatial_gw:
@@ -97,7 +104,7 @@ SUMMA_DECISION_OPTIONS:
   astability:
   - louisinv
   alb_method:
-  - conDecay
+  - varDecay
   snowIncept:
   - lightSnow
 CALIBRATE_DEPTH: false
@@ -182,6 +189,10 @@ EMULATION_MAX_ITERATIONS': 3
 RUN_RANDOM_FOREST_EMULATION: false
 RUN_NEURAL_NETWORK_EMULATION: true
 EMULATION_TARGET_METRIC: NSE
+
+# Optional routing-parameter calibration for ROUTING_MODEL: linear_reservoir
+CALIBRATE_LINEAR_RESERVOIR: true
+LINEAR_RESERVOIR_PARAMS_TO_CALIBRATE: k_fast,k_slow,f_fast
 EMULATOR_IMPROVEMENT_THRESHOLD: 0.01
 ENABLE_GAP_FILLING: true
 GAP_FILLING_SAMPLES: 50
@@ -201,10 +212,10 @@ NN_MAX_ITERATIONS: 1000
 NN_LEARNING_RATE: 0.001
 NN_VALIDATION_SPLIT: 0.2
 ITERATIVE_OPTIMIZATION_ALGORITHM: DDS
-NUMBER_OF_ITERATIONS: 50
+NUMBER_OF_ITERATIONS: 100
 POPULATION_SIZE: 30
 OPTIMIZATION_METRIC: NSE
-STREAMFLOW_OPTIMIZATION_TIMESCALE: 1M
+STREAMFLOW_OPTIMIZATION_TIMESCALE: 7D
 DDS_R: 0.4
 NUMBER_OF_COMPLEXES: 2
 POINTS_PER_SUBCOMPLEX: 5
@@ -326,4 +337,4 @@ CLUSTER_JSON: /home/dlhogan/tools/src/datatool/etc/clusters/lundquist-server.jso
 SPATIAL_MODE: Lumped
 DELINEATION_METHOD: TauDEM
 ROUTING_DELINEATION: lumped
-SUMMA_RUNOFF_VAR: scalarTotalRunoff
+SUMMA_RUNOFF_VAR: averageInstantRunoff

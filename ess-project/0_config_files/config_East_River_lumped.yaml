@@ -1,7 +1,7 @@
 CONFLUENCE_DATA_DIR: /scratch/dlhogan/ess-project-data
 CONFLUENCE_CODE_DIR: /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro
 DOMAIN_NAME: East_River_lumped
-EXPERIMENT_ID: 20260318_model_testing
+EXPERIMENT_ID: 20260324_model_testing
 EXPERIMENT_TIME_START: 2007-10-01 00:00
 EXPERIMENT_TIME_END: 2016-09-30 23:00
 CALIBRATION_PERIOD: 2009-10-01, 2012-09-30

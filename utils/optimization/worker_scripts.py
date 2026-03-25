@@ -29,6 +29,62 @@ import numpy as np
 import pandas as pd
 import netCDF4 as nc
 import xarray as xr
+from scipy.signal import lfilter
+
+
+def _linear_reservoir_daily_worker(q_in: np.ndarray, k: float) -> np.ndarray:
+    """Single linear reservoir routing at daily time step."""
+    q = np.asarray(q_in, dtype=np.float64).ravel()
+    q = np.nan_to_num(q, nan=0.0)
+    a = 1.0 - float(k)
+    s = lfilter([1.0], [1.0, -a], q)
+    return np.maximum(float(k) * s, 0.0)
+
+
+def _two_reservoir_daily_worker(q_in: np.ndarray, k_fast: float, k_slow: float, f_fast: float) -> np.ndarray:
+    """Two-reservoir routing with fast and slow stores."""
+    q = np.asarray(q_in, dtype=np.float64).ravel()
+    q = np.nan_to_num(q, nan=0.0)
+    f = float(np.clip(f_fast, 0.0, 1.0))
+    return (_linear_reservoir_daily_worker(f * q, k_fast) +
+            _linear_reservoir_daily_worker((1.0 - f) * q, k_slow))
+
+
+def _resolve_linear_reservoir_params(config: Dict, candidate_params: Optional[Dict] = None) -> Tuple[float, float, float]:
+    """Resolve k_fast, k_slow, f_fast from candidate params first, then config defaults."""
+    candidate_params = candidate_params or {}
+
+    def _pick(name: str, fallback: float) -> float:
+        value = candidate_params.get(name, fallback)
+        if isinstance(value, np.ndarray):
+            return float(value[0])
+        return float(value)
+
+    k_fast = _pick('k_fast', float(config.get('LINEAR_RESERVOIR_K_FAST_DEFAULT', 0.08)))
+    k_slow = _pick('k_slow', float(config.get('LINEAR_RESERVOIR_K_SLOW_DEFAULT', 0.02)))
+
+    if 'f_fast' in candidate_params:
+        f_fast = _pick('f_fast', float(config.get('LINEAR_RESERVOIR_F_FAST_DEFAULT', 0.70)))
+    elif 'flow_fraction' in candidate_params:
+        f_fast = _pick('flow_fraction', float(config.get('LINEAR_RESERVOIR_FLOW_FRACTION_DEFAULT', 0.70)))
+    else:
+        f_fast = float(config.get(
+            'LINEAR_RESERVOIR_F_FAST_DEFAULT',
+            config.get('LINEAR_RESERVOIR_FLOW_FRACTION_DEFAULT', 0.70)
+        ))
+
+    return k_fast, k_slow, f_fast
+
+
+def _is_linear_reservoir_routing_enabled(config: Dict) -> bool:
+    """Return True when optimization metrics should use in-memory linear reservoir routing.
+
+    This is enabled either explicitly via USE_LINEAR_RESERVOIR_ROUTING, or implicitly
+    when linear reservoir parameters are being calibrated.
+    """
+    use_linear_reservoir = bool(config.get('USE_LINEAR_RESERVOIR_ROUTING', False))
+    calibrate_linear_reservoir = bool(config.get('CALIBRATE_LINEAR_RESERVOIR', False))
+    return use_linear_reservoir or calibrate_linear_reservoir
 
 
 def _evaluate_parameters_worker_safe(task_data: Dict) -> Dict:
@@ -177,10 +233,13 @@ def _evaluate_parameters_worker(task_data: Dict) -> Dict:
         
         if calibration_var == 'streamflow':
             config = task_data['config']
+            linear_reservoir_active = _is_linear_reservoir_routing_enabled(config)
             domain_method = config.get('DOMAIN_DEFINITION_METHOD', 'lumped')
             routing_delineation = config.get('ROUTING_DELINEATION', 'lumped')
-            
-            if domain_method not in ['point', 'lumped'] or (domain_method == 'lumped' and routing_delineation == 'river_network'):
+
+            if linear_reservoir_active:
+                needs_routing = False
+            elif domain_method not in ['point', 'lumped'] or (domain_method == 'lumped' and routing_delineation == 'river_network'):
                 needs_routing = True
         
         logger.info(f"Needs routing: {needs_routing}")
@@ -311,6 +370,7 @@ def _evaluate_parameters_worker(task_data: Dict) -> Dict:
                     summa_dir,
                     mizuroute_dir if needs_routing else None,
                     task_data['config'],
+                    task_data.get('params'),
                     logger
                 )
 
@@ -411,6 +471,7 @@ def _evaluate_parameters_worker(task_data: Dict) -> Dict:
                     summa_dir, 
                     mizuroute_dir if needs_routing else None, 
                     task_data['config'], 
+                    task_data.get('params'),
                     logger
                 )
                 
@@ -897,7 +958,7 @@ def _get_catchment_area_worker(config: Dict, logger) -> float:
     return 1e6
 
 
-def _calculate_metrics_inline_worker(summa_dir: Path, mizuroute_dir: Path, config: Dict, logger) -> Dict:
+def _calculate_metrics_inline_worker(summa_dir: Path, mizuroute_dir: Path, config: Dict, candidate_params: Optional[Dict], logger) -> Dict:
     """Calculate metrics inline without using CalibrationTarget classes"""
     try:
         import xarray as xr
@@ -1144,6 +1205,32 @@ def _calculate_metrics_inline_worker(summa_dir: Path, mizuroute_dir: Path, confi
         logger.info(f"DEBUG: Simulated data frequency: {sim_data.index.freq}")
         logger.info(f"DEBUG: Simulated data timezone: {sim_data.index.tz}")
         logger.info(f"DEBUG: First 5 sim timestamps: {sim_data.index[:5].tolist()}")
+
+        # Optional in-memory routing: route SUMMA flow through two linear reservoirs before scoring.
+        # IMPORTANT: this path is intentionally gated so existing behavior is unchanged unless
+        # CALIBRATE_LINEAR_RESERVOIR is explicitly enabled.
+        routing_model = str(config.get('ROUTING_MODEL', 'mizuRoute')).strip().lower()
+        linear_reservoir_active = _is_linear_reservoir_routing_enabled(config)
+        if linear_reservoir_active:
+            logger.info("DEBUG: Applying linear reservoir routing to simulated flow")
+            k_fast, k_slow, f_fast = _resolve_linear_reservoir_params(config, candidate_params)
+
+            if k_slow >= k_fast:
+                logger.warning("DEBUG: k_slow >= k_fast; adjusting k_slow to preserve fast/slow ordering")
+                k_slow = max(1e-6, k_fast - 1e-6)
+
+            sim_daily = sim_data.resample('1D').mean()
+            routed = _two_reservoir_daily_worker(sim_daily.values, k_fast, k_slow, f_fast)
+            sim_data = pd.Series(routed, index=sim_daily.index)
+
+            logger.info(
+                f"DEBUG: Linear reservoir params used: k_fast={k_fast:.6f}, k_slow={k_slow:.6f}, f_fast={f_fast:.6f}"
+            )
+        elif routing_model == 'linear_reservoir':
+            logger.info(
+                "DEBUG: ROUTING_MODEL=linear_reservoir but USE_LINEAR_RESERVOIR_ROUTING and "
+                "CALIBRATE_LINEAR_RESERVOIR are false; using existing optimization behavior"
+            )
         
         # Filter to calibration period
         logger.info("DEBUG: Filtering to calibration period...")
@@ -1392,10 +1479,15 @@ def _apply_parameters_worker(params: Dict, task_data: Dict, settings_dir: Path, 
         basin_params = [p.strip() for p in config.get('BASIN_PARAMS_TO_CALIBRATE', '').split(',') if p.strip()]
         depth_params = ['total_mult', 'shape_factor'] if config.get('CALIBRATE_DEPTH', False) else []
         mizuroute_params = []
+        linear_reservoir_params = []
         
         if config.get('CALIBRATE_MIZUROUTE', False):
             mizuroute_params_str = config.get('MIZUROUTE_PARAMS_TO_CALIBRATE', 'velo,diff')
             mizuroute_params = [p.strip() for p in mizuroute_params_str.split(',') if p.strip()]
+
+        if config.get('CALIBRATE_LINEAR_RESERVOIR', False):
+            lr_params_str = config.get('LINEAR_RESERVOIR_PARAMS_TO_CALIBRATE', 'k_fast,k_slow,f_fast')
+            linear_reservoir_params = [p.strip() for p in lr_params_str.split(',') if p.strip()]
         
         # 1. Handle soil depth parameters
         if depth_params and 'total_mult' in params and 'shape_factor' in params:
@@ -1411,7 +1503,7 @@ def _apply_parameters_worker(params: Dict, task_data: Dict, settings_dir: Path, 
         
         # 3. Generate trial parameters file (same exclusion logic as ParameterManager)
         hydrological_params = {k: v for k, v in params.items() 
-                          if k not in depth_params + mizuroute_params}
+                          if k not in depth_params + mizuroute_params + linear_reservoir_params}
         
         if hydrological_params:
             logger.debug(f"Generating trial parameters file with: {list(hydrological_params.keys())} (consistent)")

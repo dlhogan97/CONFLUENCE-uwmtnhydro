@@ -75,7 +75,14 @@ EM_EARTH_MAX_EXPANSION: 0.2                                   # Maximum expansio
 ### ============================================= 4. Model Specific settings: =============================================================
 
 HYDROLOGICAL_MODEL: SUMMA                                      # Hydrological model, options: SUMMA, FUSE, GR, HYPE, FLASH, MESH 
-ROUTING_MODEL: mizuRoute                                       # Routing model, options: mizuRoute
+ROUTING_MODEL: mizuRoute                                       # Routing model, options: mizuRoute, linear_reservoir
+
+# Optional in-memory linear reservoir routing (used when ROUTING_MODEL: linear_reservoir)
+# These defaults are used for plain runs and as initial values during calibration.
+USE_LINEAR_RESERVOIR_ROUTING: false                           # If true, route streamflow metrics through two linear reservoirs in optimization/evaluation workers
+LINEAR_RESERVOIR_K_FAST_DEFAULT: 0.08                          # day^-1
+LINEAR_RESERVOIR_K_SLOW_DEFAULT: 0.02                          # day^-1
+LINEAR_RESERVOIR_F_FAST_DEFAULT: 0.70                          # fast-flow fraction [0-1]
 
 ### 4.1 Model Specific settings: SUMMA 
 
@@ -288,6 +295,10 @@ NUMBER_OF_ITERATIONS: 100                                      # Number of itera
 POPULATION_SIZE: 30                                            # Population size for genetic algorithms
 OPTIMIZATION_METRIC: KGE                                       # Options: Root mean square error : "RMSE", Nash-Suthcliffe efficiency: "NSE", Kling-Gupta Efficiency: "KGE", KGE projected: "KGEp", Mean absolute error: "MAE"
 STREAMFLOW_OPTIMIZATION_TIMESCALE: native                     # Streamflow metric timescale: native(daily), 1D, 3D, 5D, 7D, 1M
+
+# Optional routing-parameter calibration for ROUTING_MODEL: linear_reservoir
+CALIBRATE_LINEAR_RESERVOIR: false
+LINEAR_RESERVOIR_PARAMS_TO_CALIBRATE: k_fast,k_slow,f_fast    # or: k_fast,k_slow,flow_fraction
   # -- DE specific settings
 DE_SCALING_FACTOR: 0.5                                         # F parameter (mutation strength)
 DE_CROSSOVER_RATE: 0.9                                         # CR parameter (crossover probability)  

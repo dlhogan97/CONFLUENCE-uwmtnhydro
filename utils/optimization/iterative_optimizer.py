@@ -107,10 +107,15 @@ class ParameterManager:
         self.basin_params = [p.strip() for p in config.get('BASIN_PARAMS_TO_CALIBRATE', '').split(',') if p.strip()]
         self.depth_params = ['total_mult', 'shape_factor'] if config.get('CALIBRATE_DEPTH', False) else []
         self.mizuroute_params = []
+        self.linear_reservoir_params = []
         
         if config.get('CALIBRATE_MIZUROUTE', False):
             mizuroute_params_str = config.get('MIZUROUTE_PARAMS_TO_CALIBRATE', 'velo,diff')
             self.mizuroute_params = [p.strip() for p in mizuroute_params_str.split(',') if p.strip()]
+
+        if config.get('CALIBRATE_LINEAR_RESERVOIR', False):
+            linear_params_str = config.get('LINEAR_RESERVOIR_PARAMS_TO_CALIBRATE', 'k_fast,k_slow,f_fast')
+            self.linear_reservoir_params = [p.strip() for p in linear_params_str.split(',') if p.strip()]
         
         # Load parameter bounds
         self.param_bounds = self._parse_all_bounds()
@@ -126,18 +131,12 @@ class ParameterManager:
     @property
     def all_param_names(self) -> List[str]:
         """Get list of all parameter names"""
-        return self.local_params + self.basin_params + self.depth_params + self.mizuroute_params
+        return (self.local_params + self.basin_params + self.depth_params +
+            self.mizuroute_params + self.linear_reservoir_params)
     
     def get_initial_parameters(self) -> Optional[Dict[str, np.ndarray]]:
-        """Get initial parameter values from existing files or defaults"""
-        # Try to load existing optimized parameters
-        existing_params = self._load_existing_optimized_parameters()
-        if existing_params:
-            self.logger.info("Loaded existing optimized parameters")
-            return existing_params
-        
-        # Extract parameters from model files
-        #self.logger.info("Extracting initial parameters from default values")
+        """Get initial parameter values from localParamInfo.txt / basinParamInfo.txt defaults."""
+        self.logger.info("Extracting initial parameters from default values in localParamInfo / basinParamInfo")
         return self._extract_default_parameters()
     
     def normalize_parameters(self, params: Dict[str, np.ndarray]) -> np.ndarray:
@@ -177,6 +176,8 @@ class ParameterManager:
                     params[param_name] = np.array([denorm_value])
                 elif param_name in self.mizuroute_params:
                     params[param_name] = denorm_value
+                elif param_name in self.linear_reservoir_params:
+                    params[param_name] = denorm_value
                 elif param_name in self.basin_params:
                     params[param_name] = np.array([denorm_value])
                 else:
@@ -190,16 +191,24 @@ class ParameterManager:
         """Parse parameter bounds from all parameter info files"""
         bounds = {}
         
-        # Parse local parameter bounds
+        # Resolve the source settings dir — respects OPTIMIZATION_SOURCE_SETTINGS_DIR if set,
+        # otherwise falls back to the project settings dir.  We read from the SOURCE dir (not
+        # optimization_settings_dir) because _parse_all_bounds is called in __init__ before
+        # _copy_settings_files has populated optimization_settings_dir.
+        source_cfg = self.config.get('OPTIMIZATION_SOURCE_SETTINGS_DIR', '')
+        if source_cfg:
+            source_dir = Path(source_cfg).expanduser()
+        else:
+            source_dir = (Path(self.config.get('CONFLUENCE_DATA_DIR'))
+                          / f"domain_{self.config.get('DOMAIN_NAME')}"
+                          / 'settings' / 'SUMMA')
+
         if self.local_params:
-            local_param_file = Path(self.config.get('CONFLUENCE_DATA_DIR')) / f"domain_{self.config.get('DOMAIN_NAME')}" / 'settings' / 'SUMMA' / 'localParamInfo.txt'
-            local_bounds = self._parse_param_info_file(local_param_file, self.local_params)
+            local_bounds = self._parse_param_info_file(source_dir / 'localParamInfo.txt', self.local_params)
             bounds.update(local_bounds)
-        
-        # Parse basin parameter bounds
+
         if self.basin_params:
-            basin_param_file = Path(self.config.get('CONFLUENCE_DATA_DIR')) / f"domain_{self.config.get('DOMAIN_NAME')}" / 'settings' / 'SUMMA' / 'basinParamInfo.txt'
-            basin_bounds = self._parse_param_info_file(basin_param_file, self.basin_params)
+            basin_bounds = self._parse_param_info_file(source_dir / 'basinParamInfo.txt', self.basin_params)
             bounds.update(basin_bounds)
         
         # Add depth parameter bounds
@@ -211,6 +220,11 @@ class ParameterManager:
         if self.mizuroute_params:
             mizuroute_bounds = self._get_mizuroute_bounds()
             bounds.update(mizuroute_bounds)
+
+        # Add linear reservoir routing parameter bounds
+        if self.linear_reservoir_params:
+            linear_bounds = self._get_linear_reservoir_bounds()
+            bounds.update(linear_bounds)
         
         return bounds
     
@@ -276,6 +290,24 @@ class ParameterManager:
                 self.logger.warning(f"Unknown mizuRoute parameter: {param}")
         
         return bounds
+
+    def _get_linear_reservoir_bounds(self) -> Dict[str, Dict[str, float]]:
+        """Get parameter bounds for two-reservoir linear routing parameters."""
+        default_bounds = {
+            'k_fast': {'min': 0.01, 'max': 0.30},
+            'k_slow': {'min': 0.005, 'max': 0.10},
+            'f_fast': {'min': 0.50, 'max': 1.00},
+            'flow_fraction': {'min': 0.50, 'max': 1.00},
+        }
+
+        bounds = {}
+        for param in self.linear_reservoir_params:
+            if param in default_bounds:
+                bounds[param] = default_bounds[param]
+            else:
+                self.logger.warning(f"Unknown linear reservoir parameter: {param}")
+
+        return bounds
     
     def _load_existing_optimized_parameters(self) -> Optional[Dict[str, np.ndarray]]:
         """Load existing optimized parameters from default settings"""
@@ -316,6 +348,17 @@ class ParameterManager:
         if self.mizuroute_params:
             for param in self.mizuroute_params:
                 defaults[param] = self._get_default_mizuroute_value(param)
+
+        # Add linear reservoir routing parameters
+        if self.linear_reservoir_params:
+            linear_defaults = {
+                'k_fast': float(self.config.get('LINEAR_RESERVOIR_K_FAST_DEFAULT', 0.08)),
+                'k_slow': float(self.config.get('LINEAR_RESERVOIR_K_SLOW_DEFAULT', 0.02)),
+                'f_fast': float(self.config.get('LINEAR_RESERVOIR_F_FAST_DEFAULT', 0.70)),
+                'flow_fraction': float(self.config.get('LINEAR_RESERVOIR_FLOW_FRACTION_DEFAULT', 0.70)),
+            }
+            for param in self.linear_reservoir_params:
+                defaults[param] = linear_defaults.get(param, 0.70)
         
         # Expand to HRU count
         return self._expand_defaults_to_hru_count(defaults)
@@ -373,7 +416,9 @@ class ParameterManager:
             for param_name, values in defaults.items():
                 if param_name in self.basin_params or param_name in routing_params:
                     expanded_defaults[param_name] = values
-                elif param_name in self.depth_params or param_name in self.mizuroute_params:
+                elif (param_name in self.depth_params or
+                      param_name in self.mizuroute_params or
+                      param_name in self.linear_reservoir_params):
                     expanded_defaults[param_name] = values
                 else:
                     expanded_defaults[param_name] = np.full(num_hrus, values[0])
@@ -2782,6 +2827,8 @@ if __name__ == "__main__":
                 exclusion_params.extend(self.parameter_manager.depth_params)
             if hasattr(self.parameter_manager, 'mizuroute_params'):
                 exclusion_params.extend(self.parameter_manager.mizuroute_params)
+            if hasattr(self.parameter_manager, 'linear_reservoir_params'):
+                exclusion_params.extend(self.parameter_manager.linear_reservoir_params)
             
             hydrological_params = {k: v for k, v in best_params.items() 
                             if k not in exclusion_params}
@@ -2848,7 +2895,7 @@ if __name__ == "__main__":
             
             # Save hydrological parameters to trialParams.nc
             hydrological_params = {k: v for k, v in best_params.items() 
-                              if k not in ['total_mult', 'shape_factor']}
+                              if k not in ['total_mult', 'shape_factor', 'k_fast', 'k_slow', 'f_fast', 'flow_fraction']}
             
             if hydrological_params:
                 trial_params_path = default_settings_dir / "trialParams.nc"
@@ -3396,7 +3443,8 @@ class DEOptimizer(BaseOptimizer):
         total_params = (len(self.config.get('PARAMS_TO_CALIBRATE', '').split(',')) +
                        len(self.config.get('BASIN_PARAMS_TO_CALIBRATE', '').split(',')) +
                        (2 if self.config.get('CALIBRATE_DEPTH', False) else 0) +
-                       (len(self.config.get('MIZUROUTE_PARAMS_TO_CALIBRATE', '').split(',')) if self.config.get('CALIBRATE_MIZUROUTE', False) else 0))
+                       (len(self.config.get('MIZUROUTE_PARAMS_TO_CALIBRATE', '').split(',')) if self.config.get('CALIBRATE_MIZUROUTE', False) else 0) +
+                       (len(self.config.get('LINEAR_RESERVOIR_PARAMS_TO_CALIBRATE', '').split(',')) if self.config.get('CALIBRATE_LINEAR_RESERVOIR', False) else 0))
         
         return max(15, min(4 * total_params, 50))
     
@@ -3944,7 +3992,8 @@ class NSGA2Optimizer(BaseOptimizer):
         total_params = (len(self.config.get('PARAMS_TO_CALIBRATE', '').split(',')) +
                        len(self.config.get('BASIN_PARAMS_TO_CALIBRATE', '').split(',')) +
                        (2 if self.config.get('CALIBRATE_DEPTH', False) else 0) +
-                       (len(self.config.get('MIZUROUTE_PARAMS_TO_CALIBRATE', '').split(',')) if self.config.get('CALIBRATE_MIZUROUTE', False) else 0))
+                       (len(self.config.get('MIZUROUTE_PARAMS_TO_CALIBRATE', '').split(',')) if self.config.get('CALIBRATE_MIZUROUTE', False) else 0) +
+                       (len(self.config.get('LINEAR_RESERVOIR_PARAMS_TO_CALIBRATE', '').split(',')) if self.config.get('CALIBRATE_LINEAR_RESERVOIR', False) else 0))
         
         return max(50, min(8 * total_params, 100))  # Larger than single-objective
     
