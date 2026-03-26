@@ -61,6 +61,7 @@ scalarFrozenArea                     | 1 | 0 | 0 | 1 | 0 | 0 | 0 | 0
 ! -----------------------------------------------------------------------
 scalarTotalSoilLiq                   | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0
 scalarTotalSoilIce                   | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0
+scalarSoilBaseflow                   | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0
 scalarGroundEvaporation              | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0
 ! Free drainage at column base: zero under zeroFlux, active under drainage BC
 scalarSoilDrainage                   | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0

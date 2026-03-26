@@ -136,11 +136,19 @@ def split_optimized_parameter_groups(
     params_df: pd.DataFrame,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Split optimization output into local and basin/routing parameter groups."""
+    # Linear-reservoir routing params are valid in post-processing workflows,
+    # but are not SUMMA local/basin parameters and must not be mapped to
+    # localParamInfo/basinParamInfo during model optimization seeding.
+    unsupported_summa_seed_params = {'k_fast', 'k_slow', 'f_fast'}
+
     local_params: Dict[str, Any] = {}
     basin_params: Dict[str, Any] = {}
 
     for raw_name, value in zip(params_df['parameter'], params_df['value']):
         name = str(raw_name).strip()
+
+        if name in unsupported_summa_seed_params:
+            continue
 
         if name.startswith('basin__'):
             basin_params[name.split('basin__', 1)[1]] = value
@@ -452,6 +460,19 @@ class ParameterOptimizer:
         if 'parameter' not in params_df.columns or 'value' not in params_df.columns:
             raise ValueError("Seed CSV must contain 'parameter' and 'value' columns")
 
+        # Ignore linear-reservoir-only parameters that cannot be mapped to
+        # SUMMA local/basin parameter files.
+        unsupported_summa_seed_params = {'k_fast', 'k_slow', 'f_fast'}
+        skipped = params_df[params_df['parameter'].astype(str).str.strip().isin(unsupported_summa_seed_params)]
+        if len(skipped) > 0:
+            logger.info(
+                "Ignoring non-SUMMA seed parameters: "
+                + ', '.join(sorted(set(skipped['parameter'].astype(str).str.strip().tolist())))
+            )
+            params_df = params_df[
+                ~params_df['parameter'].astype(str).str.strip().isin(unsupported_summa_seed_params)
+            ].copy()
+
         from utils.custom.adjust_settings import update_and_reformat_parameter_file
 
         local_updates, basin_updates = split_optimized_parameter_groups(params_df)
@@ -560,6 +581,8 @@ class ParameterOptimizer:
 
         # If seeding was requested, verify parameters exist in workspace parameter files.
         if seed_params_df is not None and len(seed_params_df) > 0:
+            unsupported_summa_seed_params = {'k_fast', 'k_slow', 'f_fast'}
+
             def _read_param_names(path: Path) -> set:
                 names = set()
                 with open(path, 'r') as fin:
@@ -579,6 +602,8 @@ class ParameterOptimizer:
             missing_seed = []
             for raw_name in seed_params_df['parameter']:
                 name = str(raw_name).strip()
+                if name in unsupported_summa_seed_params:
+                    continue
                 if name.startswith('basin__'):
                     candidate = name.split('basin__', 1)[1]
                     present = candidate in basin_names

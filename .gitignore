@@ -92,3 +92,4 @@ coverage.xml
 cover/*.nc
 *.err
 *.err
+cache/
