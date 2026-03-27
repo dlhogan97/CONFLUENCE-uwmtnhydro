@@ -42,12 +42,37 @@ class forcingResampler:
             self.merge_forcings()
             self.merged_forcing_path = self._get_default_path('FORCING_PATH', 'forcing/merged_path')
             self.merged_forcing_path.mkdir(parents=True, exist_ok=True)
+
+        # Resolve forcing input with optional fallback support.
+        self.merged_forcing_path = self._resolve_forcing_input_path(self.merged_forcing_path)
             
     def _get_default_path(self, path_key, default_subpath):
         path_value = self.config.get(path_key)
         if path_value == 'default' or path_value is None:
             return self.project_dir / default_subpath
         return Path(path_value)
+
+    def _resolve_forcing_input_path(self, primary_path: Path) -> Path:
+        """Resolve forcing input path with optional fallback when no NetCDF files are present."""
+        primary_files = sorted(primary_path.glob('*.nc')) if primary_path.exists() else []
+        if primary_files:
+            self.logger.info(f"Using forcing input path: {primary_path}")
+            return primary_path
+
+        fallback = self.config.get('FORCING_PATH_FALLBACK')
+        if fallback and str(fallback).strip().lower() != 'default':
+            fallback_path = Path(fallback)
+            fallback_files = sorted(fallback_path.glob('*.nc')) if fallback_path.exists() else []
+            if fallback_files:
+                self.logger.warning(
+                    f"Primary forcing path {primary_path} has no NetCDF files; using fallback {fallback_path}"
+                )
+                return fallback_path
+
+        self.logger.warning(
+            f"No forcing NetCDF files found in primary path {primary_path}; continuing with primary path"
+        )
+        return primary_path
 
     def run_resampling(self):
         self.logger.info("Starting forcing data resampling process")
@@ -1022,6 +1047,7 @@ class forcingResampler:
     def _create_parallelized_weighted_forcing(self):
         """Create weighted forcing files with proper serial/parallel handling for HPC environments"""
         self.logger.info("Creating weighted forcing files")
+        workflow_start_time = time.time()
         
         # Create output directories if they don't exist
         self.forcing_basin_path.mkdir(parents=True, exist_ok=True)
@@ -1044,10 +1070,8 @@ class forcingResampler:
         use_parallel = requested_cpus > 1 and max_available_cpus > 1
         
         if use_parallel:
-            num_cpus = min(requested_cpus, max_available_cpus)
-            # Reduce CPU count on HPC to avoid resource conflicts
-            if num_cpus > 4:  # Limit to 4 CPUs max to reduce memory pressure
-                num_cpus = 4
+            max_config_cpus = int(self.config.get('EASYMORE_MAX_CORES', requested_cpus))
+            num_cpus = min(requested_cpus, max_available_cpus, max_config_cpus)
             self.logger.info(f"Using parallel processing with {num_cpus} CPUs")
         else:
             num_cpus = 1
@@ -1088,8 +1112,11 @@ class forcingResampler:
             success_count = self._process_files_serial(remaining_files)
         
         # Report final results
+        total_elapsed = time.time() - workflow_start_time
         self.logger.info(f"Processing complete: {success_count} files processed successfully out of {len(remaining_files)}")
         self.logger.info(f"Total files processed or skipped: {success_count + already_processed} out of {len(forcing_files)}")
+        self.logger.info(f"Weighted forcing outputs written to: {self.forcing_basin_path}")
+        self.logger.info(f"Total EASYMORE remap elapsed time: {total_elapsed:.2f} seconds")
 
     def _process_files_serial(self, files):
         """Process files in serial mode (no multiprocessing)"""
@@ -1100,14 +1127,19 @@ class forcingResampler:
         
         for idx, file in enumerate(files):
             self.logger.info(f"Processing file {idx+1}/{total_files}: {file.name}")
+            file_start_time = time.time()
             
             try:
                 success = self._process_single_forcing_file_serial(file)
+                elapsed = time.time() - file_start_time
                 if success:
                     success_count += 1
-                    self.logger.info(f"✓ Successfully processed {file.name} ({idx+1}/{total_files})")
+                    self.logger.info(
+                        f"✓ Successfully processed {file.name} ({idx+1}/{total_files}) in {elapsed:.2f} seconds "
+                        f"[{success_count} successful so far]"
+                    )
                 else:
-                    self.logger.error(f"✗ Failed to process {file.name} ({idx+1}/{total_files})")
+                    self.logger.error(f"✗ Failed to process {file.name} ({idx+1}/{total_files}) after {elapsed:.2f} seconds")
             except Exception as e:
                 self.logger.error(f"✗ Error processing {file.name}: {str(e)}")
             
@@ -1122,12 +1154,14 @@ class forcingResampler:
         self.logger.info(f"Processing {len(files)} files in parallel with {num_cpus} CPUs")
         
         # Process in smaller batches to avoid memory issues
-        batch_size = min(10, len(files))
+        configured_batch = int(self.config.get('EASYMORE_BATCH_SIZE', num_cpus))
+        batch_size = min(max(1, configured_batch), len(files))
         total_batches = (len(files) + batch_size - 1) // batch_size
         
         self.logger.info(f"Processing {total_batches} batches of up to {batch_size} files each")
         
         success_count = 0
+        processed_count = 0
         
         for batch_num in range(total_batches):
             start_idx = batch_num * batch_size
@@ -1145,8 +1179,36 @@ class forcingResampler:
                     # Map the processing function to each file with its worker ID
                     results = pool.starmap(self._process_forcing_file, worker_assignments)
                 
-                # Count successes in this batch
-                batch_success = sum(1 for r in results if r)
+                # Count successes in this batch and log per-file timing in the parent process
+                batch_success = 0
+                for result in results:
+                    processed_count += 1
+                    if isinstance(result, dict):
+                        file_name = result.get('file', 'unknown_file')
+                        elapsed = result.get('elapsed_seconds', 0.0)
+                        skipped = result.get('skipped', False)
+                        if result.get('success', False):
+                            batch_success += 1
+                            if skipped:
+                                self.logger.info(
+                                    f"Batch {batch_num+1}/{total_batches}: {file_name} skipped (already processed) "
+                                    f"[{processed_count}/{len(files)}]"
+                                )
+                            else:
+                                self.logger.info(
+                                    f"Batch {batch_num+1}/{total_batches}: {file_name} done in {elapsed:.2f} seconds "
+                                    f"[{processed_count}/{len(files)}]"
+                                )
+                        else:
+                            self.logger.error(
+                                f"Batch {batch_num+1}/{total_batches}: {file_name} failed after {elapsed:.2f} seconds "
+                                f"[{processed_count}/{len(files)}]"
+                            )
+                    else:
+                        # Backward-compatible fallback in case a worker returns bool
+                        if result:
+                            batch_success += 1
+
                 success_count += batch_success
                 
                 self.logger.info(f"Batch {batch_num+1}/{total_batches} complete: {batch_success}/{len(batch_files)} successful")
@@ -1488,7 +1550,12 @@ class forcingResampler:
                     file_size = output_file.stat().st_size
                     if file_size > 1000:
                         self.logger.info(f"Worker {worker_id}: Skipping already processed file {file.name}")
-                        return True
+                        return {
+                            'file': file.name,
+                            'success': True,
+                            'elapsed_seconds': 0.0,
+                            'skipped': True,
+                        }
                 except Exception:
                     pass
             
@@ -1517,10 +1584,20 @@ class forcingResampler:
                 # Verify files exist
                 if not source_shp_path.exists():
                     self.logger.error(f"Worker {worker_id}: Source shapefile missing: {source_shp_path}")
-                    return False
+                    return {
+                        'file': file.name,
+                        'success': False,
+                        'elapsed_seconds': time.time() - start_time,
+                        'skipped': False,
+                    }
                 if not target_shp_path.exists():
                     self.logger.error(f"Worker {worker_id}: Target shapefile missing: {target_shp_path}")
-                    return False
+                    return {
+                        'file': file.name,
+                        'success': False,
+                        'elapsed_seconds': time.time() - start_time,
+                        'skipped': False,
+                    }
                 
                 # Convert to WGS84 and handle potential tuple returns
                 source_result = self._ensure_shapefile_wgs84(source_shp_path, "_wgs84")
@@ -1617,7 +1694,12 @@ class forcingResampler:
                         self.logger.error(f"Worker {worker_id}: Error creating remap file: {str(e)}")
                         import traceback
                         self.logger.error(f"Worker {worker_id}: Traceback: {traceback.format_exc()}")
-                        return False
+                        return {
+                            'file': file.name,
+                            'success': False,
+                            'elapsed_seconds': time.time() - start_time,
+                            'skipped': False,
+                        }
                 else:
                     # Use existing remap file
                     self.logger.info(f"Worker {worker_id}: Using existing remap file")
@@ -1640,19 +1722,39 @@ class forcingResampler:
                 if file_size > 1000:
                     elapsed_time = time.time() - start_time
                     self.logger.info(f"Worker {worker_id}: Successfully processed {file.name} in {elapsed_time:.2f} seconds")
-                    return True
+                    return {
+                        'file': file.name,
+                        'success': True,
+                        'elapsed_seconds': elapsed_time,
+                        'skipped': False,
+                    }
                 else:
                     self.logger.error(f"Worker {worker_id}: Output file corrupted (size: {file_size})")
-                    return False
+                    return {
+                        'file': file.name,
+                        'success': False,
+                        'elapsed_seconds': time.time() - start_time,
+                        'skipped': False,
+                    }
             else:
                 self.logger.error(f"Worker {worker_id}: Output file not created: {output_file}")
-                return False
+                return {
+                    'file': file.name,
+                    'success': False,
+                    'elapsed_seconds': time.time() - start_time,
+                    'skipped': False,
+                }
                     
         except Exception as e:
             self.logger.error(f"Worker {worker_id}: Error processing {file.name}: {str(e)}")
             import traceback
             self.logger.error(traceback.format_exc())
-            return False
+            return {
+                'file': file.name,
+                'success': False,
+                'elapsed_seconds': time.time() - start_time,
+                'skipped': False,
+            }
 
 
 class geospatialStatistics:

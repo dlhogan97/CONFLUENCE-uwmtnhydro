@@ -139,9 +139,14 @@ check_virtual_env() {
         "${HOME}/.confluence/venv"
     )
     
-    # Check if we're already in a virtual environment
+    # Respect already-activated environments.
+    # If a conda env is active, do not auto-activate local venvs.
     if [[ -n "${VIRTUAL_ENV}" ]]; then
         print_info "Using active virtual environment: ${VIRTUAL_ENV}"
+        return 0
+    fi
+    if [[ -n "${CONDA_DEFAULT_ENV}" ]]; then
+        print_info "Using active conda environment: ${CONDA_DEFAULT_ENV}"
         return 0
     fi
     

@@ -6,7 +6,7 @@ import pandas as pd # type: ignore
 import numpy as np # type: ignore
 import geopandas as gpd # type: ignore
 import xarray as xr # type: ignore
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import subprocess
 import netCDF4 as nc4 # type: ignore
 from shutil import copyfile
@@ -73,6 +73,23 @@ class SummaPreProcessor:
         self.parameter_name = self.config.get('SETTINGS_SUMMA_TRIALPARAMS')
         self.attribute_name = self.config.get('SETTINGS_SUMMA_ATTRIBUTES')
         self.forcing_measurement_height = float(self.config.get('FORCING_MEASUREMENT_HEIGHT'))
+
+    def _filter_forcing_filenames(self, files: List[str], source_dir: Path) -> List[str]:
+        """Filter forcing filenames by dataset prefix and optional product tag selector."""
+        forcing_dataset = str(self.config.get('FORCING_DATASET'))
+        prefix = f"{self.domain_name}_{forcing_dataset}"
+        selected = [f for f in files if f.startswith(prefix) and f.endswith('.nc')]
+
+        tag = self.config.get('FORCING_PRODUCT_TAG')
+        if tag is not None and str(tag).strip() != "":
+            tag_text = str(tag).strip()
+            selected = [f for f in selected if tag_text in f]
+            self.logger.info(
+                f"Applying FORCING_PRODUCT_TAG filter '{tag_text}' in {source_dir}: "
+                f"{len(selected)} files matched"
+            )
+
+        return sorted(selected)
 
     def run_preprocessing(self):
         """
@@ -711,15 +728,20 @@ class SummaPreProcessor:
             raise
 
         # Get forcing files and log memory info
-        forcing_files = [f for f in os.listdir(self.forcing_basin_path) 
-                        if f.startswith(f"{self.domain_name}") and f.endswith('.nc')]
-        forcing_files.sort()
+        forcing_files = self._filter_forcing_filenames(
+            [f for f in os.listdir(self.forcing_basin_path) if f.endswith('.nc')],
+            self.forcing_basin_path,
+        )
         
         total_files = len(forcing_files)
         self.logger.info(f"Found {total_files} forcing files to process")
         
         if total_files == 0:
-            raise FileNotFoundError(f"No forcing files found in {self.forcing_basin_path}")
+            raise FileNotFoundError(
+                "No forcing files found in "
+                f"{self.forcing_basin_path} for FORCING_DATASET={self.config.get('FORCING_DATASET')} "
+                f"and FORCING_PRODUCT_TAG={self.config.get('FORCING_PRODUCT_TAG', '')}"
+            )
 
         # Prepare output directory
         self.forcing_summa_path.mkdir(parents=True, exist_ok=True)
@@ -861,21 +883,27 @@ class SummaPreProcessor:
         """
         self.logger.info("Creating forcing file list")
         forcing_dataset = self.config.get('FORCING_DATASET')
-        domain_name = self.config.get('DOMAIN_NAME')
         forcing_path = self.project_dir / 'forcing/SUMMA_input'
         file_list_path = self.summa_setup_dir / self.config.get('SETTINGS_SUMMA_FORCING_LIST')
 
-        # Define file patterns for different forcing datasets
-        if forcing_dataset.upper() in ['CARRA', 'ERA5', 'RDRS', 'CASR']:
-            forcing_files = [f for f in os.listdir(forcing_path) 
-                            if f.startswith(f"{domain_name}_{forcing_dataset}") and f.endswith('.nc')]
-        else:
+        if str(forcing_dataset).upper() not in ['CARRA', 'ERA5', 'RDRS', 'CASR']:
             self.logger.error(f"Unsupported forcing dataset: {forcing_dataset}")
             raise ValueError(f"Unsupported forcing dataset: {forcing_dataset}")
 
+        forcing_files = self._filter_forcing_filenames(
+            [f for f in os.listdir(forcing_path) if f.endswith('.nc')],
+            forcing_path,
+        )
+
         if not forcing_files:
-            self.logger.error(f"No {forcing_dataset} forcing files found in {forcing_path}")
-            raise FileNotFoundError(f"No {forcing_dataset} forcing files found in {forcing_path}")
+            self.logger.error(
+                f"No {forcing_dataset} forcing files found in {forcing_path} "
+                f"for FORCING_PRODUCT_TAG={self.config.get('FORCING_PRODUCT_TAG', '')}"
+            )
+            raise FileNotFoundError(
+                f"No {forcing_dataset} forcing files found in {forcing_path} "
+                f"for FORCING_PRODUCT_TAG={self.config.get('FORCING_PRODUCT_TAG', '')}"
+            )
 
         forcing_files.sort()
         self.logger.info(f"Found {len(forcing_files)} {forcing_dataset} forcing files")
@@ -1979,10 +2007,12 @@ class SummaRunner:
     
     def run_summa_parallel(self):
         """
-        Run SUMMA in parallel using SLURM array jobs.
-        This method handles GRU-based parallelization using SLURM's job array capability.
+        Run SUMMA in parallel.
+
+        Supports local MPI launchers (mpirun/mpiexec/srun) and can still submit
+        SLURM array jobs when explicitly configured.
         """
-        self.logger.info("Starting parallel SUMMA run with SLURM")
+        self.logger.info("Starting parallel SUMMA run")
 
         # Set up paths and filenames
         summa_path = self.config.get('SETTINGS_SUMMA_PARALLEL_PATH')
@@ -2002,6 +2032,23 @@ class SummaRunner:
         # Create output and log directories if they don't exist
         summa_log_path.mkdir(parents=True, exist_ok=True)
         summa_out_path.mkdir(parents=True, exist_ok=True)
+
+        parallel_mode = str(self.config.get('SETTINGS_SUMMA_PARALLEL_MODE', 'auto')).strip().lower()
+        if parallel_mode not in {'auto', 'local', 'slurm'}:
+            self.logger.warning(
+                f"Unknown SETTINGS_SUMMA_PARALLEL_MODE '{parallel_mode}', defaulting to 'auto'"
+            )
+            parallel_mode = 'auto'
+
+        # Local mode executes a single MPI SUMMA command and avoids HPC-specific assumptions.
+        if parallel_mode == 'local':
+            return self._run_summa_parallel_local(summa_path, summa_exe, settings_path, filemanager,
+                                                  summa_log_path, summa_out_path)
+
+        if parallel_mode == 'auto' and not shutil.which('sbatch'):
+            self.logger.info("SLURM not detected, using local MPI parallel mode")
+            return self._run_summa_parallel_local(summa_path, summa_exe, settings_path, filemanager,
+                                                  summa_log_path, summa_out_path)
 
         # Get total GRU count from catchment shapefile
         subbasins_name = self.config.get('CATCHMENT_SHP_NAME')
@@ -2051,9 +2098,6 @@ class SummaRunner:
         
         # Submit job
         try:
-            import subprocess
-            import shutil
-            
             # Check if sbatch exists in the path
             if not shutil.which("sbatch"):
                 self.logger.error("SLURM 'sbatch' command not found. Is SLURM installed on this system?")
@@ -2133,6 +2177,77 @@ class SummaRunner:
             self.logger.error(f"Error in parallel SUMMA workflow: {str(e)}")
             import traceback
             self.logger.error(f"Traceback: {traceback.format_exc()}")
+            raise
+
+    def _resolve_mpi_launcher(self) -> Optional[List[str]]:
+        """Resolve a local MPI launcher command for SUMMA parallel execution."""
+        configured = str(self.config.get('SETTINGS_SUMMA_MPI_LAUNCHER', 'auto')).strip()
+        if configured and configured.lower() != 'auto':
+            launcher_path = shutil.which(configured)
+            if launcher_path:
+                return [launcher_path]
+            configured_path = Path(configured)
+            if configured_path.exists():
+                return [str(configured_path)]
+            self.logger.warning(
+                f"Configured SETTINGS_SUMMA_MPI_LAUNCHER '{configured}' was not found; auto-detecting."
+            )
+
+        for candidate in ('mpirun', 'mpiexec', 'srun'):
+            launcher_path = shutil.which(candidate)
+            if launcher_path:
+                return [launcher_path]
+
+        return None
+
+    def _run_summa_parallel_local(self, summa_path: Path, summa_exe: str, settings_path: Path,
+                                  filemanager: str, summa_log_path: Path, summa_out_path: Path):
+        """Run SUMMA with a local MPI launcher and fallback to serial when unavailable."""
+        process_count = int(self.config.get('MPI_PROCESSES', 1) or 1)
+        process_count = max(1, process_count)
+
+        parallel_exe = summa_path / summa_exe
+        if not parallel_exe.exists():
+            self.logger.warning(f"Parallel SUMMA executable not found at {parallel_exe}; trying SUMMA_EXE")
+            fallback_exe = summa_path / self.config.get('SUMMA_EXE', '')
+            if fallback_exe.exists():
+                parallel_exe = fallback_exe
+            else:
+                raise FileNotFoundError(
+                    f"SUMMA executable not found at {parallel_exe} or {fallback_exe}"
+                )
+
+        filemanager_path = settings_path / filemanager
+        if not filemanager_path.exists():
+            raise FileNotFoundError(f"SUMMA file manager not found: {filemanager_path}")
+
+        launcher = self._resolve_mpi_launcher()
+        run_env = os.environ.copy()
+        run_env.setdefault('OMP_NUM_THREADS', '1')
+        log_file_path = summa_log_path / 'summa_parallel_local.log'
+
+        if launcher and process_count > 1:
+            command = launcher + [
+                '-n', str(process_count),
+                str(parallel_exe),
+                '-m', str(filemanager_path),
+            ]
+            self.logger.info(f"Running local MPI SUMMA command: {' '.join(command)}")
+        else:
+            if process_count > 1:
+                self.logger.warning(
+                    "No MPI launcher found; running SUMMA serially even though MPI_PROCESSES > 1"
+                )
+            command = [str(parallel_exe), '-m', str(filemanager_path)]
+            self.logger.info(f"Running local serial SUMMA command: {' '.join(command)}")
+
+        try:
+            with open(log_file_path, 'w') as log_file:
+                subprocess.run(command, check=True, stdout=log_file, stderr=subprocess.STDOUT, env=run_env)
+            self.logger.info("Local parallel SUMMA run completed successfully")
+            return summa_out_path
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"Local parallel SUMMA run failed with error: {e}")
             raise
 
     def _estimate_grus_per_job(self, total_grus: int) -> int:
