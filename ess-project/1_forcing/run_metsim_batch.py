@@ -358,7 +358,7 @@ def _build_daymet_if_missing(month: str, catchment_gdf, selected_df, out_path: P
     ds_daymet.to_netcdf(out_path)
 
 
-def _build_missing_daily_input(month: str, cfg: BatchConfig):
+def _build_missing_daily_input(month: str, cfg: BatchConfig, force_rebuild: bool = False):
     period = pd.Period(month, freq="M")
     start = period.start_time
     end = period.end_time
@@ -370,8 +370,10 @@ def _build_missing_daily_input(month: str, cfg: BatchConfig):
     metsim_dir.mkdir(parents=True, exist_ok=True)
 
     daily_out = metsim_dir / f"metsim_daily_input_{month}.nc"
-    if daily_out.exists():
+    if daily_out.exists() and not force_rebuild:
         return daily_out
+    if daily_out.exists() and force_rebuild:
+        daily_out.unlink()
 
     catchment, selected, bounds = _get_target_grid(cfg)
 
@@ -478,6 +480,16 @@ def _build_missing_daily_input(month: str, cfg: BatchConfig):
                 "longitude": tmin["longitude"],
             },
         )
+
+        # Ensure the output contains every day in the target month, even if one
+        # source product is missing an endpoint day.
+        expected_days = pd.date_range(pd.Timestamp(start).normalize(), pd.Timestamp(end).normalize(), freq="D")
+        ds_daily = ds_daily.assign_coords(time=pd.DatetimeIndex(ds_daily["time"].values).normalize())
+        ds_daily = ds_daily.sortby("time")
+        ds_daily = ds_daily.sel(time=~ds_daily.get_index("time").duplicated())
+        ds_daily = ds_daily.reindex(time=expected_days)
+        ds_daily = ds_daily.ffill("time").bfill("time")
+
         shifted = pd.DatetimeIndex(ds_daily["time"].values).normalize() + pd.Timedelta(hours=cfg.day_start_hour)
         ds_daily = ds_daily.assign_coords(time=shifted).sortby("time")
         ds_daily["t_min"].attrs["units"] = "C"
@@ -763,11 +775,33 @@ def _month_worker(month: str, cfg: BatchConfig) -> str:
         logger.info("[%s] Output exists, skipping overwrite: %s", month, final_out)
         return month
 
+    period = pd.Period(month, freq="M")
+    expected_days = calendar.monthrange(period.start_time.year, period.start_time.month)[1]
+
     # Source daily input expected from existing monthly workflow structure.
     daily_src = cfg.basin_root / "forcing" / "monthly_workflow" / "metsim" / month_dash / f"metsim_daily_input_{month_dash}.nc"
     if not daily_src.exists() and cfg.build_missing_daily:
         logger.info("[%s] Daily input missing; building source datasets and MetSim daily input", month)
         daily_src = _build_missing_daily_input(month, cfg)
+    if daily_src.exists():
+        with xr.open_dataset(daily_src, engine="netcdf4", cache=False) as ds_chk:
+            if "time" not in ds_chk.coords:
+                raise KeyError(f"[{month}] Daily input has no time coordinate: {daily_src}")
+            n_days = pd.DatetimeIndex(ds_chk["time"].values).normalize().nunique()
+        if n_days < expected_days:
+            if cfg.build_missing_daily:
+                logger.warning(
+                    "[%s] Daily input has %d/%d days; rebuilding source datasets and daily input",
+                    month,
+                    n_days,
+                    expected_days,
+                )
+                daily_src = _build_missing_daily_input(month, cfg, force_rebuild=True)
+            else:
+                raise RuntimeError(
+                    f"[{month}] Daily input has {n_days}/{expected_days} days ({daily_src}). "
+                    "Rerun with --build-missing-daily (and --allow-download if needed) to auto-rebuild."
+                )
     if not daily_src.exists():
         raise FileNotFoundError(
             f"[{month}] Missing daily source: {daily_src}. "
