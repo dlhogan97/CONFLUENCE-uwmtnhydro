@@ -57,6 +57,7 @@ RADIATION_CLASS_NUMBER: 5                                      # Number of radia
 ### ============================================= 3. Forcing data settings: =============================================================
 
 FORCING_DATASET: CASR                                          # Forcing dataset to use
+FORCING_PRODUCT_TAG: ""                                        # Optional substring to select a forcing product variant (e.g., metsim or ERA5_merged)
 FORCING_VARIABLES: default                                     # Forcing dataset variables to use or acquire                                                                    
 FORCING_MEASUREMENT_HEIGHT: 1.5                                # Reference height for forcing measurements [m].
 FORCING_TIME_STEP_SIZE: 3600                                   # Size of the forcing time step in [s]. Must be constant.

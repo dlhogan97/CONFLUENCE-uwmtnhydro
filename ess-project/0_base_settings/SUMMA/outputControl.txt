@@ -68,6 +68,7 @@ scalarSoilDrainage                   | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0
 mLayerVolFracLiq                     | 1 | 0 | 0 | 1 | 0 | 0 | 0 | 0
 mLayerVolFracIce                     | 1 | 0 | 0 | 1 | 0 | 0 | 0 | 0
 mLayerMatricHead                     | 1 | 0 | 0 | 1 | 0 | 0 | 0 | 0
+mLayerTranspire                      | 1 | 0 | 0 | 1 | 0 | 0 | 0 | 0
 mLayerTemp                           | 1 | 0 | 0 | 1 | 0 | 0 | 0 | 0
 mLayerDepth                          | 1 | 0 | 0 | 1 | 0 | 0 | 0 | 0
 !
