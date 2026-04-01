@@ -14,6 +14,19 @@
 # steps of the workflow, but never the other way around. Note on path specification if deviating from default paths, a full path must be specified. 
 #E.g. '/home/user/non-default/path'
 
+# =====================================================================================================================
+# Quick Navigation (recommended editing flow)
+# 1) Frequently edited first:
+#    - 0. Global Paths
+#    - 1. Experiment settings
+#    - 2. Geospatial settings
+#    - 3. Forcing data settings
+#    - 4. Model Specific settings
+#    - 6. Optimization settings
+# 2) Rarely edited defaults:
+#    - 8. Data and Path Settings and beyond (typically left as default)
+# =====================================================================================================================
+
 ## ================================================= 0. Global Paths: =====================================================================
 
 CONFLUENCE_DATA_DIR: "/scratch/dlhogan/ess_project_data"
@@ -336,6 +349,10 @@ POUR_POINT_SHP_NAME: default                                   # If 'default', u
 
 # Forcing path settings
 FORCING_PATH: default                                          # If default, uses, self.project_dir / forcing / raw_data
+FORCING_PATH_FALLBACK: default                                 # Optional fallback if FORCING_PATH is unavailable
+FORCING_PRODUCT_TAG: ""                                       # Optional file selector for mixed forcing folders (e.g., metsim, ERA5)
+FORCE_REBUILD_SUMMA_INPUT: false                               # If true, rebuild SUMMA_input via staging and atomic swap
+KEEP_SUMMA_INPUT_BACKUP: true                                  # Keep timestamped SUMMA_input backup when force rebuild is enabled
 
 # Observation data path settings
 OBSERVATIONS_PATH: default                                     # Path to observed streamflow data for evaluation. If default, uses self.data_dir / observations / streamflow / preprocessed / config['DOMAIN_NAME']_streamflow_processed.csv

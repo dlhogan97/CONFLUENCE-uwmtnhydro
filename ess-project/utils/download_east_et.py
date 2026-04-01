@@ -46,8 +46,62 @@ DEFAULT_START_DATE = "2012-10-01"
 DEFAULT_END_DATE = "2022-09-30"
 
 # Available options
-AVAILABLE_VARIABLES = ['et', 'eto', 'etof', 'ndvi', 'pr', 'etr']
+AVAILABLE_VARIABLES = ['et', 'eto', 'etof', 'ndvi', 'pr', 'etr', 'et_mad_min', 'et_mad_max']
 AVAILABLE_MODELS = ['disalexi', 'eemetric', 'geesebal', 'ptjpl', 'sims', 'ssebop', 'ensemble']
+
+VARIABLE_ALIASES = {
+    'ET': 'et',
+    'ETr': 'etr',
+    'ET_MAD_MIN': 'et_mad_min',
+    'ET_MAD_MAX': 'et_mad_max',
+}
+
+def normalize_variable_name(var: str) -> str:
+    v = (var or 'et').strip()
+    v = VARIABLE_ALIASES.get(v, v.lower())
+    if v not in AVAILABLE_VARIABLES:
+        raise ValueError(f"Unsupported variable '{var}'. Allowed: {AVAILABLE_VARIABLES} or aliases {list(VARIABLE_ALIASES.keys())}")
+    return v
+
+def _normalize_variable_list(variables) -> list[str]:
+    if isinstance(variables, str):
+        variables = [variables]
+    return [normalize_variable_name(v) for v in variables]
+
+def download_ensemble_monthly_multi(start_date: str, end_date: str, variables: list[str]):
+    """Backward-compatible wrapper for multi-variable monthly ensemble download."""
+    return download_ensemble_monthly(start_date, end_date, variables)
+
+def download_ensemble_monthly(start_date: str, end_date: str, variable: str | list[str] = 'et'):
+    """Download ensemble ET data at monthly resolution for one or more variables."""
+    variables = _normalize_variable_list(variable)
+    results = {}
+
+    for v in variables:
+        print(f"\n--- Downloading Ensemble {v.upper()} (monthly) ---")
+        df = download_openet_data(
+            shapefile_path=SHAPEFILE_PATH,
+            output_dir=OUTPUT_DIR,
+            start_date=start_date,
+            end_date=end_date,
+            env_file=str(ENV_FILE),
+            variable=v,
+            models=['ensemble'],
+            interval='monthly',
+            units='mm',
+            output_filename=f'openet_{v}_ensemble_East_monthly.csv'
+        )
+        print(f"Downloaded {len(df)} monthly records for {v}")
+        results[v] = df
+
+    # Return a DataFrame for single-variable calls, dict for multi-variable calls
+    if len(variables) == 1:
+        only = variables[0]
+        print("\nFirst few records:")
+        print(results[only].head())
+        return results[only]
+
+    return results
 
 
 def check_env_file():
@@ -60,28 +114,6 @@ def check_env_file():
         print("  # Edit .env and add your API key")
         return False
     return True
-
-
-def download_ensemble_monthly(start_date: str, end_date: str, variable: str = 'et'):
-    """Download ensemble ET data at monthly resolution."""
-    print(f"\n--- Downloading Ensemble {variable.upper()} (monthly) ---")
-    df = download_openet_data(
-        shapefile_path=SHAPEFILE_PATH,
-        output_dir=OUTPUT_DIR,
-        start_date=start_date,
-        end_date=end_date,
-        env_file=str(ENV_FILE),
-        variable=variable,
-        models=['ensemble'],
-        interval='monthly',
-        units='mm',
-        output_filename=f'openet_{variable}_ensemble_East_monthly.csv'
-    )
-    print(f"Downloaded {len(df)} monthly records")
-    print("\nFirst few records:")
-    print(df.head())
-    return df
-
 
 def download_all_models_monthly(start_date: str, end_date: str, variable: str = 'et'):
     """Download data from all models at monthly resolution."""
@@ -314,16 +346,19 @@ def cli_mode(args):
     
     start_date = args.start_date or DEFAULT_START_DATE
     end_date = args.end_date or DEFAULT_END_DATE
-    variable = args.variable or 'et'
+    variable = normalize_variable_name(args.variable or 'et')
+    variables = [normalize_variable_name(v) for v in (args.variables.split(',') if args.variables else [])]
     
     print(f"\nShapefile: {SHAPEFILE_PATH}")
     print(f"Output directory: {OUTPUT_DIR}")
     print(f"Date range: {start_date} to {end_date}")
-    print(f"Variable: {variable}")
-    
+    print(f"Variables: {', '.join(variables)}")
     try:
         if args.option == 1:
-            download_ensemble_monthly(start_date, end_date, variable)
+            if variables:
+                download_ensemble_monthly_multi(start_date, end_date, variables)
+            else:
+                download_ensemble_monthly(start_date, end_date, variable)
         elif args.option == 2:
             download_all_models_monthly(start_date, end_date, variable)
         elif args.option == 3:
@@ -371,11 +406,8 @@ Options:
   5: Per-Polygon - Get data for each polygon/HRU separately
 
 Examples:
-  python download_East_et.py                           # Interactive mode
-  python download_East_et.py --option 1                # Ensemble monthly
-  python download_East_et.py --option 2 --variable eto # All models, ref ET
-  python download_East_et.py --option 4 --models ssebop,disalexi --interval daily
-  python download_East_et.py --option 5 --id-column HRU_ID  # Per-polygon with HRU_ID
+  python download_East_et.py --option 1 --variables ET,ET_MAD_MIN,ET_MAD_MAX
+  python download_East_et.py --option 1 --variable et
         """
     )
     
@@ -385,10 +417,10 @@ Examples:
                         help=f'Start date (YYYY-MM-DD), default: {DEFAULT_START_DATE}')
     parser.add_argument('--end-date', '-e', type=str,
                         help=f'End date (YYYY-MM-DD), default: {DEFAULT_END_DATE}')
-    parser.add_argument('--variable', '-v', type=str, choices=AVAILABLE_VARIABLES,
-                        help='Variable to download (default: et)')
-    parser.add_argument('--models', '-m', type=str,
-                        help='Comma-separated list of models (for options 4, 5)')
+    parser.add_argument('--variable', '-v', type=str,
+                        help='Single variable to download (default: et)')
+    parser.add_argument('--variables', type=str,
+                        help='Comma-separated variables (option 1 only), e.g. ET,ET_MAD_MIN,ET_MAD_MAX')
     parser.add_argument('--interval', '-i', type=str, choices=['daily', 'monthly', 'annual'],
                         help='Temporal interval (for options 4, 5; default: monthly)')
     parser.add_argument('--id-column', type=str,

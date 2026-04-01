@@ -275,6 +275,13 @@ class DataManager:
             Exception: For other errors during data acquisition
         """
         self.logger.info("Starting forcing data acquisition")
+
+        forcing_dataset = str(self.config.get('FORCING_DATASET', '')).upper()
+        if forcing_dataset == 'METSIM':
+            self.logger.info(
+                "FORCING_DATASET=METSIM detected. Skipping datatool acquisition and using user-provided forcing files."
+            )
+            return
                 
         # Initialize datatool runner
         dr = datatoolRunner(self.config, self.logger)

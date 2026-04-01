@@ -629,8 +629,14 @@ class OpenETClient:
         ref_et_source: str = 'gridmet'
     ) -> pd.DataFrame:
         """
-        Get ET timeseries from multiple models and combine into one DataFrame.
-        
+        Get a single timeseries table for multiple OpenET models.
+
+        Notes:
+            - Each model is requested independently, then joined on datetime index.
+            - To prevent column collisions (e.g., repeated 'et'), all non-date/value
+              columns are renamed with a model prefix before joining.
+              Example: 'et' from model 'ptjpl' becomes 'ptjpl_et'.
+
         Args:
             geometry: GeoJSON geometry dict.
             start_date: Start date in 'YYYY-MM-DD' format.
@@ -641,12 +647,12 @@ class OpenETClient:
             units: Units for ET values.
             interval: Temporal interval.
             ref_et_source: Reference ET source.
-            
+
         Returns:
-            DataFrame with columns for each model.
+            DataFrame indexed by date with one column per model/variable.
         """
         models = models or self.AVAILABLE_MODELS
-        
+
         combined_df = None
         for model in models:
             try:
@@ -662,21 +668,30 @@ class OpenETClient:
                     interval=interval,
                     ref_et_source=ref_et_source
                 )
-                
+
+                # Defensive rename in case API returns raw column names like 'et'
+                rename_map = {}
+                for col in df.columns:
+                    if col in {'date', 'time'}:
+                        continue
+                    if not col.startswith(f"{model}_"):
+                        rename_map[col] = f"{model}_{col}"
+                if rename_map:
+                    df = df.rename(columns=rename_map)
+
                 if combined_df is None:
                     combined_df = df
                 else:
                     combined_df = combined_df.join(df, how='outer')
-                    
-                # Small delay between requests to avoid rate limiting
+
                 time.sleep(1)
-                
+
             except Exception as e:
                 self.logger.error(f"Failed to get data for model {model}: {e}")
                 continue
-        
+
         return combined_df if combined_df is not None else pd.DataFrame()
-    
+
     def get_multiple_models_from_shapefile(
         self,
         shapefile_path: Union[str, Path],
@@ -694,7 +709,13 @@ class OpenETClient:
     ) -> pd.DataFrame:
         """
         Get ET timeseries from multiple models for a shapefile-defined area.
-        
+
+        This is a wrapper around `get_multiple_models` that:
+          1) builds geometry from the shapefile,
+          2) queries each model,
+          3) merges model outputs into one date-indexed DataFrame,
+          4) optionally writes output to disk.
+
         Args:
             shapefile_path: Path to the shapefile.
             start_date: Start date.
@@ -708,12 +729,12 @@ class OpenETClient:
             dissolve: If True, dissolve shapefile features.
             output_path: Optional path to save data.
             output_format: Output format.
-            
+
         Returns:
             DataFrame with columns for each model.
         """
         geometry = self._shapefile_to_geojson(shapefile_path, dissolve=dissolve)
-        
+
         df = self.get_multiple_models(
             geometry=geometry,
             start_date=start_date,
@@ -721,14 +742,14 @@ class OpenETClient:
             models=models,
             variable=variable,
             reducer=reducer,
-            units=units,
             interval=interval,
+            units=units,
             ref_et_source=ref_et_source
         )
-        
+
         if output_path:
             self.save_timeseries(df, output_path, output_format)
-        
+
         return df
     
     def save_timeseries(
@@ -845,21 +866,41 @@ def download_openet_data(
 
 
 if __name__ == '__main__':
-    # Example usage
     import argparse
-    
+
     parser = argparse.ArgumentParser(description='Download OpenET timeseries data')
     parser.add_argument('--shapefile', required=True, help='Path to shapefile')
     parser.add_argument('--output-dir', required=True, help='Output directory')
     parser.add_argument('--start-date', required=True, help='Start date (YYYY-MM-DD)')
     parser.add_argument('--end-date', required=True, help='End date (YYYY-MM-DD)')
     parser.add_argument('--variable', default='et', help='Variable to download')
-    parser.add_argument('--model', default='ensemble', help='ET model to use')
     parser.add_argument('--interval', default='monthly', help='Temporal interval')
     parser.add_argument('--env-file', help='Path to .env file with API key')
-    
+
+    model_group = parser.add_mutually_exclusive_group()
+    model_group.add_argument(
+        '--model',
+        default='ensemble',
+        help='Single ET model to use (default: ensemble)'
+    )
+    model_group.add_argument(
+        '--models',
+        help='Comma-separated ET models (e.g., disalexi,eemetric,geesebal,ptjpl,sims,ssebop,ensemble)'
+    )
+
     args = parser.parse_args()
-    
+
+    if args.models:
+        model_list = [m.strip().lower() for m in args.models.split(',') if m.strip()]
+    else:
+        model_list = [args.model.strip().lower()]
+
+    invalid = [m for m in model_list if m not in OpenETClient.AVAILABLE_MODELS]
+    if invalid:
+        raise ValueError(
+            f"Invalid model(s): {invalid}. Available: {OpenETClient.AVAILABLE_MODELS}"
+        )
+
     df = download_openet_data(
         shapefile_path=args.shapefile,
         output_dir=args.output_dir,
@@ -867,9 +908,9 @@ if __name__ == '__main__':
         end_date=args.end_date,
         env_file=args.env_file,
         variable=args.variable,
-        models=[args.model],
+        models=model_list,
         interval=args.interval
     )
-    
+
     print(f"Downloaded {len(df)} records")
     print(df.head())

@@ -62,45 +62,38 @@ def setup_logger(name, log_level=logging.INFO):
 
 logger = setup_logger('CONFLUENCE Optimizer')
 
+def q_to_e0(q, p):
+    MV_CST = 0.622
+    e_0 = (q * p) / (MV_CST + q * (1 - MV_CST))
+    return e_0
 
-def empirical_lw_dilley_obrien(ta, ea, pa):
+def empirical_lw_dilley_obrien(Tair, p, q):
     """
-    Calculate incoming longwave radiation using Dilley & O'Brien (2002) method.
-    
-    Based on Equation (6) in:
-    Dilley, A.C., and D.M. O'Brien, 2002: Estimating downwelling longwave 
-    irradiance at the surface from cloud amount and cloud type. 
-    J. Geophys. Res., 107(D13), 4280, doi:10.1029/2001JD000822.
-    
+    Calculate incoming longwave radiation using the Dilley and O'Brien (1998) empirical formula.
+
     Parameters:
-    -----------
-    ta : array-like
-        Air temperature (K)
-    ea : array-like
-        Water vapor pressure (Pa)
-    pa : array-like
-        Air pressure (Pa)
-        
-    Returns:
-    --------
-    lw : array-like
-        Downwelling longwave radiation (W/m²)
-    """
-    # Stefan-Boltzmann constant
-    sigma = 5.670374419e-8  # W m^-2 K^-4
-    
-    # Calculate clear-sky emissivity (Equation 2)
-    emiss_clear = 0.24 + 4.81e-4 * (ea / 100.0) ** 0.5  # ea converted from Pa to hPa
-    
-    # Cloud adjustment factor (Equation 3) - assuming average cloud cover
-    # For lumped model, we'll use all-sky approach
-    cls = 1.0 + 0.22 * ((pa / 101325.0) ** 2)  # Clear-sky adjustment
-    
-    # Calculate LW radiation
-    lw = emiss_clear * cls * sigma * ta ** 4
-    
-    return lw
+    Tair : float or np.array
+        Air temperature in degrees Kelvin.
+    p : float or np.array
+        Atmospheric pressure in kPa.
+    q : float or np.array
+        Specific humidity.
 
+    Returns:
+    LWin : float or np.array
+        Incoming longwave radiation in W/m².
+    """
+    CONSTANT_1 = 59.38
+    CONSTANT_2 = 113.7
+    KELVIN_OFFSET = 273.16
+    CONSTANT_3 = 96.96
+    CONSTANT_4 = 465
+    CONSTANT_5 = 2.5
+
+    e_0 = q_to_e0(q, p/1000)  # Calculate actual vapor pressure
+
+    LWin = CONSTANT_1 + (CONSTANT_2 * (Tair/KELVIN_OFFSET)**6) + (CONSTANT_3 * np.sqrt((CONSTANT_4 * e_0)/(CONSTANT_5*Tair)))
+    return LWin
 
 def load_config(config_path):
     """Load configuration from YAML file"""

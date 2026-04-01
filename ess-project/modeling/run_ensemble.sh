@@ -374,10 +374,12 @@ except Exception as e:
             run_label = getattr(exp.optimizer, 'last_run_label', None)
             if run_label:
                 sim_dir = exp.cfg.project_dir / 'simulations'
-                for candidate in sim_dir.glob(f'{run_label}_run_*'):
-                    if candidate.is_dir():
-                        shutil.rmtree(candidate, ignore_errors=True)
-                        print(f'Cleanup: removed optimization run dir {candidate}')
+                matches = [p for p in sim_dir.glob(f'{run_label}_run_*') if p.is_dir()]
+                if matches:
+                    print(
+                        'Cleanup: preserving optimization run dir(s) for debugging/restart: '
+                        + ', '.join(str(p) for p in matches)
+                    )
     raise
 PY
 

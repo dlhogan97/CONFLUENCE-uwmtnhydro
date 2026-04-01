@@ -407,7 +407,7 @@ class forcingResampler:
             return self._create_rdrs_shapefile()
         elif self.forcing_dataset.lower() == 'casr':
             return self._create_casr_shapefile()
-        elif self.forcing_dataset.lower() == 'era5':
+        elif self.forcing_dataset.lower() in ['era5', 'metsim']:
             return self._create_era5_shapefile()
         elif self.forcing_dataset == 'carra':
             return self._create_carra_shapefile()

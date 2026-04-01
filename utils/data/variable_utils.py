@@ -27,6 +27,15 @@ class VariableHandler:
             'SWRadAtm': {'standard_name': 'surface_downwelling_shortwave_flux', 'units': 'W/m^2'},
             'pptrate': {'standard_name': 'precipitation_flux', 'units': 'mm/s'}
         },
+        'METSIM': {
+            'airtemp': {'standard_name': 'air_temperature', 'units': 'K'},
+            'airpres': {'standard_name': 'surface_air_pressure', 'units': 'Pa'},
+            'spechum': {'standard_name': 'specific_humidity', 'units': '1'},
+            'windspd': {'standard_name': 'wind_speed', 'units': 'm/s'},
+            'LWRadAtm': {'standard_name': 'surface_downwelling_longwave_flux', 'units': 'W/m^2'},
+            'SWRadAtm': {'standard_name': 'surface_downwelling_shortwave_flux', 'units': 'W/m^2'},
+            'pptrate': {'standard_name': 'precipitation_flux', 'units': 'mm/s'}
+        },
         'CARRA': {
             '2m_temperature': {'standard_name': 'air_temperature', 'units': 'K'},
             'surface_pressure': {'standard_name': 'surface_air_pressure', 'units': 'Pa'},
@@ -183,6 +192,16 @@ class VariableHandler:
         self.logger = logger
         self.dataset = dataset if dataset is not None else config.get('FORCING_DATASET')
         self.model = model if model is not None else config.get('HYDROLOGICAL_MODEL')
+
+        # Normalize common string forms to supported mapping keys.
+        if isinstance(self.dataset, str) and self.dataset not in self.DATASET_MAPPINGS:
+            dataset_upper = self.dataset.upper()
+            if dataset_upper in self.DATASET_MAPPINGS:
+                self.dataset = dataset_upper
+        if isinstance(self.model, str) and self.model not in self.MODEL_REQUIREMENTS:
+            model_upper = self.model.upper()
+            if model_upper in self.MODEL_REQUIREMENTS:
+                self.model = model_upper
         
         self.logger.info(f"Initializing VariableHandler for dataset: {self.dataset} and model: {self.model}")
         

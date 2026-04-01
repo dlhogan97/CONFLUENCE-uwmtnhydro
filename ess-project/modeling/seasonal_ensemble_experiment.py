@@ -2664,6 +2664,9 @@ class SeasonalEnsembleExperiment:
             # --- Use ForcingProcessor for the 3-step forcing pipeline ---
             fp = ForcingProcessor(cfg_dict)
             status = fp.check_status(verbose=True)
+            force_rebuild_summa_input = bool(cfg_dict.get('FORCE_REBUILD_SUMMA_INPUT', False))
+            keep_summa_input_backup = bool(cfg_dict.get('KEEP_SUMMA_INPUT_BACKUP', True))
+            forcing_product_tag = cfg_dict.get('FORCING_PRODUCT_TAG', None)
 
             # 1) Merge raw ERA5 surface + pressure → merged files
             if status['missing_merged']:
@@ -2685,13 +2688,41 @@ class SeasonalEnsembleExperiment:
             # 3) Create SUMMA input files from basin-averaged data
             # Re-check after basin averaging since new files may now exist
             fp.check_status(verbose=False)
-            if fp.missing_summa:
+            if force_rebuild_summa_input or fp.missing_summa:
+                if force_rebuild_summa_input:
+                    logger.info("Force rebuilding SUMMA_input from selected basin-averaged files...")
                 logger.info(
                     f"Creating {len(fp.missing_summa)} SUMMA input files..."
                 )
-                fp.create_summa_input(recalc_longwave=recalc_longwave)
+                fp.create_summa_input(
+                    recalc_longwave=recalc_longwave,
+                    force_rebuild=force_rebuild_summa_input,
+                    keep_backup=keep_summa_input_backup,
+                    source_tag=forcing_product_tag,
+                )
             else:
                 logger.info("All SUMMA input files already exist.")
+
+            # 3b) Guardrail: ensure every SUMMA forcing file has consistent data_step.
+            ds_report = fp.validate_summa_input_data_step(
+                fix_missing=True,
+                fix_mismatch=True,
+                verbose=False,
+            )
+            logger.info(
+                "SUMMA forcing data_step check: "
+                f"checked={ds_report['checked']}, "
+                f"fixed_missing={ds_report['fixed_missing']}, "
+                f"fixed_mismatch={ds_report['fixed_mismatch']}, "
+                f"remaining_missing={len(ds_report['missing'])}, "
+                f"remaining_mismatch={len(ds_report['mismatch'])}"
+            )
+
+            if ds_report['missing'] or ds_report['mismatch']:
+                raise RuntimeError(
+                    "SUMMA forcing files failed data_step consistency checks. "
+                    "Inspect SUMMA_input files before running model."
+                )
 
             # 4) Update forcingFileList.txt so SUMMA sees all available files
             self._update_summa_forcing_file_list()

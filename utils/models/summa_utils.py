@@ -886,7 +886,7 @@ class SummaPreProcessor:
         forcing_path = self.project_dir / 'forcing/SUMMA_input'
         file_list_path = self.summa_setup_dir / self.config.get('SETTINGS_SUMMA_FORCING_LIST')
 
-        if str(forcing_dataset).upper() not in ['CARRA', 'ERA5', 'RDRS', 'CASR']:
+        if str(forcing_dataset).upper() not in ['CARRA', 'ERA5', 'RDRS', 'CASR', 'METSIM']:
             self.logger.error(f"Unsupported forcing dataset: {forcing_dataset}")
             raise ValueError(f"Unsupported forcing dataset: {forcing_dataset}")
 

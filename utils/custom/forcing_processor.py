@@ -31,6 +31,29 @@ import xarray as xr
 import netCDF4 as nc4
 
 
+def _matches_forcing_tag(filename: str, tag: Optional[str]) -> bool:
+    """Return True if filename matches the requested forcing product tag.
+
+    Rules:
+    - tag is None/empty: always match.
+    - tag == 'era5': match 'era5' but exclude names that also include 'metsim'.
+      This avoids accidentally selecting hybrid/remapped MetSim files.
+    - other tags: simple case-insensitive substring match.
+    """
+    if tag is None:
+        return True
+
+    tag_text = str(tag).strip().lower()
+    if tag_text == '':
+        return True
+
+    name = filename.lower()
+    if tag_text == 'era5':
+        return ('era5' in name) and ('metsim' not in name)
+
+    return tag_text in name
+
+
 class ForcingProcessor:
     """
     Process ERA5 forcing data for SUMMA modeling.
@@ -78,6 +101,72 @@ class ForcingProcessor:
                     continue
                 months.append(f"{year}{month:02d}")
         return months
+
+    def _expected_data_step(self) -> int:
+        """Return expected forcing timestep in seconds for SUMMA input files."""
+        return int(self.config.get('FORCING_TIME_STEP_SIZE', 3600))
+
+    def validate_summa_input_data_step(self,
+                                       fix_missing: bool = True,
+                                       fix_mismatch: bool = True,
+                                       verbose: bool = True) -> Dict[str, object]:
+        """Validate scalar `data_step` across SUMMA input files and optionally repair.
+
+        SUMMA requires every forcing file in the forcing list to expose the same
+        timestep metadata. This check prevents mixed files (some with/without
+        `data_step`) from causing runtime failures.
+        """
+        expected = self._expected_data_step()
+        files = sorted(self.summa_input_path.glob('*.nc'))
+        report = {
+            'checked': len(files),
+            'expected_data_step': expected,
+            'missing': [],
+            'mismatch': [],
+            'fixed_missing': 0,
+            'fixed_mismatch': 0,
+        }
+
+        for fp in files:
+            try:
+                with xr.open_dataset(fp) as ds_src:
+                    current = ds_src.get('data_step', None)
+                    has_data_step = current is not None
+                    current_value = None
+                    if has_data_step:
+                        current_value = float(np.asarray(current).reshape(-1)[0])
+
+                    needs_missing_fix = (not has_data_step) and fix_missing
+                    needs_mismatch_fix = has_data_step and (current_value != float(expected)) and fix_mismatch
+
+                    if needs_missing_fix or needs_mismatch_fix:
+                        ds = ds_src.load()
+                        ds['data_step'] = xr.DataArray(expected)
+                        ds['data_step'].attrs.update({
+                            'long_name': 'data step length in seconds',
+                            'units': 's'
+                        })
+                        ds.to_netcdf(fp)
+                        if needs_missing_fix:
+                            report['fixed_missing'] += 1
+                        if needs_mismatch_fix:
+                            report['fixed_mismatch'] += 1
+                    else:
+                        if not has_data_step:
+                            report['missing'].append(fp.name)
+                        elif current_value != float(expected):
+                            report['mismatch'].append({'file': fp.name, 'value': current_value})
+            except Exception as exc:
+                report['mismatch'].append({'file': fp.name, 'error': str(exc)})
+
+        if verbose:
+            print(
+                f"data_step validation: checked={report['checked']}, expected={expected}, "
+                f"fixed_missing={report['fixed_missing']}, fixed_mismatch={report['fixed_mismatch']}, "
+                f"remaining_missing={len(report['missing'])}, remaining_mismatch={len(report['mismatch'])}"
+            )
+
+        return report
     
     def check_status(self, verbose: bool = True) -> Dict:
         """
@@ -391,6 +480,9 @@ class ForcingProcessor:
                           precip_multiplier: float = 1.0,
                           recalc_longwave: bool = False,
                           months: Optional[List[str]] = None,
+                          force_rebuild: bool = False,
+                          keep_backup: bool = True,
+                          source_tag: Optional[str] = None,
                           verbose: bool = True) -> int:
         """
         Create SUMMA input files from basin-averaged data.
@@ -406,6 +498,15 @@ class ForcingProcessor:
             based on temperature, humidity, and pressure. Useful when adjusting temperature.
         months : list, optional
             List of YYYYMM strings to process. If None, processes missing months.
+        force_rebuild : bool
+            If True, rebuild SUMMA_input via a staging directory, then atomically
+            replace the existing SUMMA_input directory.
+        keep_backup : bool
+            If force_rebuild=True, keep a timestamped backup of the previous
+            SUMMA_input directory before swapping in the rebuilt directory.
+        source_tag : str, optional
+            If set, only use basin_averaged_data files whose filename contains
+            this tag (for example 'metsim' or 'ERA5').
         verbose : bool
             Print progress updates
             
@@ -414,21 +515,43 @@ class ForcingProcessor:
         int
             Number of files created
         """
-        # Ensure output directory exists
-        self.summa_input_path.mkdir(parents=True, exist_ok=True)
-        
+        # Resolve source selection tag from config unless explicitly provided.
+        selected_tag = source_tag
+        if selected_tag is None:
+            raw_tag = self.config.get('FORCING_PRODUCT_TAG', None)
+            if raw_tag is not None and str(raw_tag).strip() != '':
+                selected_tag = str(raw_tag).strip()
+
         # Update missing list
         if months is None:
-            self.check_status(verbose=False)
-            months = self.missing_summa
-        
+            if force_rebuild:
+                months = self._get_required_months()
+            else:
+                self.check_status(verbose=False)
+                months = self.missing_summa
+
         if not months:
             if verbose:
                 print("✅ All SUMMA input files already exist")
             return 0
+
+        # Determine output target. For forced rebuild we write to a staging dir
+        # and atomically swap it in only after successful completion.
+        target_output_path = self.summa_input_path
+        backup_dir = None
+        if force_rebuild:
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            target_output_path = self.summa_input_path.parent / f"{self.summa_input_path.name}_staging_{timestamp}"
+            if target_output_path.exists():
+                shutil.rmtree(target_output_path)
+        target_output_path.mkdir(parents=True, exist_ok=True)
         
         if verbose:
             print(f"\n🔄 Creating {len(months)} SUMMA input files...")
+            if force_rebuild:
+                print("   Mode: force rebuild (atomic swap)")
+            if selected_tag:
+                print(f"   Source tag filter: '{selected_tag}'")
             if temp_adjustment != 0:
                 print(f"   Temperature adjustment: {temp_adjustment:+.2f} K")
             if precip_multiplier != 1.0:
@@ -441,34 +564,46 @@ class ForcingProcessor:
         
         for i, ym in enumerate(months):
             # Find corresponding basin-averaged file
-            ba_files = list(self.basin_avg_path.glob(f"*_{ym}.nc"))
+            ba_files = sorted(self.basin_avg_path.glob(f"*_{ym}.nc"))
+            ba_files = [fp for fp in ba_files if _matches_forcing_tag(fp.name, selected_tag)]
             
             if not ba_files:
                 if verbose:
-                    print(f"   ⚠️  No basin-averaged file for {ym}")
+                    suffix = f" with tag '{selected_tag}'" if selected_tag else ""
+                    print(f"   ⚠️  No basin-averaged file for {ym}{suffix}")
                 continue
+
+            if len(ba_files) > 1 and verbose:
+                print(f"   ⚠️  Multiple basin-averaged candidates for {ym}; using {ba_files[0].name}")
             
             src_file = ba_files[0]
-            dst_file = self.summa_input_path / src_file.name
+            dst_file = target_output_path / src_file.name
             
             try:
                 # Load, adjust if needed, and save
-                ds = xr.open_dataset(src_file)
-                
+                with xr.open_dataset(src_file) as ds_src:
+                    ds = ds_src.load()
+
                 if temp_adjustment != 0 and 'airtemp' in ds:
                     ds['airtemp'] = ds['airtemp'] + temp_adjustment
-                
+
                 if precip_multiplier != 1.0 and 'pptrate' in ds:
                     ds['pptrate'] = ds['pptrate'] * precip_multiplier
-                
+
                 # Recalculate longwave radiation if requested
                 if recalc_longwave and all(v in ds for v in ['airtemp', 'spechum', 'airpres']):
                     ds['LWRadAtm'] = empirical_lw_dilley_obrien(
-                        ds['airtemp'], ds['spechum'], ds['airpres']
+                        ds['airtemp'], ds['airpres'], ds['spechum']
                     )
-                
+
+                # Enforce SUMMA-required scalar timestep metadata consistently.
+                ds['data_step'] = xr.DataArray(self._expected_data_step())
+                ds['data_step'].attrs.update({
+                    'long_name': 'data step length in seconds',
+                    'units': 's'
+                })
+
                 ds.to_netcdf(dst_file)
-                ds.close()
                 success_count += 1
                 
             except Exception as e:
@@ -478,9 +613,33 @@ class ForcingProcessor:
             
             if verbose and ((i + 1) % 12 == 0 or i == len(months) - 1):
                 print(f"   Progress: {i+1}/{len(months)}")
+
+        # For force rebuild, only swap if we successfully produced all months.
+        if force_rebuild:
+            if success_count != len(months):
+                shutil.rmtree(target_output_path, ignore_errors=True)
+                raise RuntimeError(
+                    f"Force rebuild requested but only created {success_count}/{len(months)} files. "
+                    "SUMMA_input was not modified."
+                )
+
+            if self.summa_input_path.exists():
+                if keep_backup:
+                    backup_dir = self.summa_input_path.parent / (
+                        f"{self.summa_input_path.name}_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                    )
+                    if backup_dir.exists():
+                        shutil.rmtree(backup_dir)
+                    shutil.move(str(self.summa_input_path), str(backup_dir))
+                else:
+                    shutil.rmtree(self.summa_input_path)
+
+            shutil.move(str(target_output_path), str(self.summa_input_path))
         
         if verbose:
             print(f"✅ SUMMA input creation complete: {success_count}/{len(months)}")
+            if force_rebuild and backup_dir is not None:
+                print(f"   Backup saved: {backup_dir}")
         
         return success_count
     
