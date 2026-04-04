@@ -104,7 +104,7 @@ class ParameterManager:
         
         # Parse parameter lists
         self.local_params = [p.strip() for p in config.get('PARAMS_TO_CALIBRATE', '').split(',') if p.strip()]
-        self.basin_params = [p.strip() for p in config.get('BASIN_PARAMS_TO_CALIBRATE', '').split(',') if p.strip()]
+        self.basin_params = [p.strip() for p in (config.get('BASIN_PARAMS_TO_CALIBRATE') or '').split(',') if p.strip()]
         self.depth_params = ['total_mult', 'shape_factor'] if config.get('CALIBRATE_DEPTH', False) else []
         self.mizuroute_params = []
         self.linear_reservoir_params = []
@@ -1135,6 +1135,9 @@ class BaseOptimizer(ABC):
         self.num_processes = max(1, config.get('MPI_PROCESSES', 1))
         self.parallel_dirs = []
         self._consecutive_parallel_failures = 0
+        # Preserve per-process run artifacts when anything fails so debugging data survives.
+        self._parallel_failures_detected = False
+        self._preserve_parallel_on_failure = config.get('PRESERVE_PARALLEL_LOGS_ON_FAILURE', True)
         
         if self.use_parallel:
             self._setup_parallel_processing()
@@ -1346,6 +1349,7 @@ class BaseOptimizer(ABC):
         """Update SUMMA file manager with spinup + calibration period"""
         with open(file_manager_path, 'r') as f:
             lines = f.readlines()
+        configured_coldstate = str(self.config.get('SETTINGS_SUMMA_COLDSTATE', 'coldState.nc')).strip()
         
         if use_calibration_period:
             # Include spinup period before calibration
@@ -1395,6 +1399,8 @@ class BaseOptimizer(ABC):
             elif 'settingsPath' in line:
                 settings_path = str(self.optimization_settings_dir).replace('\\', '/')
                 updated_lines.append(f"settingsPath         '{settings_path}/'\n")
+            elif 'initConditionFile' in line:
+                updated_lines.append(f"initConditionFile    '{configured_coldstate}'\n")
             else:
                 updated_lines.append(line)
         
@@ -1518,6 +1524,7 @@ class BaseOptimizer(ABC):
     def _update_process_file_managers(self, proc_id: int, summa_dir: Path, mizuroute_dir: Path,
                                     summa_settings_dir: Path, mizu_settings_dir: Path) -> None:
         """Update file managers for a specific process"""
+        configured_coldstate = str(self.config.get('SETTINGS_SUMMA_COLDSTATE', 'coldState.nc')).strip()
         # Update SUMMA file manager
         file_manager = summa_settings_dir / 'fileManager.txt'
         if file_manager.exists():
@@ -1534,6 +1541,8 @@ class BaseOptimizer(ABC):
                 elif 'settingsPath' in line:
                     settings_path = str(summa_settings_dir).replace('\\', '/')
                     updated_lines.append(f"settingsPath         '{settings_path}/'\n")
+                elif 'initConditionFile' in line:
+                    updated_lines.append(f"initConditionFile    '{configured_coldstate}'\n")
                 else:
                     updated_lines.append(line)
             
@@ -1594,13 +1603,22 @@ class BaseOptimizer(ABC):
             with open(control_file, 'w') as f:
                 f.writelines(updated_lines)
     
-    def _cleanup_parallel_processing(self) -> None:
+    def _cleanup_parallel_processing(self, optimization_succeeded: bool = True) -> None:
         """Cleanup parallel processing directories"""
         if not self.use_parallel:
             return
         
         self.logger.info("Cleaning up parallel working directories")
         cleanup_parallel = self.config.get('CLEANUP_PARALLEL_DIRS', True)
+        if self._preserve_parallel_on_failure and (
+            not optimization_succeeded or self._parallel_failures_detected
+        ):
+            self.logger.info(
+                "Preserving parallel working directories because failures were detected. "
+                "Set PRESERVE_PARALLEL_LOGS_ON_FAILURE: false to override."
+            )
+            return
+
         if cleanup_parallel:
             try:
                 for proc_dirs in self.parallel_dirs:
@@ -1997,6 +2015,8 @@ class BaseOptimizer(ABC):
             # Calculate success rate
             successful_count = sum(1 for r in results if r['score'] is not None)
             success_rate = successful_count / num_tasks if num_tasks > 0 else 0
+            if successful_count < num_tasks:
+                self._parallel_failures_detected = True
             
             # COLLECT AND ANALYZE RUNTIME STATISTICS
             individual_runtimes = []
@@ -2076,6 +2096,7 @@ class BaseOptimizer(ABC):
         except Exception as e:
             self.logger.error(f"Critical error in parallel evaluation: {str(e)}")
             self._consecutive_parallel_failures += 1
+            self._parallel_failures_detected = True
             
             # Check if this is a stale file handle error
             if 'stale file handle' in str(e).lower() or 'errno 116' in str(e).lower():
@@ -2474,6 +2495,8 @@ if __name__ == "__main__":
         
         # Reset parallel failure counter after successful sequential run
         successful_count = sum(1 for r in results if r['score'] is not None)
+        if successful_count < len(results):
+            self._parallel_failures_detected = True
         if successful_count > 0:
             self._consecutive_parallel_failures = max(0, self._consecutive_parallel_failures - 1)
         
@@ -2969,6 +2992,7 @@ if __name__ == "__main__":
         
         self.logger.info("=" * 60)
         
+        optimization_succeeded = False
         try:
             start_time = datetime.now()
             
@@ -2994,6 +3018,7 @@ if __name__ == "__main__":
             
             # Enhanced final summary logging
             self._log_final_optimization_summary(algorithm_name, best_score, final_result, duration)
+            optimization_succeeded = True
             
             return {
                 'best_parameters': best_params,
@@ -3011,7 +3036,7 @@ if __name__ == "__main__":
             self.logger.error(f"{algorithm_name} optimization failed: {str(e)}")
             raise
         finally:
-            self._cleanup_parallel_processing()
+            self._cleanup_parallel_processing(optimization_succeeded=optimization_succeeded)
 
 
 class DDSOptimizer(BaseOptimizer):

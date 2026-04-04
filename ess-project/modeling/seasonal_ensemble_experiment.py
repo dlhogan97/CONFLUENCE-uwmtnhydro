@@ -876,7 +876,9 @@ class ModelRunner:
         cmd = f"{summa_path / summa_exe} -m {fm_path}"
         
         logger.info(f"Running SUMMA: {experiment_id}")
-        log_file = log_dir / f'{experiment_id}.log'
+        run_stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        log_file = log_dir / f'{experiment_id}_{run_stamp}.log'
+        latest_log_file = log_dir / f'{experiment_id}.log'
 
         import os as _os
         run_env = _os.environ.copy()
@@ -885,11 +887,19 @@ class ModelRunner:
         with open(log_file, 'w') as lf:
             result = subprocess.run(
                 cmd, shell=True, stdout=lf, stderr=subprocess.STDOUT,
-                timeout=10800, env=run_env  # 3-hour timeout
+                timeout=10800, env=run_env, cwd=str(log_dir)  # 3-hour timeout
             )
+
+        shutil.copy2(log_file, latest_log_file)
         
         if result.returncode != 0:
-            raise RuntimeError(f"SUMMA failed for {experiment_id}. See {log_file}")
+            mpi_logs = sorted(log_dir.glob('mpi*')) + sorted(log_dir.glob('*worker*'))
+            mpi_hint = ''
+            if mpi_logs:
+                mpi_hint = f" MPI side logs in {log_dir}: {', '.join(p.name for p in mpi_logs[:10])}"
+            raise RuntimeError(
+                f"SUMMA failed for {experiment_id}. See {log_file} (latest: {latest_log_file}).{mpi_hint}"
+            )
         
         # Find the output file
         output_files = sorted(output_dir.glob(f"{experiment_id}*_timestep.nc"))
@@ -1577,9 +1587,12 @@ class ParallelEnsembleRunner:
             'OPENBLAS_NUM_THREADS': '1',
         })
         cmd = f"{self.summa_exe} -m {info['fm_path']}"
-        lf = open(info['log_file'], 'w')
+        lf = open(info['log_file'], 'a')
+        lf.write(f"\n===== launch {datetime.now().isoformat()} =====\n")
+        lf.flush()
         proc = subprocess.Popen(
-            cmd, shell=True, stdout=lf, stderr=subprocess.STDOUT, env=env
+            cmd, shell=True, stdout=lf, stderr=subprocess.STDOUT, env=env,
+            cwd=str(info['run_dir'])
         )
         self.active[member_id] = {'proc': proc, 'log_fh': lf}
         logger.info(f"  LAUNCHED: {member_id}  (PID {proc.pid})")
@@ -1614,10 +1627,15 @@ class ParallelEnsembleRunner:
             else:
                 error_tail = ""
                 log_file = self.members[mid]['log_file']
+                run_dir = self.members[mid]['run_dir']
                 if log_file.exists():
                     with open(log_file) as f:
                         error_tail = ''.join(deque(f, maxlen=5))
-                self.failed[mid] = {'returncode': rc, 'error': error_tail}
+                mpi_logs = sorted(run_dir.glob('mpi*')) + sorted(run_dir.glob('*worker*'))
+                mpi_hint = ''
+                if mpi_logs:
+                    mpi_hint = f"\nMPI logs: {', '.join(p.name for p in mpi_logs[:10])}"
+                self.failed[mid] = {'returncode': rc, 'error': error_tail + mpi_hint}
                 logger.warning(f"  FAILED: {mid} (rc={rc})")
         
         for mid in finished:
@@ -2839,7 +2857,10 @@ class SeasonalEnsembleExperiment:
             raise ValueError("No baseline output available. Run step2_long_term_run first.")
         
         warm_state_path = self.cfg.settings_dir / 'warmState.nc'
-        cold_state_path = self.cfg.settings_dir / 'coldState_updated.nc'
+        configured_cold_state = self.cfg.raw.get('SETTINGS_SUMMA_COLDSTATE', 'coldState_updated.nc')
+        cold_state_path = Path(configured_cold_state)
+        if not cold_state_path.is_absolute():
+            cold_state_path = self.cfg.settings_dir / cold_state_path
         
         ds_cold = xr.open_dataset(cold_state_path)
         ds_out = xr.open_dataset(output_nc)
@@ -3069,7 +3090,7 @@ class SeasonalEnsembleExperiment:
     def step3_target_year_baseline(
         self,
         target_year: int,
-        prefer_continuous: bool = False,
+        prefer_continuous: bool = True,
     ) -> Path:
         """Create or run the unperturbed target year baseline.
 
@@ -3330,7 +3351,7 @@ class SeasonalEnsembleExperiment:
         self.step1_optimize(skip_if_exists=skip_optimization)
         self.step2_long_term_run(baseline_start, baseline_end)
         self.step2b_create_warm_state()
-        self.step3_target_year_baseline(target_year)
+        self.step3_target_year_baseline(target_year, prefer_continuous=True)
         self.step4_build_ensembles(target_year, donor_years, forcing_dir)
         self.step5_run_ensembles(target_year, parallel=parallel, max_workers=max_workers)
         self.step6_evaluate()

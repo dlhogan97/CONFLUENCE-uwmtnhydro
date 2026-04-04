@@ -468,8 +468,16 @@ class OptimizationManager:
             self.logger.info("Validating optimized parameters with a final SUMMA run…")
             validation_results = dpe.validate_optimization(optimized_params)
 
-            results_dir = Path(f"results_differentiable_{dpe.domain_name}_{datetime.now().strftime('%Y%m%d_%H%M')}")
+            results_dir = self.project_dir / "optimisation" / f"results_differentiable_{dpe.domain_name}_{datetime.now().strftime('%Y%m%d_%H%M')}"
             dpe.save_results(optimized_params, results_dir)
+
+            # Write best_parameters.csv in the format expected by run_ensemble.sh
+            best_params_csv = self.project_dir / "optimisation" / "best_parameters.csv"
+            rows = [{"parameter": k, "value": (v[0] if hasattr(v, "__len__") else v)}
+                    for k, v in optimized_params.items()]
+            pd.DataFrame(rows).to_csv(best_params_csv, index=False)
+            self.logger.info(f"Best parameters saved to: {best_params_csv}")
+
             return True
 
         except Exception as e:

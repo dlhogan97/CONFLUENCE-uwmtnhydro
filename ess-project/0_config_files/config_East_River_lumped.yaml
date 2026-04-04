@@ -39,8 +39,8 @@ SETTINGS_SUMMA_CONNECT_HRUS: true
 SETTINGS_SUMMA_TRIALPARAM_N: 0
 SETTINGS_SUMMA_TRIALPARAM_1: null
 PARAMS_TO_CALIBRATE: k_soil, theta_sat, theta_res, aquiferScaleFactor, rootingDepth
-BASIN_PARAMS_TO_CALIBRATE: basin__aquiferScaleFactor, basin__aquiferHydCond
-SUMMA_DECISION_OPTIONS:
+BASIN_PARAMS_TO_CALIBRATE: ""
+SUMMA_DECISION_OPTIONS: 
   snowIncept:
   - lightSnow
   compaction:

@@ -1080,7 +1080,7 @@ def _calculate_metrics_inline_worker(summa_dir: Path, mizuroute_dir: Path, confi
                     except Exception as e:
                         logger.error(f"DEBUG: Error extracting outlet segment from {routing_var}: {str(e)}")
                         return None
-                        
+                         
                 else:
                     # SUMMA output - convert from m/s to m³/s using ACTUAL area
                     # Check config for preferred variable, otherwise use fallback list
@@ -1808,8 +1808,8 @@ def _run_summa_worker(summa_exe: Path, file_manager: Path, summa_dir: Path, logg
             result = subprocess.run(
                 cmd,
                 shell=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=f,
+                stderr=subprocess.STDOUT,
                 check=True,
                 env=env,
                 cwd=str(summa_dir)
