@@ -1405,10 +1405,56 @@ def _calculate_metrics_inline_worker(summa_dir: Path, mizuroute_dir: Path, confi
         
         logger.info(f"DEBUG: Final obs range: {obs_valid.min():.3f} to {obs_valid.max():.3f}")
         logger.info(f"DEBUG: Final sim range: {sim_valid.min():.3f} to {sim_valid.max():.3f}")
-        
+
+        # Optional: recalculate runoff manually from aquifer storage and surface runoff
+        use_manual_baseflow = config.get('USE_MANUAL_AQUIFER_BASEFLOW', False)
+        if use_manual_baseflow:
+            logger.info("DEBUG: Using manual aquifer baseflow calculation")
+            try:
+                candidate_params = candidate_params or {}
+                # Load aquifer storage and surface runoff from netCDF
+                aq_storage_var = config.get('MANUAL_AQUIFER_BASEFLOW_VAR', 'scalarAquiferStorage_mean')
+                sim_nc_file = list(summa_dir.glob('*_timestep.nc'))[0] if summa_dir.glob('*_timestep.nc') else list(summa_dir.glob('*.nc'))[0]
+
+                with xr.open_dataset(sim_nc_file) as ds:
+                    aq_storage = ds[aq_storage_var].squeeze().to_pandas()
+                    surface_runoff = ds['scalarSurfaceRunoff'].squeeze().to_pandas()
+
+                    # Get parameters from candidate_params or config
+                    bf_rate = float(candidate_params.get('aquiferBaseflowRate', config.get('AQUIFER_BASEFLOW_RATE_DEFAULT', 1.5e-6)))
+                    bf_exp = float(candidate_params.get('aquiferBaseflowExp', config.get('AQUIFER_BASEFLOW_EXP_DEFAULT', 3.35)))
+                    aq_scale = float(candidate_params.get('aquiferScaleFactor', config.get('AQUIFER_SCALE_FACTOR_DEFAULT', 1.21)))
+
+                    logger.info(f"DEBUG: Manual baseflow params - rate={bf_rate:.6e}, exp={bf_exp:.4f}, scale={aq_scale:.4f}")
+
+                    # Calculate baseflow: rate * (storage / scale_factor) ^ exponent
+                    baseflow = bf_rate * (aq_storage / aq_scale) ** bf_exp
+                    manual_runoff = baseflow + surface_runoff
+
+                    # Upsample to match sim_valid index frequency if needed
+                    manual_runoff = manual_runoff.resample(sim_valid.index.inferred_freq).interpolate()
+                    manual_runoff = manual_runoff.dropna()
+
+                    # Replace sim_valid with manual calculation
+                    common_idx_manual = sim_valid.index.intersection(manual_runoff.index)
+                    if len(common_idx_manual) > 0:
+                        sim_valid_orig = sim_valid.copy()
+                        sim_valid = manual_runoff.loc[common_idx_manual]
+                        obs_valid = obs_valid.loc[common_idx_manual]
+
+                        logger.info(f"DEBUG: Replaced simulated runoff with manual calculation")
+                        logger.info(f"DEBUG: Original sim range: {sim_valid_orig.min():.3f} to {sim_valid_orig.max():.3f}")
+                        logger.info(f"DEBUG: Manual sim range: {sim_valid.min():.3f} to {sim_valid.max():.3f}")
+                    else:
+                        logger.warning("DEBUG: No common indices after manual baseflow calc; using original sim data")
+            except Exception as e:
+                logger.error(f"DEBUG: Error in manual baseflow calculation: {str(e)}")
+                logger.error(f"DEBUG: Traceback: {traceback.format_exc()}")
+                logger.info("DEBUG: Falling back to original simulated data")
+
         # Calculate metrics
         logger.info("DEBUG: Calculating metrics...")
-        
+
         try:
             # Calculate NSE
             mean_obs = obs_valid.mean()

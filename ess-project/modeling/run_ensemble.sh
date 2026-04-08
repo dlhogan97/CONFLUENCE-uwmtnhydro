@@ -360,26 +360,21 @@ try:
 except Exception as e:
     print(f'ERROR: setup failed: {e}')
     if created_new_workspace and exp is not None:
-        if longterm_completed:
+        workspace = Path(exp.cfg.experiment_workspace)
+        if workspace.exists():
             print(
-                'Cleanup skipped: long-term baseline already completed; '
-                'preserving experiment workspace and outputs for recovery.'
+                f'Preserving experiment workspace for recovery/debugging: {workspace}'
             )
-        else:
-            workspace = Path(exp.cfg.experiment_workspace)
-            if workspace.exists():
-                shutil.rmtree(workspace, ignore_errors=True)
-                print(f'Cleanup: removed experiment workspace {workspace}')
 
-            run_label = getattr(exp.optimizer, 'last_run_label', None)
-            if run_label:
-                sim_dir = exp.cfg.project_dir / 'simulations'
-                matches = [p for p in sim_dir.glob(f'{run_label}_run_*') if p.is_dir()]
-                if matches:
-                    print(
-                        'Cleanup: preserving optimization run dir(s) for debugging/restart: '
-                        + ', '.join(str(p) for p in matches)
-                    )
+        run_label = getattr(exp.optimizer, 'last_run_label', None)
+        if run_label:
+            sim_dir = exp.cfg.project_dir / 'simulations'
+            matches = [p for p in sim_dir.glob(f'{run_label}_run_*') if p.is_dir()]
+            if matches:
+                print(
+                    'Optimization run dir(s) also preserved: '
+                    + ', '.join(str(p) for p in matches)
+                )
     raise
 PY
 
