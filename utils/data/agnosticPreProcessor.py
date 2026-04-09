@@ -17,6 +17,8 @@ import multiprocessing as mp
 import time
 import uuid
 
+from utils.custom.calc import empirical_lw_dilley_obrien
+
 class forcingResampler:
     def __init__(self, config, logger):
         self.config = config
@@ -36,6 +38,11 @@ class forcingResampler:
             self.catchment_name = f"{self.config['DOMAIN_NAME']}_HRUs_{str(self.config['DOMAIN_DISCRETIZATION']).replace(',','_')}.shp"
         self.forcing_dataset = self.config.get('FORCING_DATASET').lower()
         self.merged_forcing_path = self._get_default_path('FORCING_PATH', 'forcing/raw_data')
+        self.recalc_longwave = bool(self.config.get('RECALC_LONGWAVE', False))
+
+        # Optionally seed forcing files from a reusable source directory.
+        # This avoids recreating raw forcing files when monthly files already exist.
+        self._seed_forcing_from_source(self.merged_forcing_path)
         
         # Merge forcings for both RDRS and CASR
         if self.forcing_dataset in ['rdrs', 'casr']:
@@ -45,12 +52,58 @@ class forcingResampler:
 
         # Resolve forcing input with optional fallback support.
         self.merged_forcing_path = self._resolve_forcing_input_path(self.merged_forcing_path)
+
+        if self.recalc_longwave:
+            self.logger.info("Longwave recalculation enabled (Dilley & O'Brien 1998)")
             
     def _get_default_path(self, path_key, default_subpath):
         path_value = self.config.get(path_key)
         if path_value == 'default' or path_value is None:
             return self.project_dir / default_subpath
         return Path(path_value)
+
+    def _seed_forcing_from_source(self, target_path: Path) -> None:
+        """Copy forcing NetCDF files from FORCING_COPY_SOURCE when target is empty."""
+        source_value = self.config.get('FORCING_COPY_SOURCE')
+        if source_value is None:
+            return
+
+        source_text = str(source_value).strip()
+        if not source_text or source_text.lower() == 'default':
+            return
+
+        source_path = Path(source_text).expanduser()
+        if not source_path.exists():
+            self.logger.warning(
+                f"FORCING_COPY_SOURCE is set but does not exist: {source_path}. Skipping copy."
+            )
+            return
+
+        target_path.mkdir(parents=True, exist_ok=True)
+
+        existing_target_files = sorted(target_path.glob('*.nc'))
+        if existing_target_files:
+            self.logger.info(
+                f"Skipping forcing source copy because target already has {len(existing_target_files)} NetCDF files: {target_path}"
+            )
+            return
+
+        source_files = sorted(source_path.glob('*.nc'))
+        if not source_files:
+            self.logger.warning(
+                f"FORCING_COPY_SOURCE has no NetCDF files: {source_path}. Skipping copy."
+            )
+            return
+
+        copied = 0
+        for source_file in source_files:
+            destination = target_path / source_file.name
+            shutil.copy2(source_file, destination)
+            copied += 1
+
+        self.logger.info(
+            f"Copied {copied} forcing NetCDF files from {source_path} to {target_path}"
+        )
 
     def _resolve_forcing_input_path(self, primary_path: Path) -> Path:
         """Resolve forcing input path with optional fallback when no NetCDF files are present."""
@@ -1044,6 +1097,131 @@ class forcingResampler:
         
         return self.forcing_basin_path / output_filename
 
+    def _get_target_hru_count(self):
+        """Return current HRU count from the active catchment shapefile."""
+        target_shp = self.catchment_path / self.catchment_name
+        if not target_shp.exists():
+            self.logger.warning(f"Catchment shapefile not found for HRU count check: {target_shp}")
+            return None
+
+        try:
+            gdf = gpd.read_file(target_shp)
+            return int(len(gdf))
+        except Exception as exc:
+            self.logger.warning(f"Unable to read catchment shapefile for HRU count check ({exc})")
+            return None
+
+    def _get_shapefile_signature_epoch(self, shapefile_path):
+        """Return latest modification time among shapefile sidecar files."""
+        shp_path = Path(shapefile_path)
+        base = shp_path.with_suffix('')
+        mtimes = []
+        for ext in ('.shp', '.shx', '.dbf', '.prj', '.cpg'):
+            part = Path(f"{base}{ext}")
+            if part.exists():
+                mtimes.append(part.stat().st_mtime)
+
+        if mtimes:
+            return max(mtimes)
+        if shp_path.exists():
+            return shp_path.stat().st_mtime
+        return None
+
+    def _get_target_shapefile_epoch(self):
+        """Return catchment shapefile signature timestamp for stale-output detection."""
+        target_shp = self.catchment_path / self.catchment_name
+        return self._get_shapefile_signature_epoch(target_shp)
+
+    def _build_remap_cache_suffix(self, target_shp_wgs84, actual_hru_field):
+        """Build remap-cache suffix tied to catchment shapefile version."""
+        epoch = self._get_shapefile_signature_epoch(target_shp_wgs84)
+        if epoch is None:
+            return f"{actual_hru_field}_unknown"
+        return f"{actual_hru_field}_{int(epoch)}"
+
+    def _get_remapped_output_hru_count(self, output_file):
+        """Return HRU count from a remapped forcing NetCDF file when available."""
+        try:
+            with xr.open_dataset(output_file, decode_times=False) as ds:
+                for dim_name in ('hru', 'HRU', 'nhru'):
+                    if dim_name in ds.sizes:
+                        return int(ds.sizes[dim_name])
+                if 'hruId' in ds.variables:
+                    return int(ds['hruId'].size)
+        except Exception as exc:
+            self.logger.warning(f"Unable to inspect remapped output {output_file.name} ({exc})")
+            return None
+
+        return None
+
+    def _is_remapped_output_compatible(self, output_file, target_hru_count=None, target_shapefile_epoch=None):
+        """Check whether an existing remapped output matches the active HRU count."""
+        if target_shapefile_epoch is None:
+            target_shapefile_epoch = self._get_target_shapefile_epoch()
+
+        if target_shapefile_epoch is not None:
+            try:
+                if output_file.stat().st_mtime < target_shapefile_epoch:
+                    return False
+            except Exception as exc:
+                self.logger.warning(f"Unable to inspect output mtime for {output_file.name} ({exc})")
+                return False
+
+        if target_hru_count is None:
+            target_hru_count = self._get_target_hru_count()
+
+        if target_hru_count is None:
+            return True
+
+        output_hru_count = self._get_remapped_output_hru_count(output_file)
+        if output_hru_count != target_hru_count:
+            return False
+
+        if not self.recalc_longwave:
+            return True
+
+        try:
+            with xr.open_dataset(output_file, decode_times=False) as ds:
+                recalc_flag = str(ds.attrs.get('longwave_recalculated', '')).strip().lower()
+                recalc_method = str(ds.attrs.get('longwave_method', '')).strip().lower()
+                if recalc_flag in {'true', '1', 'yes'} and recalc_method == 'dilley_obrien_1998':
+                    return True
+        except Exception as exc:
+            self.logger.warning(f"Unable to inspect longwave metadata for {output_file.name} ({exc})")
+
+        return False
+
+    def _apply_longwave_recalculation(self, output_file):
+        """Recalculate LWRadAtm in-place using Dilley & O'Brien (1998)."""
+        if not self.recalc_longwave:
+            return
+
+        if not output_file.exists():
+            raise FileNotFoundError(f"Cannot recalculate longwave, output missing: {output_file}")
+
+        with xr.open_dataset(output_file) as src_ds:
+            ds = src_ds.load()
+
+        required = ['airtemp', 'airpres', 'spechum']
+        missing = [name for name in required if name not in ds]
+        if missing:
+            raise KeyError(
+                f"Cannot recalculate longwave for {output_file.name}; missing variables: {missing}"
+            )
+
+        ds['LWRadAtm'] = empirical_lw_dilley_obrien(ds['airtemp'], ds['airpres'], ds['spechum'])
+        ds['LWRadAtm'].attrs.update({
+            'units': 'W m-2',
+            'long_name': 'downward longwave radiation at the surface',
+            'standard_name': 'surface_downwelling_longwave_flux_in_air',
+        })
+        ds.attrs['longwave_recalculated'] = 'true'
+        ds.attrs['longwave_method'] = 'dilley_obrien_1998'
+
+        tmp_output = output_file.with_suffix(output_file.suffix + '.tmp')
+        ds.to_netcdf(tmp_output)
+        os.replace(tmp_output, output_file)
+
     def _create_parallelized_weighted_forcing(self):
         """Create weighted forcing files with proper serial/parallel handling for HPC environments"""
         self.logger.info("Creating weighted forcing files")
@@ -1061,6 +1239,15 @@ class forcingResampler:
             return
         
         self.logger.info(f"Found {len(forcing_files)} forcing files to process")
+
+        target_hru_count = self._get_target_hru_count()
+        target_shapefile_epoch = self._get_target_shapefile_epoch()
+        if target_hru_count is not None:
+            self.logger.info(f"Target HRU count for remapped forcing: {target_hru_count}")
+        if target_shapefile_epoch is not None:
+            self.logger.info(
+                f"Target catchment shapefile epoch for stale-output checks: {int(target_shapefile_epoch)}"
+            )
         
         # Get number of CPUs to use
         requested_cpus = int(self.config.get('MPI_PROCESSES', 1))
@@ -1088,9 +1275,26 @@ class forcingResampler:
                 try:
                     file_size = output_file.stat().st_size
                     if file_size > 1000:  # Basic size check
-                        self.logger.debug(f"Skipping already processed file: {file.name}")
-                        already_processed += 1
-                        continue
+                        if self._is_remapped_output_compatible(
+                            output_file,
+                            target_hru_count=target_hru_count,
+                            target_shapefile_epoch=target_shapefile_epoch,
+                        ):
+                            self.logger.debug(f"Skipping already processed file: {file.name}")
+                            already_processed += 1
+                            continue
+                        output_hru_count = self._get_remapped_output_hru_count(output_file)
+                        self.logger.info(
+                            f"Reprocessing stale remapped file {output_file.name}: "
+                            f"output_hru={output_hru_count}, target_hru={target_hru_count}, "
+                            "or output predates active catchment"
+                        )
+                        try:
+                            output_file.unlink(missing_ok=True)
+                        except Exception as exc:
+                            self.logger.warning(
+                                f"Could not remove stale output {output_file} ({exc}); attempting overwrite"
+                            )
                     else:
                         self.logger.warning(f"Found potentially corrupted output file {output_file}. Will reprocess.")
                 except Exception as e:
@@ -1412,6 +1616,8 @@ class forcingResampler:
         """Process a single forcing file in serial mode with proper WGS84 and unique ID handling"""
         try:
             start_time = time.time()
+            target_hru_count = self._get_target_hru_count()
+            target_shapefile_epoch = self._get_target_shapefile_epoch()
             
             # Check output file first
             output_file = self._determine_output_filename(file)
@@ -1420,8 +1626,17 @@ class forcingResampler:
                 try:
                     file_size = output_file.stat().st_size
                     if file_size > 1000:
-                        self.logger.debug(f"Skipping already processed file {file.name}")
-                        return True
+                        if self._is_remapped_output_compatible(
+                            output_file,
+                            target_hru_count=target_hru_count,
+                            target_shapefile_epoch=target_shapefile_epoch,
+                        ):
+                            self.logger.debug(f"Skipping already processed file {file.name}")
+                            return True
+                        self.logger.info(
+                            f"Rebuilding stale remapped output for {file.name} due to HRU mismatch"
+                        )
+                        output_file.unlink(missing_ok=True)
                 except Exception:
                     pass
             
@@ -1490,7 +1705,8 @@ class forcingResampler:
                 esmr.sort_ID = False
                 
                 # Handle remap file creation/reuse - include unique field in filename
-                remap_file = f"{esmr.case_name}_{actual_hru_field}_remapping.nc"
+                remap_suffix = self._build_remap_cache_suffix(target_shp_wgs84, actual_hru_field)
+                remap_file = f"{esmr.case_name}_{remap_suffix}_remapping.nc"
                 remap_path = intersect_path / remap_file
                 
                 if not remap_path.exists():
@@ -1509,6 +1725,9 @@ class forcingResampler:
                     self.logger.debug(f"Using existing remap file for {file.name}")
                     esmr.remap_csv = str(remap_path)
                     esmr.nc_remapper()
+
+                if self.recalc_longwave:
+                    self._apply_longwave_recalculation(output_file)
                 
             finally:
                 # Clean up temporary files
@@ -1542,6 +1761,8 @@ class forcingResampler:
         """Process a single forcing file - tuple handling fix"""
         try:
             start_time = time.time()
+            target_hru_count = self._get_target_hru_count()
+            target_shapefile_epoch = self._get_target_shapefile_epoch()
             
             # Check output file first
             output_file = self._determine_output_filename(file)
@@ -1549,13 +1770,22 @@ class forcingResampler:
                 try:
                     file_size = output_file.stat().st_size
                     if file_size > 1000:
-                        self.logger.info(f"Worker {worker_id}: Skipping already processed file {file.name}")
-                        return {
-                            'file': file.name,
-                            'success': True,
-                            'elapsed_seconds': 0.0,
-                            'skipped': True,
-                        }
+                        if self._is_remapped_output_compatible(
+                            output_file,
+                            target_hru_count=target_hru_count,
+                            target_shapefile_epoch=target_shapefile_epoch,
+                        ):
+                            self.logger.info(f"Worker {worker_id}: Skipping already processed file {file.name}")
+                            return {
+                                'file': file.name,
+                                'success': True,
+                                'elapsed_seconds': 0.0,
+                                'skipped': True,
+                            }
+                        self.logger.info(
+                            f"Worker {worker_id}: Rebuilding stale remapped output for {file.name} due to HRU mismatch"
+                        )
+                        output_file.unlink(missing_ok=True)
                 except Exception:
                     pass
             
@@ -1672,7 +1902,8 @@ class forcingResampler:
                 esmr.sort_ID = False
                 
                 # Check for existing remap file
-                remap_file = f"{esmr.case_name}_remapping.nc"
+                remap_suffix = self._build_remap_cache_suffix(target_shp_wgs84, actual_hru_field)
+                remap_file = f"{esmr.case_name}_{remap_suffix}_remapping.nc"
                 remap_final_path = intersect_path / remap_file
                 
                 if not remap_final_path.exists():
@@ -1705,6 +1936,9 @@ class forcingResampler:
                     self.logger.info(f"Worker {worker_id}: Using existing remap file")
                     esmr.remap_csv = str(remap_final_path.resolve())
                     esmr.nc_remapper()
+
+                if self.recalc_longwave:
+                    self._apply_longwave_recalculation(output_file)
                     
             finally:
                 # Always restore original working directory
@@ -1774,6 +2008,200 @@ class geospatialStatistics:
         self.soil_path = self._get_file_path('SOIL_CLASS_PATH', 'attributes/soilclass')
         self.land_path = self._get_file_path('LAND_CLASS_PATH', 'attributes/landclass')
 
+    def _resolve_name(self, config_key, default_name):
+        name = self.config.get(config_key)
+        if name == 'default' or not name:
+            return default_name
+        return name
+
+    def _load_current_catchment(self):
+        catchment_file = self.catchment_path / self.catchment_name
+        return gpd.read_file(catchment_file)
+
+    def _extract_hru_ids(self, gdf):
+        configured_hru_col = self.config.get('CATCHMENT_SHP_HRUID')
+        candidate_cols = []
+        if configured_hru_col:
+            candidate_cols.append(configured_hru_col)
+        for fallback in ['HRU_ID', 'hruId']:
+            if fallback not in candidate_cols:
+                candidate_cols.append(fallback)
+
+        for col in candidate_cols:
+            if col in gdf.columns:
+                ids = pd.to_numeric(gdf[col], errors='coerce').dropna().astype(int)
+                if len(ids) > 0:
+                    return set(ids.tolist())
+        return None
+
+    def _is_output_topology_compatible(self, output_gdf, catchment_gdf, output_file):
+        if len(output_gdf) != len(catchment_gdf):
+            self.logger.info(
+                f"Rebuilding stale statistics file {output_file}: "
+                f"feature_count={len(output_gdf)} does not match catchment_count={len(catchment_gdf)}"
+            )
+            return False
+
+        configured_hru_col = self.config.get('CATCHMENT_SHP_HRUID')
+        hru_cols = [configured_hru_col, 'HRU_ID', 'hruId']
+        catchment_hru_col = next((c for c in hru_cols if c and c in catchment_gdf.columns), None)
+        output_hru_col = next((c for c in hru_cols if c and c in output_gdf.columns), None)
+
+        catchment_ids = self._extract_hru_ids(catchment_gdf)
+        output_ids = self._extract_hru_ids(output_gdf)
+        if catchment_ids is not None and output_ids is not None and catchment_ids != output_ids:
+            self.logger.info(
+                f"Rebuilding stale statistics file {output_file}: HRU ID set does not match current catchment"
+            )
+            return False
+
+        # Detect ID remapping with unchanged ID sets by checking that each HRU ID
+        # still points to the same geometry signature (centroid + area).
+        if catchment_hru_col and output_hru_col:
+            try:
+                catchment_comp = catchment_gdf[[catchment_hru_col, 'geometry']].copy()
+                output_comp = output_gdf[[output_hru_col, 'geometry']].copy()
+
+                catchment_comp[catchment_hru_col] = pd.to_numeric(
+                    catchment_comp[catchment_hru_col], errors='coerce'
+                )
+                output_comp[output_hru_col] = pd.to_numeric(
+                    output_comp[output_hru_col], errors='coerce'
+                )
+
+                catchment_comp = catchment_comp.dropna(subset=[catchment_hru_col]).copy()
+                output_comp = output_comp.dropna(subset=[output_hru_col]).copy()
+
+                catchment_comp[catchment_hru_col] = catchment_comp[catchment_hru_col].astype(int)
+                output_comp[output_hru_col] = output_comp[output_hru_col].astype(int)
+
+                # Use a projected CRS for stable area signatures, and WGS84 for centroid signatures.
+                catchment_area = catchment_comp.to_crs(catchment_comp.estimate_utm_crs())
+                output_area = output_comp.to_crs(output_comp.estimate_utm_crs())
+                catchment_ll = catchment_comp.to_crs('EPSG:4326')
+                output_ll = output_comp.to_crs('EPSG:4326')
+
+                catchment_sig = {
+                    int(row[catchment_hru_col]): (
+                        round(float(catchment_area.loc[idx, 'geometry'].area), 2),
+                        round(float(catchment_ll.loc[idx, 'geometry'].representative_point().x), 6),
+                        round(float(catchment_ll.loc[idx, 'geometry'].representative_point().y), 6),
+                    )
+                    for idx, row in catchment_comp.iterrows()
+                }
+                output_sig = {
+                    int(row[output_hru_col]): (
+                        round(float(output_area.loc[idx, 'geometry'].area), 2),
+                        round(float(output_ll.loc[idx, 'geometry'].representative_point().x), 6),
+                        round(float(output_ll.loc[idx, 'geometry'].representative_point().y), 6),
+                    )
+                    for idx, row in output_comp.iterrows()
+                }
+
+                if catchment_sig != output_sig:
+                    self.logger.info(
+                        f"Rebuilding stale statistics file {output_file}: HRU-to-geometry mapping differs from current catchment"
+                    )
+                    return False
+            except Exception as exc:
+                self.logger.warning(
+                    f"Could not compare HRU geometry signatures for {output_file} ({exc}); forcing rebuild"
+                )
+                return False
+
+        return True
+
+    def _is_existing_stats_output_valid(
+        self,
+        output_file,
+        catchment_gdf,
+        required_column=None,
+        required_prefixes=None,
+    ):
+        if not output_file.exists():
+            return False
+
+        try:
+            output_gdf = gpd.read_file(output_file)
+        except Exception as exc:
+            self.logger.warning(f"Error checking existing statistics file {output_file}: {exc}. Recalculating.")
+            return False
+
+        if len(output_gdf) == 0:
+            self.logger.info(f"Existing statistics file {output_file} is empty. Recalculating.")
+            return False
+
+        if required_column and required_column not in output_gdf.columns:
+            self.logger.info(
+                f"Existing statistics file {output_file} missing required column '{required_column}'. Recalculating."
+            )
+            return False
+
+        if required_prefixes:
+            if isinstance(required_prefixes, str):
+                required_prefixes = [required_prefixes]
+            has_required_prefix = any(
+                any(col.startswith(prefix) for prefix in required_prefixes)
+                for col in output_gdf.columns
+            )
+            if not has_required_prefix:
+                self.logger.info(
+                    f"Existing statistics file {output_file} missing required class columns {required_prefixes}. Recalculating."
+                )
+                return False
+
+        return self._is_output_topology_compatible(output_gdf, catchment_gdf, output_file)
+
+    def _enrich_categorical_stats(
+        self,
+        result_df,
+        raw_prefix,
+        pct_prefix,
+        class_col,
+        pct_col,
+        exclude_zero_class=True,
+    ):
+        """Add per-class percentages and dominant class summary columns."""
+        class_cols = [col for col in result_df.columns if col.startswith(raw_prefix)]
+        if not class_cols:
+            result_df[class_col] = -1
+            result_df[pct_col] = 0.0
+            return result_df
+
+        for col in class_cols:
+            result_df[col] = pd.to_numeric(result_df[col], errors='coerce').fillna(0)
+
+        total_counts = result_df[class_cols].sum(axis=1)
+
+        for col in class_cols:
+            class_suffix = col.split('_')[-1]
+            pct_name = f'{pct_prefix}{class_suffix}'
+            result_df[pct_name] = np.where(
+                total_counts > 0,
+                (result_df[col] / total_counts) * 100.0,
+                0.0,
+            )
+
+        candidate_cols = class_cols
+        if exclude_zero_class:
+            candidate_cols = [col for col in class_cols if not col.endswith('_0')]
+
+        if not candidate_cols:
+            result_df[class_col] = -1
+            result_df[pct_col] = 0.0
+            return result_df
+
+        dominant_col = result_df[candidate_cols].idxmax(axis=1)
+        dominant_count = result_df[candidate_cols].max(axis=1)
+
+        dominant_class = dominant_col.str.extract(r'(\d+)$')[0].fillna('-1').astype(int)
+        dominant_pct = np.where(total_counts > 0, (dominant_count / total_counts) * 100.0, 0.0)
+
+        result_df[class_col] = dominant_class
+        result_df[pct_col] = np.round(dominant_pct, 4)
+
+        return result_df
+
     def _get_file_path(self, file_type, file_def_path):
         if self.config.get(f'{file_type}') == 'default':
             return self.project_dir / file_def_path
@@ -1791,27 +2219,20 @@ class geospatialStatistics:
         """Calculate elevation statistics with output file checking and CRS alignment"""
         # Get the output path and check if the file already exists
         intersect_path = self._get_file_path('INTERSECT_DEM_PATH', 'shapefiles/catchment_intersection/with_dem')
-        intersect_name = self.config.get('INTERSECT_DEM_NAME')
-        if intersect_name == 'default':
-            intersect_name = 'catchment_with_dem.shp'
+        intersect_name = self._resolve_name('INTERSECT_DEM_NAME', 'catchment_with_dem.shp')
 
         output_file = intersect_path / intersect_name
+        catchment_gdf = self._load_current_catchment()
         
-        # Check if output already exists
-        if output_file.exists():
-            try:
-                # Verify the file is valid
-                gdf = gpd.read_file(output_file)
-                if 'elev_mean' in gdf.columns and len(gdf) > 0:
-                    self.logger.info(f"Elevation statistics file already exists: {output_file}. Skipping calculation.")
-                    return
-                else:
-                    self.logger.info(f"Existing elevation statistics file {output_file} does not contain expected data. Recalculating.")
-            except Exception as e:
-                self.logger.warning(f"Error checking existing elevation statistics file: {str(e)}. Recalculating.")
+        if self._is_existing_stats_output_valid(
+            output_file,
+            catchment_gdf,
+            required_column='elev_mean',
+        ):
+            self.logger.info(f"Elevation statistics file already exists and matches current catchment: {output_file}. Skipping calculation.")
+            return True
         
         self.logger.info("Calculating elevation statistics")
-        catchment_gdf = gpd.read_file(self.catchment_path / self.catchment_name)
 
         try:
             # Get CRS information
@@ -1865,36 +2286,31 @@ class geospatialStatistics:
             self.logger.error(traceback.format_exc())
             raise
 
+        return False
+
     def calculate_soil_stats(self):
         """Calculate soil statistics with output file checking and CRS alignment"""
         # Get the output path and check if the file already exists
         intersect_path = self._get_file_path('INTERSECT_SOIL_PATH', 'shapefiles/catchment_intersection/with_soilgrids')
-        intersect_name = self.config.get('INTERSECT_SOIL_NAME')
-        if intersect_name == 'default':
-            intersect_name = 'catchment_with_soilclass.shp'
+        intersect_name = self._resolve_name('INTERSECT_SOIL_NAME', 'catchment_with_soilclass.shp')
         output_file = intersect_path / intersect_name
+        catchment_gdf = self._load_current_catchment()
         
-        # Check if output already exists
-        if output_file.exists():
-            try:
-                # Verify the file is valid
-                gdf = gpd.read_file(output_file)
-                # Check for at least one USGS soil class column
-                usgs_cols = [col for col in gdf.columns if col.startswith('USGS_')]
-                if len(usgs_cols) > 0 and len(gdf) > 0:
-                    self.logger.info(f"Soil statistics file already exists: {output_file}. Skipping calculation.")
-                    return
-                else:
-                    self.logger.info(f"Existing soil statistics file {output_file} does not contain expected data. Recalculating.")
-            except Exception as e:
-                self.logger.warning(f"Error checking existing soil statistics file: {str(e)}. Recalculating.")
+        if self._is_existing_stats_output_valid(
+            output_file,
+            catchment_gdf,
+            required_column='soilClass',
+            required_prefixes=['USGS_'],
+        ):
+            self.logger.info(f"Soil statistics file already exists and matches current catchment: {output_file}. Skipping calculation.")
+            return True
         
         self.logger.info("Calculating soil statistics")
-        catchment_gdf = gpd.read_file(self.catchment_path / self.catchment_name)
-        soil_name = self.config['SOIL_CLASS_NAME']
-        if soil_name == 'default':
-            soil_name = f"domain_{self.config['DOMAIN_NAME']}_soil_classes.tif"
+        soil_name = self._resolve_name('SOIL_CLASS_NAME', f"domain_{self.config['DOMAIN_NAME']}_soil_classes.tif")
         soil_raster = self.soil_path / soil_name
+        self.logger.info(f"Using soil raster from attributes directory: {soil_raster}")
+        if not soil_raster.exists():
+            raise FileNotFoundError(f"Soil raster not found: {soil_raster}")
         
         try:
             # Get CRS information
@@ -1943,6 +2359,16 @@ class geospatialStatistics:
                 if col != 'count':
                     result_df[col] = result_df[col].astype(int)
 
+            # Add per-class percentages and dominant class summaries for direct interpretation.
+            result_df = self._enrich_categorical_stats(
+                result_df,
+                raw_prefix='USGS_',
+                pct_prefix='USGS_P',
+                class_col='soilClass',
+                pct_col='soilPct',
+                exclude_zero_class=True,
+            )
+
             catchment_gdf = catchment_gdf.join(result_df)
             
             # Create output directory and save the file
@@ -1957,37 +2383,32 @@ class geospatialStatistics:
             self.logger.error(traceback.format_exc())
             raise
 
+        return False
+
     def calculate_land_stats(self):
         """Calculate land statistics with output file checking and CRS alignment"""
         # Get the output path and check if the file already exists
         intersect_path = self._get_file_path('INTERSECT_LAND_PATH', 'shapefiles/catchment_intersection/with_landclass')
-        intersect_name = self.config.get('INTERSECT_LAND_NAME')
-        if intersect_name == 'default':
-            intersect_name = 'catchment_with_landclass.shp'
+        intersect_name = self._resolve_name('INTERSECT_LAND_NAME', 'catchment_with_landclass.shp')
 
         output_file = intersect_path / intersect_name
+        catchment_gdf = self._load_current_catchment()
         
-        # Check if output already exists
-        if output_file.exists():
-            try:
-                # Verify the file is valid
-                gdf = gpd.read_file(output_file)
-                # Check for at least one IGBP land class column
-                igbp_cols = [col for col in gdf.columns if col.startswith('IGBP_')]
-                if len(igbp_cols) > 0 and len(gdf) > 0:
-                    self.logger.info(f"Land statistics file already exists: {output_file}. Skipping calculation.")
-                    return
-                else:
-                    self.logger.info(f"Existing land statistics file {output_file} does not contain expected data. Recalculating.")
-            except Exception as e:
-                self.logger.warning(f"Error checking existing land statistics file: {str(e)}. Recalculating.")
+        if self._is_existing_stats_output_valid(
+            output_file,
+            catchment_gdf,
+            required_column='landClass',
+            required_prefixes=['IGBP_'],
+        ):
+            self.logger.info(f"Land statistics file already exists and matches current catchment: {output_file}. Skipping calculation.")
+            return True
         
         self.logger.info("Calculating land statistics")
-        catchment_gdf = gpd.read_file(self.catchment_path / self.catchment_name)
-        land_name = self.config['LAND_CLASS_NAME']
-        if land_name == 'default':
-            land_name = f"domain_{self.config['DOMAIN_NAME']}_land_classes.tif"
+        land_name = self._resolve_name('LAND_CLASS_NAME', f"domain_{self.config['DOMAIN_NAME']}_land_classes.tif")
         land_raster = self.land_path / land_name
+        self.logger.info(f"Using land raster from attributes directory: {land_raster}")
+        if not land_raster.exists():
+            raise FileNotFoundError(f"Land raster not found: {land_raster}")
         
         try:
             # Get CRS information
@@ -2036,6 +2457,16 @@ class geospatialStatistics:
                 if col != 'count':
                     result_df[col] = result_df[col].astype(int)
 
+            # Add per-class percentages and dominant class summaries for direct interpretation.
+            result_df = self._enrich_categorical_stats(
+                result_df,
+                raw_prefix='IGBP_',
+                pct_prefix='IGBP_P',
+                class_col='landClass',
+                pct_col='landPct',
+                exclude_zero_class=True,
+            )
+
             catchment_gdf = catchment_gdf.join(result_df)
             
             # Create output directory and save the file
@@ -2050,74 +2481,22 @@ class geospatialStatistics:
             self.logger.error(traceback.format_exc())
             raise
 
+        return False
+
     def run_statistics(self):
         """Run all geospatial statistics with checks for existing outputs"""
         self.logger.info("Starting geospatial statistics calculation")
-        
-        # Count how many steps we're skipping
+
         skipped = 0
-        total = 3  # Total number of statistics operations
-        
-        # Check soil stats
-        intersect_soil_path = self._get_file_path('INTERSECT_SOIL_PATH', 'shapefiles/catchment_intersection/with_soilgrids')
-        intersect_soil_name = self.config.get('INTERSECT_SOIL_NAME')
-        if intersect_soil_name == 'default':
-            intersect_soil_name = 'catchment_with_soilclass.shp'
+        total = 3
 
-        soil_output_file = intersect_soil_path / intersect_soil_name
-        
-        if soil_output_file.exists():
-            try:
-                gdf = gpd.read_file(soil_output_file)
-                usgs_cols = [col for col in gdf.columns if col.startswith('USGS_')]
-                if len(usgs_cols) > 0 and len(gdf) > 0:
-                    self.logger.info(f"Soil statistics already calculated: {soil_output_file}")
-                    skipped += 1
-            except Exception:
-                pass
-        
-        if skipped < 1:
-            self.calculate_soil_stats()
-        
-        # Check land stats
-        intersect_land_path = self._get_file_path('INTERSECT_LAND_PATH', 'shapefiles/catchment_intersection/with_landclass')
-        intersect_land_name = self.config.get('INTERSECT_LAND_NAME')
-        if intersect_land_name == 'default':
-            intersect_land_name = 'catchment_with_landclass.shp'
+        if self.calculate_soil_stats():
+            skipped += 1
+        if self.calculate_land_stats():
+            skipped += 1
+        if self.calculate_elevation_stats():
+            skipped += 1
 
-        land_output_file = intersect_land_path / intersect_land_name
-        
-        if land_output_file.exists():
-            try:
-                gdf = gpd.read_file(land_output_file)
-                igbp_cols = [col for col in gdf.columns if col.startswith('IGBP_')]
-                if len(igbp_cols) > 0 and len(gdf) > 0:
-                    self.logger.info(f"Land statistics already calculated: {land_output_file}")
-                    skipped += 1
-            except Exception:
-                pass
-        
-        if skipped < 2:
-            self.calculate_land_stats()
-        
-        # Check elevation stats
-        intersect_dem_path = self._get_file_path('INTERSECT_DEM_PATH', 'shapefiles/catchment_intersection/with_dem')
-        intersect_dem_name = self.config.get('INTERSECT_DEM_NAME')
-        if intersect_dem_name == 'default':
-            intersect_dem_name = 'catchment_with_dem.shp'
-
-        dem_output_file = intersect_dem_path / intersect_dem_name
-        
-        if dem_output_file.exists():
-            try:
-                gdf = gpd.read_file(dem_output_file)
-                if 'elev_mean' in gdf.columns and len(gdf) > 0:
-                    self.logger.info(f"Elevation statistics already calculated: {dem_output_file}")
-                    skipped += 1
-            except Exception:
-                pass
-        
-        if skipped < 3:
-            self.calculate_elevation_stats()
-        
-        self.logger.info(f"Geospatial statistics completed: {skipped}/{total} steps skipped, {total-skipped}/{total} steps executed")
+        self.logger.info(
+            f"Geospatial statistics completed: {skipped}/{total} steps skipped, {total-skipped}/{total} steps executed"
+        )

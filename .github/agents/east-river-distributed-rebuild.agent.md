@@ -22,6 +22,7 @@ You are a specialist for East River distributed CONFLUENCE/SUMMA workflow redeve
 - Keep all path/variable/unit conventions SUMMA-compatible.
 - Prefer config-driven behavior over hardcoded paths and constants.
 - Validate that forcing and HRU outputs are reproducible.
+- Always use the 'ess-project-env' conda environment for any execution steps.
 
 ## Approach
 1. Inspect config + code wiring for forcing, remap, and discretization.

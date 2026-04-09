@@ -19,6 +19,8 @@ from run_east_river_distributed_workflow import _parse_steps, run_workflow
 
 DEFAULT_LIGHT_STEPS = [
     "setup_project",
+    "define_domain",
+    "compute_aspect",
     "discretize_domain",
     "process_observed_data",
     "run_model_agnostic_preprocessing",
@@ -28,12 +30,26 @@ DEFAULT_LIGHT_STEPS = [
 PRESET_STEPS = {
     "minimal": [
         "setup_project",
+        "define_domain",
+        "compute_aspect",
         "discretize_domain",
+        "preprocess_models",
+    ],
+    # Purpose-built prep preset for distributed elevation-band runs.
+    # This creates HRUs and prepares remapped forcing without running SUMMA.
+    "prep_hru": [
+        "setup_project",
+        "define_domain",
+        "compute_aspect",
+        "discretize_domain",
+        "run_model_agnostic_preprocessing",
         "preprocess_models",
     ],
     "light": list(DEFAULT_LIGHT_STEPS),
     "full": [
         "setup_project",
+        "define_domain",
+        "compute_aspect",
         "discretize_domain",
         "process_observed_data",
         "run_model_agnostic_preprocessing",
@@ -108,7 +124,13 @@ def _print_parallel_preflight(config: Dict[str, Any]) -> None:
     print(f"summa_binary_exists: {summa_binary.exists()}")
 
 
-def _apply_light_overrides(config: Dict[str, Any], run_models: bool, use_parallel_summa: bool) -> Dict[str, Any]:
+def _apply_light_overrides(
+    config: Dict[str, Any],
+    run_models: bool,
+    use_parallel_summa: bool,
+    hru_discretization: str,
+    elevation_band_size: int | None,
+) -> Dict[str, Any]:
     updated = dict(config)
 
     base_experiment = str(updated.get("EXPERIMENT_ID", "east_river_distributed"))
@@ -120,6 +142,14 @@ def _apply_light_overrides(config: Dict[str, Any], run_models: bool, use_paralle
     updated["EASYMORE_MAX_CORES"] = 12
     updated["EASYMORE_BATCH_SIZE"] = 12
     updated["SETTINGS_SUMMA_PARALLEL_MODE"] = "local"
+
+    # Optional explicit HRU override so prep runs are reproducible from CLI.
+    if hru_discretization.strip():
+        updated["DOMAIN_DISCRETIZATION"] = hru_discretization.strip()
+
+    # Optional override for elevation band size used when elevation is part of discretization.
+    if elevation_band_size is not None:
+        updated["ELEVATION_BAND_SIZE"] = int(elevation_band_size)
 
     if run_models:
         updated["SETTINGS_SUMMA_USE_PARALLEL_SUMMA"] = bool(use_parallel_summa)
@@ -141,7 +171,7 @@ def main() -> None:
         "--preset",
         choices=sorted(PRESET_STEPS.keys()),
         default="light",
-        help="Step preset: minimal (fast smoke), light (default), or full",
+        help="Step preset: minimal (fast smoke), prep_hru (build HRUs + forcing), light (default), or full",
     )
     parser.add_argument(
         "--steps",
@@ -163,17 +193,51 @@ def main() -> None:
         action="store_true",
         help="If --with-model-run is set, use local MPI SUMMA execution",
     )
+    parser.add_argument(
+        "--hru-discretization",
+        default="",
+        help=(
+            "Override DOMAIN_DISCRETIZATION in the temp config. "
+            "Example: elevation,soilclass,landclass"
+        ),
+    )
+    parser.add_argument(
+        "--elevation-band-size",
+        type=int,
+        default=None,
+        help="Optional override for ELEVATION_BAND_SIZE in meters",
+    )
+    parser.add_argument(
+        "--export-hru-attributes",
+        action="store_true",
+        help="Export HRU diagnostics CSVs after workflow completion",
+    )
+    parser.add_argument(
+        "--export-elevation-bands",
+        default="",
+        help="Optional elevation band edges for export CSV, e.g. 2500,2800,3100,3400",
+    )
+    parser.add_argument(
+        "--export-aspect-classes",
+        action="store_true",
+        help="Include cardinal aspect classes in exported HRU diagnostics",
+    )
     args = parser.parse_args()
 
     config_path = Path(args.config).expanduser().resolve()
     if not config_path.exists():
         raise FileNotFoundError(f"Config not found: {config_path}")
 
+    # Preserve config discretization unless explicit CLI override is provided.
+    hru_discretization = args.hru_discretization
+
     config = _load_config(config_path)
     updated_config = _apply_light_overrides(
         config,
         run_models=bool(args.with_model_run),
         use_parallel_summa=bool(args.with_parallel_summa),
+        hru_discretization=hru_discretization,
+        elevation_band_size=args.elevation_band_size,
     )
 
     _print_parallel_preflight(updated_config)
@@ -193,6 +257,29 @@ def main() -> None:
             steps = [step for step in steps if step != "run_models"]
 
         run_workflow(temp_config_path, steps, reuse_domain)
+
+        # Export a simple HRU diagnostics table so debugging can happen with plain CSVs.
+        do_export = bool(args.export_hru_attributes) or args.preset == "prep_hru"
+        if do_export:
+            # Import only when needed so core prep can still run in lighter environments.
+            try:
+                from export_hru_attributes import export_hru_tables
+
+                full_csv, summary_csv = export_hru_tables(
+                    config_path=temp_config_path,
+                    variables="",
+                    elevation_bands=args.export_elevation_bands,
+                    aspect_classes=bool(args.export_aspect_classes),
+                    outdir="",
+                )
+                print("=== HRU diagnostics export ===")
+                print(f"full_csv: {full_csv}")
+                print(f"summary_csv: {summary_csv}")
+            except ModuleNotFoundError as exc:
+                print(
+                    "WARNING: Skipping HRU diagnostics export because optional dependencies "
+                    f"are missing ({exc})."
+                )
     finally:
         if temp_config_path.exists():
             temp_config_path.unlink()

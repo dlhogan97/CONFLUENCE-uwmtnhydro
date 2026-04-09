@@ -297,12 +297,15 @@ class DomainDiscretizer:
                     'class_name': 'radiationClass'
                 }
             elif attr_lower == 'aspect':
-                aspect_raster = self._get_file_path("ASPECT_PATH", "attributes/aspect", "aspect.tif")
-                
-                # Calculate aspect if it doesn't exist
+                aspect_raster = self._get_file_path(
+                    "ASPECT_PATH", "attributes/elevation/dem",
+                    f"domain_{self.config['DOMAIN_NAME']}_aspect.tif"
+                )
+
+                # Calculate aspect if it doesn't exist (fallback; prefer compute_aspect_raster step)
                 if not aspect_raster.exists():
                     self.logger.info("Aspect raster not found. Calculating aspect...")
-                    dem_name = self.config['DEM_NAME']
+                    dem_name = self.config.get('DEM_NAME', 'default')
                     if dem_name == "default":
                         dem_name = f"domain_{self.config['DOMAIN_NAME']}_elv.tif"
                     dem_raster = self._get_file_path("DEM_PATH", "attributes/elevation/dem", dem_name)
@@ -781,7 +784,14 @@ class DomainDiscretizer:
         output_plot = self._get_file_path("CATCHMENT_PLOT_DIR", "plots/catchment", f"{self.domain_name}_HRUs_elevation.png")
 
         elevation_band_size = float(self.config.get('ELEVATION_BAND_SIZE'))
-        gru_gdf, elevation_thresholds = self._read_and_prepare_data(gru_shapefile, dem_raster, elevation_band_size)
+        # Read GRUs first, then compute thresholds only over the GRU-covered basin area.
+        # This prevents out-of-basin DEM extents from inflating the number of elevation bands.
+        gru_gdf, _ = self._read_and_prepare_data(gru_shapefile, dem_raster, elevation_band_size)
+        elevation_thresholds = self._compute_elevation_thresholds_within_grus(
+            gru_gdf,
+            dem_raster,
+            elevation_band_size,
+        )
         hru_gdf = self._create_multipolygon_hrus(gru_gdf, dem_raster, elevation_thresholds, 'elevClass')
 
         if hru_gdf is not None and not hru_gdf.empty:
@@ -794,6 +804,46 @@ class DomainDiscretizer:
         else:
             self.logger.error("No valid HRUs were created. Check your input data and parameters.")
             return None
+
+    def _compute_elevation_thresholds_within_grus(
+        self,
+        gru_gdf: gpd.GeoDataFrame,
+        dem_raster: Path,
+        elevation_band_size: float,
+    ) -> np.ndarray:
+        """Compute elevation thresholds using DEM values only inside GRU geometries."""
+        with rasterio.open(dem_raster) as src:
+            working_grus = gru_gdf
+            if gru_gdf.crs is not None and src.crs is not None and gru_gdf.crs != src.crs:
+                working_grus = gru_gdf.to_crs(src.crs)
+
+            domain_union = working_grus.union_all()
+            out_image, _ = mask(src, [domain_union], crop=True, all_touched=True, filled=False)
+            out_image = out_image[0]
+
+            nodata_value = src.nodata
+            if nodata_value is not None:
+                valid_data = out_image[out_image != nodata_value]
+            else:
+                valid_data = out_image
+
+            valid_data = valid_data[np.isfinite(valid_data)]
+
+        if len(valid_data) == 0:
+            raise ValueError("No valid DEM pixels found within GRU geometries")
+
+        min_val = float(np.min(valid_data))
+        max_val = float(np.max(valid_data))
+        thresholds = np.arange(min_val, max_val + elevation_band_size, elevation_band_size)
+
+        if thresholds[-1] < max_val:
+            thresholds = np.append(thresholds, thresholds[-1] + elevation_band_size)
+
+        self.logger.info(
+            f"Elevation thresholds from GRU-covered DEM area: min={min_val:.2f}, max={max_val:.2f}, "
+            f"band_size={elevation_band_size}, bands={len(thresholds) - 1}"
+        )
+        return thresholds
 
     def _discretize_by_soil_class(self):
         """
@@ -877,7 +927,10 @@ class DomainDiscretizer:
             dem_name = f"domain_{self.config['DOMAIN_NAME']}_elv.tif"
 
         dem_raster = self._get_file_path("DEM_PATH", "attributes/elevation/dem", dem_name)
-        aspect_raster = self._get_file_path("ASPECT_PATH", "attributes/aspect", "aspect.tif")
+        aspect_raster = self._get_file_path(
+            "ASPECT_PATH", "attributes/elevation/dem",
+            f"domain_{self.config['DOMAIN_NAME']}_aspect.tif"
+        )
         output_shapefile = self._get_file_path("CATCHMENT_PATH", "shapefiles/catchment", 
                                               f"{self.domain_name}_HRUs_aspect.shp")
         output_plot = self._get_file_path("CATCHMENT_PLOT_DIR", "plots/catchment", 
@@ -905,126 +958,224 @@ class DomainDiscretizer:
             self.logger.error("No valid HRUs were created. Check your input data and parameters.")
             return None
 
-    def _calculate_aspect(self, dem_raster: Path, aspect_raster: Path) -> Path:
-            """
-            Calculate aspect (slope direction) from DEM and classify into directional classes.
-            
-            Args:
-                dem_raster: Path to the DEM raster
-                aspect_raster: Path where the aspect raster will be saved
-                
-            Returns:
-                Path to the created aspect raster
-            """
-            self.logger.info(f"Calculating aspect from DEM: {dem_raster}")
-            
-            try:
-                with rasterio.open(dem_raster) as src:
-                    dem = src.read(1)
-                    transform = src.transform
-                    crs = src.crs
-                    nodata = src.nodata
-                
-                # Calculate gradients
-                dy, dx = np.gradient(dem.astype(float))
-                
-                # Calculate aspect in radians, then convert to degrees
-                aspect_rad = np.arctan2(-dx, dy)  # Note the negative sign for dx
-                aspect_deg = np.degrees(aspect_rad)
-                
-                # Convert to compass bearing (0-360 degrees, 0 = North)
-                aspect_deg = (90 - aspect_deg) % 360
-                
-                # Handle flat areas (where both dx and dy are near zero)
-                slope_magnitude = np.sqrt(dx*dx + dy*dy)
-                flat_threshold = 1e-6  # Adjust as needed
-                flat_mask = slope_magnitude < flat_threshold
-                
-                # Classify aspect into directional classes
-                aspect_class_number = int(self.config.get('ASPECT_CLASS_NUMBER', 8))
-                classified_aspect = self._classify_aspect_into_classes(aspect_deg, flat_mask, aspect_class_number)
-                
-                # Handle nodata values from original DEM
-                if nodata is not None:
-                    dem_nodata_mask = dem == nodata
-                    classified_aspect[dem_nodata_mask] = -9999
-                
-                # Save the classified aspect raster
-                aspect_raster.parent.mkdir(parents=True, exist_ok=True)
-                
-                with rasterio.open(aspect_raster, 'w', driver='GTiff',
-                                height=classified_aspect.shape[0], width=classified_aspect.shape[1],
-                                count=1, dtype=classified_aspect.dtype,
-                                crs=crs, transform=transform, nodata=-9999) as dst:
-                    dst.write(classified_aspect, 1)
-                
-                self.logger.info(f"Aspect raster saved to: {aspect_raster}")
-                self.logger.info(f"Aspect classes: {np.unique(classified_aspect[classified_aspect != -9999])}")
-                return aspect_raster
-            
-            except Exception as e:
-                self.logger.error(f"Error calculating aspect: {str(e)}", exc_info=True)
-                return None
-
-    def _classify_aspect_into_classes(self, aspect_deg: np.ndarray, flat_mask: np.ndarray, 
-                                    num_classes: int) -> np.ndarray:
+    def compute_aspect_raster(self) -> Optional[Path]:
         """
-        Classify aspect degrees into directional classes.
-        
-        Args:
-            aspect_deg: Aspect in degrees (0-360)
-            flat_mask: Boolean mask for flat areas
-            num_classes: Number of aspect classes to create
-            
+        Public entry point: compute and save the classified aspect raster from the DEM.
+
+        Called explicitly as a preprocessing step before discretize_domain so that
+        the aspect TIF is always available on disk before discretization begins.
+
         Returns:
-            Classified aspect array
+            Path to the saved aspect raster, or None on failure.
+        """
+        dem_name = self.config.get('DEM_NAME', 'default')
+        if dem_name == 'default':
+            dem_name = f"domain_{self.config['DOMAIN_NAME']}_elv.tif"
+        dem_raster = self._get_file_path("DEM_PATH", "attributes/elevation/dem", dem_name)
+        aspect_raster = self._get_file_path("ASPECT_PATH", "attributes/elevation/dem",
+                                            f"domain_{self.config['DOMAIN_NAME']}_aspect.tif")
+        return self._calculate_aspect(dem_raster, aspect_raster)
+
+    def _calculate_aspect(self, dem_raster: Path, aspect_raster: Path) -> Optional[Path]:
+        """
+        Calculate aspect from the DEM using the Horn (1981) kernel with lat/lon cell-size
+        correction, classify into cardinal direction classes, and save the result.
+
+        The Horn kernel is identical to what ``gdaldem aspect`` uses internally and is
+        more accurate than a simple ``np.gradient`` central-difference, especially for
+        geographic (degree) coordinate systems where east–west cell width varies with
+        latitude.
+
+        Args:
+            dem_raster: Path to the input DEM raster (any CRS; lat/lon correction is
+                applied automatically when CRS is geographic).
+            aspect_raster: Destination path for the classified aspect raster.
+
+        Returns:
+            Path to the saved aspect raster, or None on failure.
+        """
+        self.logger.info(f"Calculating aspect from DEM: {dem_raster}")
+
+        try:
+            with rasterio.open(dem_raster) as src:
+                dem = src.read(1).astype(float)
+                transform = src.transform
+                crs = src.crs
+                nodata = src.nodata
+
+            # Mask nodata before gradient computation
+            if nodata is not None:
+                dem_nodata_mask = (dem == nodata)
+                dem[dem_nodata_mask] = np.nan
+            else:
+                dem_nodata_mask = np.zeros(dem.shape, dtype=bool)
+
+            # ------------------------------------------------------------------
+            # Cell sizes in metres.
+            # For geographic CRS (degrees) the east–west size shrinks with cos(lat).
+            # For projected CRS (metres) the transform already gives metric sizes.
+            # ------------------------------------------------------------------
+            cell_x_deg = abs(transform.a)  # width of one cell (transform x-step)
+            cell_y_deg = abs(transform.e)  # height of one cell (transform y-step)
+
+            if crs and crs.is_geographic:
+                # Build per-row latitude array (centre of each row)
+                nrows = dem.shape[0]
+                lat_top = transform.f
+                lats = lat_top - (np.arange(nrows) + 0.5) * cell_y_deg
+                dy_m = cell_y_deg * 111320.0
+                # dx varies with latitude → shape (nrows, 1) broadcasts across columns
+                dx_m = cell_x_deg * 111320.0 * np.cos(np.deg2rad(lats))[:, np.newaxis]
+            else:
+                dy_m = cell_y_deg
+                dx_m = cell_x_deg
+
+            # ------------------------------------------------------------------
+            # Horn (1981) weighted 3×3 gradient kernel.
+            # Pad with NaN so border pixels stay NaN (same behaviour as gdaldem).
+            # ------------------------------------------------------------------
+            p = np.pad(dem, 1, mode='constant', constant_values=np.nan)
+
+            # dz/dx: east–west slope (positive = uphill to the east)
+            dz_dx = (
+                (p[0:-2, 2:] + 2 * p[1:-1, 2:] + p[2:, 2:]) -
+                (p[0:-2, 0:-2] + 2 * p[1:-1, 0:-2] + p[2:, 0:-2])
+            ) / (8.0 * dx_m)
+
+            # dz/dy: north–south slope (positive = uphill to the north)
+            dz_dy = (
+                (p[2:, 0:-2] + 2 * p[2:, 1:-1] + p[2:, 2:]) -
+                (p[0:-2, 0:-2] + 2 * p[0:-2, 1:-1] + p[0:-2, 2:])
+            ) / (8.0 * dy_m)
+
+            # ------------------------------------------------------------------
+            # Aspect: degrees clockwise from North (GDAL convention, 0–360).
+            # arctan2(-dz/dy, dz/dx) gives the mathematical angle (CCW from East);
+            # rotating by 90° converts to geographic bearing (CW from North).
+            # ------------------------------------------------------------------
+            aspect_deg = (90.0 - np.degrees(np.arctan2(-dz_dy, dz_dx))) % 360.0
+
+            # Flat pixels: slope < threshold → class 0 (no aspect-based SW adjustment).
+            # Valley bottoms and other low-gradient terrain are still valid HRU pixels;
+            # they receive no aspect correction but ARE included in HRU delineation.
+            # Threshold is in degrees of slope (not raw gradient magnitude).
+            FLAT_SLOPE_DEG = float(self.config.get('ASPECT_FLAT_SLOPE_THRESHOLD', 5.0))
+            slope_deg = np.degrees(np.arctan(np.sqrt(dz_dx ** 2 + dz_dy ** 2)))
+            flat_mask = slope_deg < FLAT_SLOPE_DEG
+
+            # ------------------------------------------------------------------
+            # Classify into cardinal direction classes
+            # ------------------------------------------------------------------
+            aspect_class_number = int(self.config.get('ASPECT_CLASS_NUMBER', 4))
+            classified_aspect = self._classify_aspect_into_classes(
+                aspect_deg, flat_mask, aspect_class_number
+            )
+
+            # Apply nodata mask (NaN borders from Horn padding + original nodata)
+            classified_aspect[dem_nodata_mask] = -9999
+            classified_aspect[np.isnan(aspect_deg)] = -9999
+
+            # Save
+            aspect_raster.parent.mkdir(parents=True, exist_ok=True)
+            with rasterio.open(
+                aspect_raster, 'w', driver='GTiff',
+                height=classified_aspect.shape[0],
+                width=classified_aspect.shape[1],
+                count=1, dtype='int16',
+                crs=crs, transform=transform, nodata=-9999,
+            ) as dst:
+                dst.write(classified_aspect.astype('int16'), 1)
+
+            class_ids = np.unique(classified_aspect[classified_aspect != -9999])
+            self.logger.info(f"Aspect raster saved to: {aspect_raster}")
+            self.logger.info(f"Aspect classes present: {class_ids}")
+            return aspect_raster
+
+        except Exception as e:
+            self.logger.error(f"Error calculating aspect: {str(e)}", exc_info=True)
+            return None
+
+    def _classify_aspect_into_classes(self, aspect_deg: np.ndarray, flat_mask: np.ndarray,
+                                     num_classes: int) -> np.ndarray:
+        """
+        Classify aspect degrees (0–360, CW from North) into cardinal direction classes.
+
+        All bins are 90°-wide and **centred** on their cardinal direction so that, for
+        example, North covers 315°–45° (wrapping through 0°).  The wrap-around is
+        handled by splitting the North bin into two segments: [0°, 45°) and [315°, 360°],
+        both mapped to label 1.
+
+        4-class mapping (default):
+            1 = N  (315° – 45°)
+            2 = E  ( 45° – 135°)
+            3 = S  (135° – 225°)
+            4 = W  (225° – 315°)
+
+        8-class mapping:
+            1 = N   (337.5° – 22.5°)
+            2 = NE  ( 22.5° – 67.5°)
+            3 = E   ( 67.5° – 112.5°)
+            4 = SE  (112.5° – 157.5°)
+            5 = S   (157.5° – 202.5°)
+            6 = SW  (202.5° – 247.5°)
+            7 = W   (247.5° – 292.5°)
+            8 = NW  (292.5° – 337.5°)
+
+        Class 0 = flat (slope < ASPECT_FLAT_SLOPE_THRESHOLD, default 5°).
+        Flat pixels are valid terrain (valley bottoms, meadows) that receive no
+        aspect-based solar correction (SW multiplier = 1.0). They are included
+        in HRU delineation as their own class — NOT treated as nodata.
+        True nodata (-9999) is applied by the caller for DEM nodata pixels only.
+
+        Args:
+            aspect_deg: Aspect array in degrees [0, 360), clockwise from North.
+            flat_mask:  Boolean mask; True where slope < flat threshold.
+            num_classes: 4 or 8 (other values fall back to equal-width bins).
+
+        Returns:
+            Integer array: 0 = flat, 1–N = cardinal classes, -9999 = nodata (set by caller).
         """
         classified = np.zeros_like(aspect_deg, dtype=int)
-        
-        if num_classes == 8:
-            # Standard 8-direction classification
-            # N, NE, E, SE, S, SW, W, NW
-            bins = [0, 22.5, 67.5, 112.5, 157.5, 202.5, 247.5, 292.5, 337.5, 360]
-            labels = [1, 2, 3, 4, 5, 6, 7, 8, 1]  # Last one wraps to North
-            
-            for i in range(len(bins) - 1):
-                if i == len(bins) - 2:  # Last bin (337.5 to 360)
-                    mask = (aspect_deg >= bins[i]) & (aspect_deg <= bins[i+1])
-                else:
-                    mask = (aspect_deg >= bins[i]) & (aspect_deg < bins[i+1])
-                classified[mask] = labels[i]
-                
-        elif num_classes == 4:
-            # 4-direction classification (N, E, S, W)
-            bins = [0, 45, 135, 225, 315, 360]
-            labels = [1, 2, 3, 4, 1]  # N, E, S, W, N
-            
-            for i in range(len(bins) - 1):
-                if i == len(bins) - 2:  # Last bin
-                    mask = (aspect_deg >= bins[i]) & (aspect_deg <= bins[i+1])
-                else:
-                    mask = (aspect_deg >= bins[i]) & (aspect_deg < bins[i+1])
-                classified[mask] = labels[i]
-        
+
+        if num_classes == 4:
+            # Bins centred on N/E/S/W; North wraps through 0°.
+            # [0, 45)  → N(1),  [45, 135) → E(2),  [135, 225) → S(3),
+            # [225, 315) → W(4),  [315, 360] → N(1)
+            classified[(aspect_deg >= 0)   & (aspect_deg <  45)]  = 1  # N lower wrap
+            classified[(aspect_deg >= 45)  & (aspect_deg < 135)]  = 2  # E
+            classified[(aspect_deg >= 135) & (aspect_deg < 225)]  = 3  # S
+            classified[(aspect_deg >= 225) & (aspect_deg < 315)]  = 4  # W
+            classified[(aspect_deg >= 315) & (aspect_deg <= 360)] = 1  # N upper wrap
+
+        elif num_classes == 8:
+            # Bins centred on N/NE/E/SE/S/SW/W/NW; North wraps through 0°.
+            classified[(aspect_deg >= 0)     & (aspect_deg <  22.5)]  = 1  # N lower
+            classified[(aspect_deg >= 22.5)  & (aspect_deg <  67.5)]  = 2  # NE
+            classified[(aspect_deg >= 67.5)  & (aspect_deg < 112.5)]  = 3  # E
+            classified[(aspect_deg >= 112.5) & (aspect_deg < 157.5)]  = 4  # SE
+            classified[(aspect_deg >= 157.5) & (aspect_deg < 202.5)]  = 5  # S
+            classified[(aspect_deg >= 202.5) & (aspect_deg < 247.5)]  = 6  # SW
+            classified[(aspect_deg >= 247.5) & (aspect_deg < 292.5)]  = 7  # W
+            classified[(aspect_deg >= 292.5) & (aspect_deg < 337.5)]  = 8  # NW
+            classified[(aspect_deg >= 337.5) & (aspect_deg <= 360)]   = 1  # N upper
+
         else:
-            # Custom number of classes - divide 360 degrees evenly
+            # Fallback: equal-width bins, no wrap-around correction
             class_width = 360.0 / num_classes
             for i in range(num_classes):
                 lower = i * class_width
                 upper = (i + 1) * class_width
-                
-                if i == num_classes - 1:  # Last class includes 360
+                if i == num_classes - 1:
                     mask = (aspect_deg >= lower) & (aspect_deg <= upper)
                 else:
                     mask = (aspect_deg >= lower) & (aspect_deg < upper)
                 classified[mask] = i + 1
-        
-        # Set flat areas to a special class (0)
+
+        # Flat areas (slope < threshold) → class 0.
+        # These are real terrain pixels (valley bottoms, meadows) that receive no
+        # aspect-based SW correction. Applied last so it overrides any cardinal bin.
         classified[flat_mask] = 0
-        
-        # Set areas that don't fall into any class to -9999 (shouldn't happen but safety)
-        classified[classified == 0] = 0  # Keep flat areas as 0
-        
+
         return classified
 
     def _discretize_by_radiation(self):
@@ -1540,13 +1691,57 @@ class DomainDiscretizer:
             self.logger.error(f"Error calculating mean elevation: {str(e)}")
             hru_gdf['elev_mean'] = -9999
 
-        # Ensure HRU_ID is sequential if not already set properly
+        # Re-assign sequential HRU IDs using configurable ordering.
+        # Default behavior is elevation-descending so HRU_ID=1 is the highest HRU.
         if 'HRU_ID' in hru_gdf.columns:
-            # Reset HRU_ID to be sequential
-            hru_gdf = hru_gdf.sort_values(['GRU_ID', 'HRU_ID'])
-            hru_gdf['HRU_ID'] = range(1, len(hru_gdf) + 1)
+            original_ids = pd.to_numeric(hru_gdf['HRU_ID'], errors='coerce')
         else:
-            hru_gdf['HRU_ID'] = range(1, len(hru_gdf) + 1)
+            original_ids = pd.Series(np.arange(1, len(hru_gdf) + 1), index=hru_gdf.index)
+
+        fallback_ids = pd.Series(np.arange(1, len(hru_gdf) + 1), index=hru_gdf.index)
+        hru_gdf['_original_hru_id'] = original_ids.fillna(fallback_ids).astype(int)
+
+        order_strategy = str(self.config.get('HRU_ID_ORDER', 'elevation_desc')).strip().lower()
+        if order_strategy == 'elevation_desc':
+            sort_columns = ['elev_mean']
+            ascending = [False]
+            if 'GRU_ID' in hru_gdf.columns:
+                sort_columns.append('GRU_ID')
+                ascending.append(True)
+            sort_columns.append('_original_hru_id')
+            ascending.append(True)
+            hru_gdf = hru_gdf.sort_values(sort_columns, ascending=ascending).reset_index(drop=True)
+        elif order_strategy in ['original', 'input']:
+            sort_columns = []
+            ascending = []
+            if 'GRU_ID' in hru_gdf.columns:
+                sort_columns.append('GRU_ID')
+                ascending.append(True)
+            sort_columns.append('_original_hru_id')
+            ascending.append(True)
+            hru_gdf = hru_gdf.sort_values(sort_columns, ascending=ascending).reset_index(drop=True)
+        else:
+            self.logger.warning(
+                f"Unknown HRU_ID_ORDER='{order_strategy}', using 'elevation_desc'"
+            )
+            sort_columns = ['elev_mean']
+            ascending = [False]
+            if 'GRU_ID' in hru_gdf.columns:
+                sort_columns.append('GRU_ID')
+                ascending.append(True)
+            sort_columns.append('_original_hru_id')
+            ascending.append(True)
+            hru_gdf = hru_gdf.sort_values(sort_columns, ascending=ascending).reset_index(drop=True)
+
+        old_ids_sorted = hru_gdf['_original_hru_id'].astype(int).tolist()
+        hru_gdf['HRU_ID'] = range(1, len(hru_gdf) + 1)
+        mapping_preview = ', '.join(
+            [f"{old}->{new}" for new, old in list(enumerate(old_ids_sorted, start=1))[:10]]
+        )
+        self.logger.info(
+            f"Assigned HRU_ID using '{order_strategy}' ordering; old->new preview: {mapping_preview}"
+        )
+        hru_gdf = hru_gdf.drop(columns=['_original_hru_id'])
         
         return hru_gdf
 

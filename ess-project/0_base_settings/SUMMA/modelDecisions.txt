@@ -10,7 +10,7 @@
 soilCatTbl     ROSETTA                   ! soil-category dataset
 vegeParTbl     MODIFIED_IGBP_MODIS_NOAH  ! vegetation-category dataset
 soilStress     SiB_Type                  ! choice of function for the soil moisture control on stomatal resistance
-stomResist     BallBerry                 ! choice of function for stomatal resistance
+stomResist     Jarvis                 ! choice of function for stomatal resistance
 num_method     itertive                  ! choice of numerical method
 fDerivMeth     analytic                  ! choice of method to calculate flux derivatives
 LAI_method     monTable                  ! choice of method to determine LAI and SAI

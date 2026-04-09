@@ -86,9 +86,9 @@ SUMMA_DECISION_OPTIONS:
   vegeParTbl:
   - MODIFIED_IGBP_MODIS_NOAH
   soilStress:
-  - NoahType
+  - SiB_Type
   stomResist:
-  - BallBerry
+  - Jarvis
   LAI_method:
   - monTable
   veg_traits:

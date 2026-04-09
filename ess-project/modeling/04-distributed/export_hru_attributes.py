@@ -88,6 +88,83 @@ def _parse_bands(raw: str) -> List[float]:
     return sorted(values)
 
 
+def export_hru_tables(
+    config_path: Path,
+    variables: str = "",
+    elevation_bands: str = "",
+    aspect_classes: bool = False,
+    outdir: str = "",
+) -> tuple[Path, Path]:
+    """Create full and summary HRU attribute CSV files.
+
+    This function is intentionally straightforward so it can be called from scripts
+    and notebooks without pulling in more workflow complexity.
+    """
+    cfg = _load_config(config_path)
+    project_dir = _resolve_project_dir(cfg)
+
+    output_dir = Path(outdir).expanduser().resolve() if outdir else project_dir / "diagnostics" / "hru_attributes"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    catchment_shp = _resolve_catchment_shp(cfg, project_dir)
+    attrs_nc = _resolve_attributes_nc(cfg, project_dir)
+
+    hru_id_col = cfg.get("CATCHMENT_SHP_HRUID", "HRU_ID")
+    gdf = gpd.read_file(catchment_shp)
+    if hru_id_col not in gdf.columns:
+        raise KeyError(f"HRU id column {hru_id_col} missing in {catchment_shp}")
+
+    selected_vars = [v.strip() for v in variables.split(",") if v.strip()] if variables else None
+    attrs_df = _read_attributes(attrs_nc, selected_vars)
+
+    # Join shapefile class labels (elevClass/soilClass/landClass) with SUMMA attributes.
+    # Geometry is dropped here because these outputs are tabular diagnostics.
+    gdf[hru_id_col] = gdf[hru_id_col].astype(int)
+    merged = gdf.drop(columns="geometry").merge(attrs_df, left_on=hru_id_col, right_on="hruId", how="left")
+
+    if aspect_classes and "aspect" in merged.columns:
+        merged["aspect_class"] = _aspect_to_class(merged["aspect"].astype(float))
+
+    # Optional continuous elevation band labels for downstream summaries.
+    if elevation_bands:
+        if "elev_mean" in merged.columns:
+            elev_source = merged["elev_mean"].astype(float)
+        elif "elevation" in merged.columns:
+            elev_source = merged["elevation"].astype(float)
+        else:
+            raise KeyError("No elevation column found. Expected elev_mean or elevation")
+        bands = _parse_bands(elevation_bands)
+        labels = [f"{int(bands[i])}_{int(bands[i + 1])}" for i in range(len(bands) - 1)]
+        merged["elevation_band"] = pd.cut(elev_source, bins=bands, labels=labels, include_lowest=True)
+
+    full_csv = output_dir / "hru_attributes_full.csv"
+    merged.to_csv(full_csv, index=False)
+
+    # Keep summary compact but include class columns needed for quick plotting.
+    summary_cols = [hru_id_col]
+    for col in [
+        "hruId",
+        "GRU_ID",
+        "elevClass",
+        "soilClass",
+        "landClass",
+        "elevation_band",
+        "aspect_class",
+        "soilTypeIndex",
+        "vegTypeIndex",
+        "elev_mean",
+        "elevation",
+        "aspect",
+    ]:
+        if col in merged.columns and col not in summary_cols:
+            summary_cols.append(col)
+
+    summary_csv = output_dir / "hru_attributes_summary.csv"
+    merged[summary_cols].to_csv(summary_csv, index=False)
+
+    return full_csv, summary_csv
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Export and slice HRU attributes")
     parser.add_argument("--config", required=True, help="Path to config YAML")
@@ -114,49 +191,13 @@ def main() -> None:
     args = parser.parse_args()
 
     config_path = Path(args.config).expanduser().resolve()
-    cfg = _load_config(config_path)
-    project_dir = _resolve_project_dir(cfg)
-
-    outdir = Path(args.outdir).expanduser().resolve() if args.outdir else project_dir / "diagnostics" / "hru_attributes"
-    outdir.mkdir(parents=True, exist_ok=True)
-
-    catchment_shp = _resolve_catchment_shp(cfg, project_dir)
-    attrs_nc = _resolve_attributes_nc(cfg, project_dir)
-
-    hru_id_col = cfg.get("CATCHMENT_SHP_HRUID", "HRU_ID")
-    gdf = gpd.read_file(catchment_shp)
-    if hru_id_col not in gdf.columns:
-        raise KeyError(f"HRU id column {hru_id_col} missing in {catchment_shp}")
-
-    selected_vars = [v.strip() for v in args.variables.split(",") if v.strip()] if args.variables else None
-    attrs_df = _read_attributes(attrs_nc, selected_vars)
-
-    gdf[hru_id_col] = gdf[hru_id_col].astype(int)
-    merged = gdf.drop(columns="geometry").merge(attrs_df, left_on=hru_id_col, right_on="hruId", how="left")
-
-    if args.aspect_classes and "aspect" in merged.columns:
-        merged["aspect_class"] = _aspect_to_class(merged["aspect"].astype(float))
-
-    if args.elevation_bands:
-        if "elev_mean" in merged.columns:
-            elev_source = merged["elev_mean"].astype(float)
-        elif "elevation" in merged.columns:
-            elev_source = merged["elevation"].astype(float)
-        else:
-            raise KeyError("No elevation column found. Expected elev_mean or elevation")
-        bands = _parse_bands(args.elevation_bands)
-        labels = [f"{int(bands[i])}_{int(bands[i + 1])}" for i in range(len(bands) - 1)]
-        merged["elevation_band"] = pd.cut(elev_source, bins=bands, labels=labels, include_lowest=True)
-
-    full_csv = outdir / "hru_attributes_full.csv"
-    merged.to_csv(full_csv, index=False)
-
-    summary_cols = [hru_id_col]
-    for col in ["GRU_ID", "elevation_band", "aspect_class", "soilTypeIndex", "vegTypeIndex", "elev_mean", "elevation", "aspect"]:
-        if col in merged.columns:
-            summary_cols.append(col)
-    summary_csv = outdir / "hru_attributes_summary.csv"
-    merged[summary_cols].to_csv(summary_csv, index=False)
+    full_csv, summary_csv = export_hru_tables(
+        config_path=config_path,
+        variables=args.variables,
+        elevation_bands=args.elevation_bands,
+        aspect_classes=bool(args.aspect_classes),
+        outdir=args.outdir,
+    )
 
     print(f"Wrote full table: {full_csv}")
     print(f"Wrote summary table: {summary_csv}")
