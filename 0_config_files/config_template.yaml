@@ -64,6 +64,10 @@ MIN_GRU_SIZE: 0                                                # Minimum HRU siz
 # Domain discretization settings
 DOMAIN_DISCRETIZATION: GRUs                                    # Method to discretize modelling domain, options: elevation, soilclass, landclass, radiation, GRUs
 ELEVATION_BAND_SIZE: 200                                       # Elevation band size in meters
+ASPECT_CLASS_NUMBER: 4                                         # Number of aspect classes (4 cardinal or 8 intercardinal)
+ASPECT_FLAT_SLOPE_THRESHOLD: 5.0                               # Pixels below this slope angle [deg] are classed as flat (0)
+ASPECT_AZIMUTH_OFFSET_DEG: 180.0                               # Azimuth offset applied after gradient bearing; 180 converts uphill gradient to downslope-facing aspect
+ASPECT_SW_AZIMUTH_ROTATION_DEG: 0.0                            # Additive azimuth shift [deg] applied only in shortwave correction (use +/-90 to test quarter-turn offsets)
 MIN_HRU_SIZE: 4                                                # Minimum HRU size in km^2. Smaller HRUs will be merged
 RADIATION_CLASS_NUMBER: 5                                      # Number of radiation classes for discretisation
 
@@ -460,6 +464,13 @@ SOIL_CLASS_PATH: default                                       # Path to soil cl
 SOIL_CLASS_NAME: default                                       # Name of soil classification raster
 LAND_CLASS_PATH: default                                       # Path to land classification raster. If 'default', uses root_path/domain_[name]/attributes/landclass      
 LAND_CLASS_NAME: default                                       # Name of land classification raster
+LAND_CLASS_SOURCE: MODIS                                       # MODIS (default) or NLCD
+LAND_CLASS_REMAP_TO_MODIS: false                               # If true and LAND_CLASS_SOURCE=NLCD, remap NLCD classes to MODIS IGBP classes before land statistics
+LAND_CLASS_REMAP_LOOKUP_PATH: default                          # Optional CSV mapping file path (columns like nlcd_class,modis_class); if default uses built-in mapping or {LAND_CLASS_PATH}/nlcd_to_modis_lookup.csv
+LAND_CLASS_REMAP_LOOKUP_EXPORT: default                        # Optional CSV output path for the applied remap lookup; if default writes to {LAND_CLASS_PATH}/{LAND_CLASS_REMAP_OUTPUT_NAME stem}_lookup_used.csv
+LAND_CLASS_REMAP_OUTPUT_NAME: default                          # Output GeoTIFF name for remapped MODIS-style raster; default is {LAND_CLASS_NAME stem}_modis.tif
+LAND_CLASS_REMAP_OVERWRITE: false                              # If true, rebuild remapped raster even when output already exists
+LAND_CLASS_REMAP_NODATA: -9999                                 # Nodata written to remapped raster and for unmapped source values
 RADIATION_PATH: default                                        # Path to radiation classification raster. If 'default', uses root_path/domain_[name]/attributes/radiation 
 
 # Tool paths

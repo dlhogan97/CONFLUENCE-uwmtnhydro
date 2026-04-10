@@ -33,7 +33,6 @@ PRESET_STEPS = {
         "define_domain",
         "compute_aspect",
         "discretize_domain",
-        "preprocess_models",
     ],
     # Purpose-built prep preset for distributed elevation-band runs.
     # This creates HRUs and prepares remapped forcing without running SUMMA.
@@ -171,7 +170,7 @@ def main() -> None:
         "--preset",
         choices=sorted(PRESET_STEPS.keys()),
         default="light",
-        help="Step preset: minimal (fast smoke), prep_hru (build HRUs + forcing), light (default), or full",
+        help="Step preset: minimal (HRU-only), prep_hru (build HRUs + forcing), light (default), or full",
     )
     parser.add_argument(
         "--steps",

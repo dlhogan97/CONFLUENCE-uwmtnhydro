@@ -93,3 +93,5 @@ cover/*.nc
 *.err
 *.err
 cache/
+ess-project/notebooks/sandbox/Tuolumne_River_lumped_HRUs_GRUs.zip
+ess-project/notebooks/sandbox/East_River_lumped_HRUs_GRUs.zip
