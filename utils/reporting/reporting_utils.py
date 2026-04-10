@@ -1109,12 +1109,13 @@ class VisualizationReporter:
             # Create plot folder if it doesn't exist
             plot_folder = self.project_dir / "plots" / "discretization"
             plot_folder.mkdir(parents=True, exist_ok=True)
-            plot_filename = plot_folder / f'domain_discretization_{discretization_method}.png'
+            method_suffix = str(discretization_method).replace(',', '_')
+            plot_filename = plot_folder / f'domain_discretization_{method_suffix}.png'
 
             # Load cathcment shapefile
             catchment_name = self.config.get('CATCHMENT_SHP_NAME')
             if catchment_name == 'default':
-                catchment_name = f"{self.config.get('DOMAIN_NAME')}_HRUs_{discretization_method}.shp"
+                catchment_name = f"{self.config.get('DOMAIN_NAME')}_HRUs_{method_suffix}.shp"
             catchment_path = self._get_file_path('CATCHMENT_PATH', 'shapefiles/catchment', catchment_name)
             hru_gdf = gpd.read_file(catchment_path)
 

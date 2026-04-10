@@ -6,7 +6,6 @@ import pandas as pd # type: ignore
 import xarray as xr # type: ignore
 import geopandas as gpd # type: ignore
 import shutil
-from rasterio.mask import mask # type: ignore
 from shapely.geometry import Polygon # type: ignore
 import rasterstats # type: ignore
 from pyproj import CRS, Transformer # type: ignore
@@ -16,8 +15,83 @@ from rasterstats import zonal_stats # type: ignore
 import multiprocessing as mp
 import time
 import uuid
+import warnings
+import traceback
 
 from utils.custom.calc import empirical_lw_dilley_obrien
+
+
+MODIS_IGBP_CLASS_NAMES = {
+    0: 'Water',
+    1: 'Evergreen Needleleaf Forest',
+    2: 'Evergreen Broadleaf Forest',
+    3: 'Deciduous Needleleaf Forest',
+    4: 'Deciduous Broadleaf Forest',
+    5: 'Mixed Forest',
+    6: 'Closed Shrublands',
+    7: 'Open Shrublands',
+    8: 'Woody Savannas',
+    9: 'Savannas',
+    10: 'Grasslands',
+    11: 'Permanent Wetlands',
+    12: 'Croplands',
+    13: 'Urban and Built-up',
+    14: 'Cropland/Natural Vegetation Mosaic',
+    15: 'Snow and Ice',
+    16: 'Barren or Sparsely Vegetated',
+}
+
+NLCD_CLASS_NAMES = {
+    11: 'Open Water',
+    12: 'Perennial Ice/Snow',
+    21: 'Developed, Open Space',
+    22: 'Developed, Low Intensity',
+    23: 'Developed, Medium Intensity',
+    24: 'Developed, High Intensity',
+    31: 'Barren Land',
+    41: 'Deciduous Forest',
+    42: 'Evergreen Forest',
+    43: 'Mixed Forest',
+    51: 'Dwarf Scrub',
+    52: 'Shrub/Scrub',
+    71: 'Grassland/Herbaceous',
+    72: 'Sedge/Herbaceous',
+    73: 'Lichens',
+    74: 'Moss',
+    81: 'Pasture/Hay',
+    82: 'Cultivated Crops',
+    90: 'Woody Wetlands',
+    95: 'Emergent Herbaceous Wetlands',
+}
+
+DEFAULT_NLCD_TO_MODIS_LOOKUP = {
+    11: 0,
+    12: 15,
+    21: 13,
+    22: 13,
+    23: 13,
+    24: 13,
+    31: 16,
+    41: 4,
+    42: 1,
+    43: 5,
+    51: 7,
+    52: 7,
+    71: 10,
+    72: 10,
+    73: 16,
+    74: 10,
+    81: 12,
+    82: 12,
+    90: 11,
+    95: 11,
+}
+
+
+def _log_exception(logger, message):
+    """Log an error message and active traceback consistently."""
+    logger.error(message)
+    logger.error(traceback.format_exc())
 
 class forcingResampler:
     def __init__(self, config, logger):
@@ -437,7 +511,7 @@ class forcingResampler:
         
         # Check if shapefile already exists
         self.shapefile_path.mkdir(parents=True, exist_ok=True)
-        output_shapefile = self.shapefile_path / f"forcing_{self.config['FORCING_DATASET']}.shp"
+        output_shapefile = self._forcing_output_shapefile_path()
         
         if output_shapefile.exists():
             try:
@@ -456,17 +530,60 @@ class forcingResampler:
                 self.logger.warning(f"Error checking existing forcing shapefile: {str(e)}. Recreating.")
         
         # Create appropriate shapefile based on forcing dataset
-        if self.forcing_dataset == 'rdrs':
+        dataset = self.forcing_dataset.lower()
+        if dataset == 'rdrs':
             return self._create_rdrs_shapefile()
-        elif self.forcing_dataset.lower() == 'casr':
+        elif dataset == 'casr':
             return self._create_casr_shapefile()
-        elif self.forcing_dataset.lower() in ['era5', 'metsim']:
+        elif dataset in ['era5', 'metsim']:
             return self._create_era5_shapefile()
-        elif self.forcing_dataset == 'carra':
+        elif dataset == 'carra':
             return self._create_carra_shapefile()
         else:
             self.logger.error(f"Unsupported forcing dataset: {self.forcing_dataset}")
             raise ValueError(f"Unsupported forcing dataset: {self.forcing_dataset}")
+
+    def _forcing_output_shapefile_path(self) -> Path:
+        return self.shapefile_path / f"forcing_{self.config['FORCING_DATASET']}.shp"
+
+    def _attach_elevation_to_forcing_gdf(self, gdf, batch_size=50, allow_default_on_error=False):
+        """Attach elevation to forcing grid polygons using the safe zonal-stats path."""
+        self.logger.info("Calculating elevation values using safe method")
+
+        try:
+            if not Path(self.dem_path).exists():
+                raise FileNotFoundError(f"DEM file not found: {self.dem_path}")
+
+            elevations = self._calculate_elevation_stats_safe(gdf, self.dem_path, batch_size=batch_size)
+            gdf['elev_m'] = elevations
+            self.logger.info("Elevation calculation complete")
+        except Exception as e:
+            if allow_default_on_error:
+                self.logger.error(f"Error calculating elevation: {str(e)}")
+                gdf['elev_m'] = -9999
+                self.logger.warning("Using default elevation values due to calculation error")
+            else:
+                raise
+
+        return gdf
+
+    def _drop_invalid_elevation_cells(self, gdf):
+        """Optionally drop forcing cells with invalid elevation values."""
+        if self.config.get('REMOVE_INVALID_ELEVATION_CELLS', False):
+            valid_count = len(gdf)
+            gdf = gdf[gdf['elev_m'] != -9999].copy()
+            removed_count = valid_count - len(gdf)
+            if removed_count > 0:
+                self.logger.info(f"Removed {removed_count} cells with invalid elevation values")
+        return gdf
+
+    def _save_forcing_shapefile(self, gdf, output_shapefile, dataset_label):
+        """Persist forcing GeoDataFrame and log completion consistently."""
+        output_shapefile.parent.mkdir(parents=True, exist_ok=True)
+        self.logger.info(f"Saving {dataset_label} shapefile to {output_shapefile}")
+        gdf.to_file(output_shapefile)
+        self.logger.info(f"{dataset_label} shapefile created and saved to {output_shapefile}")
+        return output_shapefile
 
     def process_casr_data(self, ds):
         """
@@ -576,7 +693,7 @@ class forcingResampler:
         self.logger.info("Creating CASR grid shapefile")
         
         # Define output shapefile path
-        output_shapefile = self.shapefile_path / f"forcing_{self.config['FORCING_DATASET']}.shp"
+        output_shapefile = self._forcing_output_shapefile_path()
         
         try:
             # Find a CASR file to get grid information
@@ -632,29 +749,12 @@ class forcingResampler:
                 self.config.get('FORCING_SHAPE_LON_NAME'): lons,
             }, crs='EPSG:4326')
             
-            # Calculate elevation using the safe method
-            self.logger.info("Calculating elevation values using safe method")
-            elevations = self._calculate_elevation_stats_safe(gdf, self.dem_path, batch_size=50)
-            gdf['elev_m'] = elevations
-
-            # Remove rows with invalid elevation values if requested
-            if self.config.get('REMOVE_INVALID_ELEVATION_CELLS', False):
-                valid_count = len(gdf)
-                gdf = gdf[gdf['elev_m'] != -9999].copy()
-                removed_count = valid_count - len(gdf)
-                if removed_count > 0:
-                    self.logger.info(f"Removed {removed_count} cells with invalid elevation values")
-
-            # Save the shapefile
-            output_shapefile.parent.mkdir(parents=True, exist_ok=True)
-            gdf.to_file(output_shapefile)
-            self.logger.info(f"CASR shapefile created and saved to {output_shapefile}")
-            return output_shapefile
+            gdf = self._attach_elevation_to_forcing_gdf(gdf, batch_size=50)
+            gdf = self._drop_invalid_elevation_cells(gdf)
+            return self._save_forcing_shapefile(gdf, output_shapefile, dataset_label='CASR')
             
         except Exception as e:
-            self.logger.error(f"Error in create_casr_shapefile: {str(e)}")
-            import traceback
-            self.logger.error(traceback.format_exc())
+            _log_exception(self.logger, f"Error in create_casr_shapefile: {str(e)}")
             raise
   
     def _calculate_elevation_stats_safe(self, gdf, dem_path, batch_size=50):
@@ -743,7 +843,7 @@ class forcingResampler:
         self.logger.info("Creating ERA5 shapefile")
         
         # Define output shapefile path
-        output_shapefile = self.shapefile_path / f"forcing_{self.config['FORCING_DATASET']}.shp"
+        output_shapefile = self._forcing_output_shapefile_path()
         
         try:
             # Find an .nc file in the forcing path
@@ -839,45 +939,21 @@ class forcingResampler:
                 self.logger.error(f"Error creating GeoDataFrame: {str(e)}")
                 raise
 
-            # Calculate elevation using the safe method
-            try:
-                self.logger.info("Calculating elevation values using safe method")
-                if not Path(self.dem_path).exists():
-                    self.logger.error(f"DEM file not found: {self.dem_path}")
-                    raise FileNotFoundError(f"DEM file not found: {self.dem_path}")
-                    
-                elevations = self._calculate_elevation_stats_safe(gdf, self.dem_path, batch_size=20)
-                gdf['elev_m'] = elevations
-                
-                self.logger.info(f"Elevation calculation complete")
-            except Exception as e:
-                self.logger.error(f"Error calculating elevation: {str(e)}")
-                # Continue without elevation data rather than failing completely
-                gdf['elev_m'] = -9999
-                self.logger.warning("Using default elevation values due to calculation error")
-
-            # Save the shapefile
-            try:
-                self.logger.info(f"Saving shapefile to: {output_shapefile}")
-                gdf.to_file(output_shapefile)
-                self.logger.info(f"ERA5 shapefile saved successfully to {output_shapefile}")
-                return output_shapefile
-            except Exception as e:
-                self.logger.error(f"Error saving shapefile: {str(e)}")
-                import traceback
-                self.logger.error(traceback.format_exc())
-                raise
+            gdf = self._attach_elevation_to_forcing_gdf(
+                gdf,
+                batch_size=20,
+                allow_default_on_error=True,
+            )
+            return self._save_forcing_shapefile(gdf, output_shapefile, dataset_label='ERA5')
                 
         except Exception as e:
-            self.logger.error(f"Error in create_era5_shapefile: {str(e)}")
-            import traceback
-            self.logger.error(traceback.format_exc())
+            _log_exception(self.logger, f"Error in create_era5_shapefile: {str(e)}")
             raise
 
     def _create_rdrs_shapefile(self):
         """Create RDRS shapefile with output file checking"""
         # Define output shapefile path
-        output_shapefile = self.shapefile_path / f"forcing_{self.config['FORCING_DATASET']}.shp"
+        output_shapefile = self._forcing_output_shapefile_path()
         
         try:
             forcing_file = next((f for f in os.listdir(self.merged_forcing_path) if f.endswith('.nc') and f.startswith('RDRS_monthly_')), None)
@@ -928,38 +1004,20 @@ class forcingResampler:
                 self.config.get('FORCING_SHAPE_LON_NAME'): lons,
             }, crs='EPSG:4326')
             
-            # Calculate elevation using the safe method
-            self.logger.info("Calculating elevation values using safe method")
-            elevations = self._calculate_elevation_stats_safe(gdf, self.dem_path, batch_size=50)
-            gdf['elev_m'] = elevations
-
-            # Remove rows with invalid elevation values if requested
-            if self.config.get('REMOVE_INVALID_ELEVATION_CELLS', False):
-                valid_count = len(gdf)
-                gdf = gdf[gdf['elev_m'] != -9999].copy()
-                removed_count = valid_count - len(gdf)
-                if removed_count > 0:
-                    self.logger.info(f"Removed {removed_count} cells with invalid elevation values")
-
-            # Save the shapefile
-            output_shapefile.parent.mkdir(parents=True, exist_ok=True)
-            gdf.to_file(output_shapefile)
-            self.logger.info(f"RDRS shapefile created and saved to {output_shapefile}")
-            return output_shapefile
+            gdf = self._attach_elevation_to_forcing_gdf(gdf, batch_size=50)
+            gdf = self._drop_invalid_elevation_cells(gdf)
+            return self._save_forcing_shapefile(gdf, output_shapefile, dataset_label='RDRS')
             
         except Exception as e:
-            self.logger.error(f"Error in create_rdrs_shapefile: {str(e)}")
-            import traceback
-            self.logger.error(traceback.format_exc())
+            _log_exception(self.logger, f"Error in create_rdrs_shapefile: {str(e)}")
             raise
 
-    # For _create_carra_shapefile - replace the elevation calculation section with:
     def _create_carra_shapefile(self):
         """Create CARRA shapefile with output file checking"""
         self.logger.info("Creating CARRA grid shapefile")
         
         # Define output shapefile path
-        output_shapefile = self.shapefile_path / f"forcing_{self.config['FORCING_DATASET']}.shp"
+        output_shapefile = self._forcing_output_shapefile_path()
         
         try:
             # Find a processed CARRA file
@@ -1038,21 +1096,11 @@ class forcingResampler:
                 self.config.get('FORCING_SHAPE_LON_NAME'): center_lons,
             }, crs='EPSG:4326')
             
-            # Calculate elevation using the safe method
-            self.logger.info("Calculating elevation values using safe method")
-            elevations = self._calculate_elevation_stats_safe(gdf, self.dem_path, batch_size=50)
-            gdf['elev_m'] = elevations
-
-            # Save the shapefile
-            self.logger.info(f"Saving CARRA shapefile to {output_shapefile}")
-            gdf.to_file(output_shapefile)
-            self.logger.info(f"CARRA grid shapefile created and saved to {output_shapefile}")
-            return output_shapefile
+            gdf = self._attach_elevation_to_forcing_gdf(gdf, batch_size=50)
+            return self._save_forcing_shapefile(gdf, output_shapefile, dataset_label='CARRA')
             
         except Exception as e:
-            self.logger.error(f"Error in create_carra_shapefile: {str(e)}")
-            import traceback
-            self.logger.error(traceback.format_exc())
+            _log_exception(self.logger, f"Error in create_carra_shapefile: {str(e)}")
             raise
 
     def remap_forcing(self):
@@ -1126,6 +1174,16 @@ class forcingResampler:
         if shp_path.exists():
             return shp_path.stat().st_mtime
         return None
+
+    def _run_easymore_nc_remapper(self, esmr):
+        """Run EASYMORE remapper while suppressing known third-party pandas warnings."""
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=r".*A value is trying to be set on a copy of a DataFrame or Series through chained assignment using an inplace method.*",
+                category=FutureWarning,
+            )
+            esmr.nc_remapper()
 
     def _get_target_shapefile_epoch(self):
         """Return catchment shapefile signature timestamp for stale-output detection."""
@@ -1513,9 +1571,7 @@ class forcingResampler:
                 raise ValueError("Could not create unique HRU IDs")
                 
         except Exception as e:
-            self.logger.error(f"Error ensuring unique HRU IDs: {str(e)}")
-            import traceback
-            self.logger.error(traceback.format_exc())
+            _log_exception(self.logger, f"Error ensuring unique HRU IDs: {str(e)}")
             raise
 
     def _ensure_shapefile_wgs84(self, shapefile_path, output_suffix="_wgs84"):
@@ -1711,7 +1767,7 @@ class forcingResampler:
                 
                 if not remap_path.exists():
                     self.logger.info(f"Creating new remap file for {file.name} using field {actual_hru_field}")
-                    esmr.nc_remapper()
+                    self._run_easymore_nc_remapper(esmr)
                     
                     # Move the remap file to the intersection path
                     temp_remap = Path(esmr.temp_dir) / f"{esmr.case_name}_remapping.nc"
@@ -1724,7 +1780,7 @@ class forcingResampler:
                 else:
                     self.logger.debug(f"Using existing remap file for {file.name}")
                     esmr.remap_csv = str(remap_path)
-                    esmr.nc_remapper()
+                    self._run_easymore_nc_remapper(esmr)
 
                 if self.recalc_longwave:
                     self._apply_longwave_recalculation(output_file)
@@ -1752,9 +1808,7 @@ class forcingResampler:
                 return False
                 
         except Exception as e:
-            self.logger.error(f"Error processing {file.name}: {str(e)}")
-            import traceback
-            self.logger.error(traceback.format_exc())
+            _log_exception(self.logger, f"Error processing {file.name}: {str(e)}")
             return False
 
     def _process_forcing_file(self, file, worker_id):
@@ -1909,7 +1963,7 @@ class forcingResampler:
                 if not remap_final_path.exists():
                     try:
                         self.logger.info(f"Worker {worker_id}: Creating new remap file...")
-                        esmr.nc_remapper()
+                        self._run_easymore_nc_remapper(esmr)
                         
                         # Move files from current directory to final locations
                         if Path(remap_file).exists():
@@ -1922,9 +1976,7 @@ class forcingResampler:
                             self.logger.info(f"Worker {worker_id}: Moved {shp_file.name}")
                             
                     except Exception as e:
-                        self.logger.error(f"Worker {worker_id}: Error creating remap file: {str(e)}")
-                        import traceback
-                        self.logger.error(f"Worker {worker_id}: Traceback: {traceback.format_exc()}")
+                        _log_exception(self.logger, f"Worker {worker_id}: Error creating remap file: {str(e)}")
                         return {
                             'file': file.name,
                             'success': False,
@@ -1935,7 +1987,7 @@ class forcingResampler:
                     # Use existing remap file
                     self.logger.info(f"Worker {worker_id}: Using existing remap file")
                     esmr.remap_csv = str(remap_final_path.resolve())
-                    esmr.nc_remapper()
+                    self._run_easymore_nc_remapper(esmr)
 
                 if self.recalc_longwave:
                     self._apply_longwave_recalculation(output_file)
@@ -1980,9 +2032,7 @@ class forcingResampler:
                 }
                     
         except Exception as e:
-            self.logger.error(f"Worker {worker_id}: Error processing {file.name}: {str(e)}")
-            import traceback
-            self.logger.error(traceback.format_exc())
+            _log_exception(self.logger, f"Worker {worker_id}: Error processing {file.name}: {str(e)}")
             return {
                 'file': file.name,
                 'success': False,
@@ -2208,12 +2258,236 @@ class geospatialStatistics:
         else:
             return Path(self.config.get(f'{file_type}'))
 
-    def get_nodata_value(self, raster_path):
+    def _project_catchment_to_raster_crs(self, catchment_gdf, raster_path, raster_label):
+        """Project catchment polygons to raster CRS when needed."""
         with rasterio.open(raster_path) as src:
-            nodata = src.nodatavals[0]
-            if nodata is None:
-                nodata = -9999
-            return nodata
+            raster_crs = src.crs
+            self.logger.info(f"{raster_label} raster CRS: {raster_crs}")
+
+        shapefile_crs = catchment_gdf.crs
+        self.logger.info(f"Catchment shapefile CRS: {shapefile_crs}")
+
+        if raster_crs != shapefile_crs:
+            self.logger.info(
+                f"CRS mismatch detected. Reprojecting catchment from {shapefile_crs} to {raster_crs}"
+            )
+            try:
+                catchment_gdf_projected = catchment_gdf.to_crs(raster_crs)
+                self.logger.info("CRS reprojection successful")
+            except Exception as e:
+                self.logger.error(f"Failed to reproject CRS: {str(e)}")
+                self.logger.warning("Using original CRS - calculation may fail")
+                catchment_gdf_projected = catchment_gdf.copy()
+        else:
+            self.logger.info("CRS match - no reprojection needed")
+            catchment_gdf_projected = catchment_gdf.copy()
+
+        return catchment_gdf_projected
+
+    def _build_categorical_result_df(
+        self,
+        stats,
+        raw_prefix,
+        pct_prefix,
+        class_col,
+        pct_col,
+        exclude_zero_class=True,
+    ):
+        """Normalize categorical zonal stats and enrich with dominant class columns."""
+        result_df = pd.DataFrame(stats).fillna(0)
+
+        def rename_column(x):
+            if x == 'count':
+                return x
+            try:
+                return f'{raw_prefix}{int(float(x))}'
+            except (ValueError, TypeError):
+                return x
+
+        result_df = result_df.rename(columns=rename_column)
+        for col in result_df.columns:
+            if col != 'count':
+                result_df[col] = pd.to_numeric(result_df[col], errors='coerce').fillna(0).astype(int)
+
+        return self._enrich_categorical_stats(
+            result_df,
+            raw_prefix=raw_prefix,
+            pct_prefix=pct_prefix,
+            class_col=class_col,
+            pct_col=pct_col,
+            exclude_zero_class=exclude_zero_class,
+        )
+
+    def _as_bool(self, value, default=False):
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return default
+        if isinstance(value, (int, float)):
+            return bool(value)
+
+        text = str(value).strip().lower()
+        if text in {'true', '1', 'yes', 'y', 'on'}:
+            return True
+        if text in {'false', '0', 'no', 'n', 'off'}:
+            return False
+        return default
+
+    def _resolve_optional_path(self, config_key, default_path):
+        value = self.config.get(config_key, 'default')
+        if value is None:
+            return default_path
+
+        text = str(value).strip()
+        if not text or text.lower() == 'default':
+            return default_path
+
+        path = Path(text).expanduser()
+        if not path.is_absolute():
+            path = self.land_path / path
+        return path
+
+    def _load_nlcd_to_modis_lookup(self):
+        default_lookup_path = self.land_path / 'nlcd_to_modis_lookup.csv'
+        lookup_path = self._resolve_optional_path('LAND_CLASS_REMAP_LOOKUP_PATH', default_lookup_path)
+
+        if lookup_path.exists():
+            lookup_df = pd.read_csv(lookup_path)
+
+            def _first_present(candidates):
+                for col in candidates:
+                    if col in lookup_df.columns:
+                        return col
+                return None
+
+            source_col = _first_present(['nlcd_class', 'source_class', 'from_class', 'nlcd'])
+            target_col = _first_present(['modis_class', 'target_class', 'to_class', 'modis'])
+            source_name_col = _first_present(['nlcd_name', 'source_name', 'from_name'])
+            target_name_col = _first_present(['modis_name', 'target_name', 'to_name'])
+
+            if source_col is None or target_col is None:
+                raise ValueError(
+                    f'Lookup table {lookup_path} must include NLCD and MODIS class columns '
+                    "(e.g., 'nlcd_class' and 'modis_class')."
+                )
+
+            normalized = pd.DataFrame()
+            normalized['source_class'] = pd.to_numeric(lookup_df[source_col], errors='coerce').astype('Int64')
+            normalized['target_class'] = pd.to_numeric(lookup_df[target_col], errors='coerce').astype('Int64')
+            normalized = normalized.dropna(subset=['source_class', 'target_class']).copy()
+            normalized['source_class'] = normalized['source_class'].astype(int)
+            normalized['target_class'] = normalized['target_class'].astype(int)
+
+            if source_name_col is not None:
+                normalized['source_name'] = lookup_df[source_name_col].astype(str)
+            else:
+                normalized['source_name'] = normalized['source_class'].map(NLCD_CLASS_NAMES).fillna('')
+
+            if target_name_col is not None:
+                normalized['target_name'] = lookup_df[target_name_col].astype(str)
+            else:
+                normalized['target_name'] = normalized['target_class'].map(MODIS_IGBP_CLASS_NAMES).fillna('')
+
+            normalized = normalized.drop_duplicates(subset=['source_class'], keep='last')
+            normalized = normalized.sort_values('source_class').reset_index(drop=True)
+            self.logger.info(f'Loaded NLCD->MODIS lookup from {lookup_path} with {len(normalized)} rows')
+            return normalized
+
+        normalized = pd.DataFrame(
+            {
+                'source_class': list(DEFAULT_NLCD_TO_MODIS_LOOKUP.keys()),
+                'target_class': list(DEFAULT_NLCD_TO_MODIS_LOOKUP.values()),
+            }
+        )
+        normalized['source_name'] = normalized['source_class'].map(NLCD_CLASS_NAMES).fillna('')
+        normalized['target_name'] = normalized['target_class'].map(MODIS_IGBP_CLASS_NAMES).fillna('')
+        normalized = normalized.sort_values('source_class').reset_index(drop=True)
+
+        self.logger.info(
+            f'Using built-in NLCD->MODIS lookup ({len(normalized)} rows); custom table not found at {lookup_path}'
+        )
+        return normalized
+
+    def _write_lookup_documentation(self, lookup_df, source_raster, remapped_raster):
+        default_export = self.land_path / f'{Path(remapped_raster).stem}_lookup_used.csv'
+        export_path = self._resolve_optional_path('LAND_CLASS_REMAP_LOOKUP_EXPORT', default_export)
+        export_path.parent.mkdir(parents=True, exist_ok=True)
+
+        doc_df = lookup_df.copy()
+        doc_df['source_system'] = 'NLCD'
+        doc_df['target_system'] = 'MODIS_IGBP'
+        doc_df['source_raster'] = str(source_raster)
+        doc_df['remapped_raster'] = str(remapped_raster)
+        doc_df.to_csv(export_path, index=False)
+
+        self.logger.info(f'Saved NLCD->MODIS lookup documentation to {export_path}')
+
+    def _prepare_land_raster_for_stats(self, land_raster):
+        source = str(self.config.get('LAND_CLASS_SOURCE', 'MODIS')).strip().lower()
+        remap_enabled = self._as_bool(self.config.get('LAND_CLASS_REMAP_TO_MODIS', False), default=False)
+
+        if source != 'nlcd' or not remap_enabled:
+            return land_raster
+
+        remap_output_name = self._resolve_name(
+            'LAND_CLASS_REMAP_OUTPUT_NAME',
+            f'{Path(land_raster).stem}_modis.tif',
+        )
+        remapped_raster = self.land_path / remap_output_name
+        overwrite_remap = self._as_bool(self.config.get('LAND_CLASS_REMAP_OVERWRITE', False), default=False)
+        remap_nodata = int(self.config.get('LAND_CLASS_REMAP_NODATA', -9999))
+
+        lookup_df = self._load_nlcd_to_modis_lookup()
+        self._write_lookup_documentation(lookup_df, source_raster=land_raster, remapped_raster=remapped_raster)
+
+        if remapped_raster.exists() and not overwrite_remap:
+            self.logger.info(
+                f'Using existing remapped NLCD->MODIS raster: {remapped_raster} '
+                '(set LAND_CLASS_REMAP_OVERWRITE: true to rebuild)'
+            )
+            return remapped_raster
+
+        lookup = dict(zip(lookup_df['source_class'].astype(int), lookup_df['target_class'].astype(int)))
+
+        with rasterio.open(land_raster) as src:
+            source_arr = src.read(1)
+            source_nodata = src.nodata
+            profile = src.profile.copy()
+
+        remapped_arr = np.full(source_arr.shape, remap_nodata, dtype=np.int16)
+        valid_mask = np.ones(source_arr.shape, dtype=bool)
+
+        if np.issubdtype(source_arr.dtype, np.floating):
+            valid_mask &= ~np.isnan(source_arr)
+
+        if source_nodata is not None:
+            try:
+                if np.isnan(source_nodata):
+                    valid_mask &= ~np.isnan(source_arr)
+                else:
+                    valid_mask &= source_arr != source_nodata
+            except TypeError:
+                valid_mask &= source_arr != source_nodata
+
+        for nlcd_class, modis_class in lookup.items():
+            remapped_arr[np.logical_and(valid_mask, source_arr == nlcd_class)] = np.int16(modis_class)
+
+        unknown_mask = np.logical_and(valid_mask, remapped_arr == remap_nodata)
+        if unknown_mask.any():
+            unknown_values = np.unique(source_arr[unknown_mask])
+            preview = ', '.join(str(int(v)) for v in unknown_values[:15])
+            self.logger.warning(
+                f'NLCD values without MODIS mapping were assigned nodata ({remap_nodata}). '
+                f'Unmapped values (sample): {preview}'
+            )
+
+        profile.update(dtype=rasterio.int16, nodata=remap_nodata, count=1, compress='lzw')
+        remapped_raster.parent.mkdir(parents=True, exist_ok=True)
+        with rasterio.open(remapped_raster, 'w', **profile) as dst:
+            dst.write(remapped_arr, 1)
+
+        self.logger.info(f'Remapped NLCD raster to MODIS classes: {remapped_raster}')
+        return remapped_raster
 
     def calculate_elevation_stats(self):
         """Calculate elevation statistics with output file checking and CRS alignment"""
@@ -2235,27 +2509,11 @@ class geospatialStatistics:
         self.logger.info("Calculating elevation statistics")
 
         try:
-            # Get CRS information
-            with rasterio.open(self.dem_path) as src:
-                dem_crs = src.crs
-                self.logger.info(f"DEM CRS: {dem_crs}")
-            
-            shapefile_crs = catchment_gdf.crs
-            self.logger.info(f"Catchment shapefile CRS: {shapefile_crs}")
-            
-            # Check if CRS match and reproject if needed
-            if dem_crs != shapefile_crs:
-                self.logger.info(f"CRS mismatch detected. Reprojecting catchment from {shapefile_crs} to {dem_crs}")
-                try:
-                    catchment_gdf_projected = catchment_gdf.to_crs(dem_crs)
-                    self.logger.info("CRS reprojection successful")
-                except Exception as e:
-                    self.logger.error(f"Failed to reproject CRS: {str(e)}")
-                    self.logger.warning("Using original CRS - calculation may fail")
-                    catchment_gdf_projected = catchment_gdf.copy()
-            else:
-                self.logger.info("CRS match - no reprojection needed")
-                catchment_gdf_projected = catchment_gdf.copy()
+            catchment_gdf_projected = self._project_catchment_to_raster_crs(
+                catchment_gdf,
+                self.dem_path,
+                raster_label='DEM',
+            )
 
             # Use rasterstats with the raster file path directly (more efficient and handles CRS properly)
             stats = zonal_stats(
@@ -2281,9 +2539,7 @@ class geospatialStatistics:
             self.logger.info(f"Elevation statistics saved to {output_file}")
             
         except Exception as e:
-            self.logger.error(f"Error calculating elevation statistics: {str(e)}")
-            import traceback
-            self.logger.error(traceback.format_exc())
+            _log_exception(self.logger, f"Error calculating elevation statistics: {str(e)}")
             raise
 
         return False
@@ -2313,27 +2569,11 @@ class geospatialStatistics:
             raise FileNotFoundError(f"Soil raster not found: {soil_raster}")
         
         try:
-            # Get CRS information
-            with rasterio.open(soil_raster) as src:
-                soil_crs = src.crs
-                self.logger.info(f"Soil raster CRS: {soil_crs}")
-            
-            shapefile_crs = catchment_gdf.crs
-            self.logger.info(f"Catchment shapefile CRS: {shapefile_crs}")
-            
-            # Check if CRS match and reproject if needed
-            if soil_crs != shapefile_crs:
-                self.logger.info(f"CRS mismatch detected. Reprojecting catchment from {shapefile_crs} to {soil_crs}")
-                try:
-                    catchment_gdf_projected = catchment_gdf.to_crs(soil_crs)
-                    self.logger.info("CRS reprojection successful")
-                except Exception as e:
-                    self.logger.error(f"Failed to reproject CRS: {str(e)}")
-                    self.logger.warning("Using original CRS - calculation may fail")
-                    catchment_gdf_projected = catchment_gdf.copy()
-            else:
-                self.logger.info("CRS match - no reprojection needed")
-                catchment_gdf_projected = catchment_gdf.copy()
+            catchment_gdf_projected = self._project_catchment_to_raster_crs(
+                catchment_gdf,
+                soil_raster,
+                raster_label='Soil',
+            )
 
             # Use rasterstats with the raster file path directly
             stats = zonal_stats(
@@ -2344,24 +2584,8 @@ class geospatialStatistics:
                 nodata=-9999
             )
             
-            result_df = pd.DataFrame(stats).fillna(0)
-
-            def rename_column(x):
-                if x == 'count':
-                    return x
-                try:
-                    return f'USGS_{int(float(x))}'
-                except ValueError:
-                    return x
-
-            result_df = result_df.rename(columns=rename_column)
-            for col in result_df.columns:
-                if col != 'count':
-                    result_df[col] = result_df[col].astype(int)
-
-            # Add per-class percentages and dominant class summaries for direct interpretation.
-            result_df = self._enrich_categorical_stats(
-                result_df,
+            result_df = self._build_categorical_result_df(
+                stats,
                 raw_prefix='USGS_',
                 pct_prefix='USGS_P',
                 class_col='soilClass',
@@ -2378,9 +2602,7 @@ class geospatialStatistics:
             self.logger.info(f"Soil statistics saved to {output_file}")
             
         except Exception as e:
-            self.logger.error(f"Error calculating soil statistics: {str(e)}")
-            import traceback
-            self.logger.error(traceback.format_exc())
+            _log_exception(self.logger, f"Error calculating soil statistics: {str(e)}")
             raise
 
         return False
@@ -2409,29 +2631,18 @@ class geospatialStatistics:
         self.logger.info(f"Using land raster from attributes directory: {land_raster}")
         if not land_raster.exists():
             raise FileNotFoundError(f"Land raster not found: {land_raster}")
+
+        land_raster = self._prepare_land_raster_for_stats(land_raster)
+        self.logger.info(f"Using land raster for zonal stats: {land_raster}")
+        if not land_raster.exists():
+            raise FileNotFoundError(f"Prepared land raster not found: {land_raster}")
         
         try:
-            # Get CRS information
-            with rasterio.open(land_raster) as src:
-                land_crs = src.crs
-                self.logger.info(f"Land raster CRS: {land_crs}")
-            
-            shapefile_crs = catchment_gdf.crs
-            self.logger.info(f"Catchment shapefile CRS: {shapefile_crs}")
-            
-            # Check if CRS match and reproject if needed
-            if land_crs != shapefile_crs:
-                self.logger.info(f"CRS mismatch detected. Reprojecting catchment from {shapefile_crs} to {land_crs}")
-                try:
-                    catchment_gdf_projected = catchment_gdf.to_crs(land_crs)
-                    self.logger.info("CRS reprojection successful")
-                except Exception as e:
-                    self.logger.error(f"Failed to reproject CRS: {str(e)}")
-                    self.logger.warning("Using original CRS - calculation may fail")
-                    catchment_gdf_projected = catchment_gdf.copy()
-            else:
-                self.logger.info("CRS match - no reprojection needed")
-                catchment_gdf_projected = catchment_gdf.copy()
+            catchment_gdf_projected = self._project_catchment_to_raster_crs(
+                catchment_gdf,
+                land_raster,
+                raster_label='Land',
+            )
 
             # Use rasterstats with the raster file path directly
             stats = zonal_stats(
@@ -2442,24 +2653,8 @@ class geospatialStatistics:
                 nodata=-9999
             )
             
-            result_df = pd.DataFrame(stats).fillna(0)
-
-            def rename_column(x):
-                if x == 'count':
-                    return x
-                try:
-                    return f'IGBP_{int(float(x))}'
-                except ValueError:
-                    return x
-
-            result_df = result_df.rename(columns=rename_column)
-            for col in result_df.columns:
-                if col != 'count':
-                    result_df[col] = result_df[col].astype(int)
-
-            # Add per-class percentages and dominant class summaries for direct interpretation.
-            result_df = self._enrich_categorical_stats(
-                result_df,
+            result_df = self._build_categorical_result_df(
+                stats,
                 raw_prefix='IGBP_',
                 pct_prefix='IGBP_P',
                 class_col='landClass',
@@ -2476,9 +2671,7 @@ class geospatialStatistics:
             self.logger.info(f"Land statistics saved to {output_file}")
             
         except Exception as e:
-            self.logger.error(f"Error calculating land statistics: {str(e)}")
-            import traceback
-            self.logger.error(traceback.format_exc())
+            _log_exception(self.logger, f"Error calculating land statistics: {str(e)}")
             raise
 
         return False

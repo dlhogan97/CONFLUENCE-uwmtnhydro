@@ -420,7 +420,11 @@ class DomainDiscretizer:
                     classified_data[attr] = raster_array
             
             # Find unique combinations of classified values
-            unique_combinations = self._find_unique_combinations(classified_data, combined_valid_mask)
+            unique_combinations = self._find_unique_combinations(
+                classified_data,
+                combined_valid_mask,
+                attributes,
+            )
             
             # Create HRUs for each unique combination
             gru_hrus = self._create_hrus_from_combinations(
@@ -478,21 +482,30 @@ class DomainDiscretizer:
         
         return classified
 
-    def _find_unique_combinations(self, classified_data: Dict[str, np.ndarray], 
-                                 valid_mask: np.ndarray) -> List[Tuple]:
+    def _find_unique_combinations(
+        self,
+        classified_data: Dict[str, np.ndarray],
+        valid_mask: np.ndarray,
+        attribute_order: Optional[List[str]] = None,
+    ) -> List[Tuple]:
         """
         Find unique combinations of classified values across all attributes.
         
         Args:
             classified_data: Dictionary of classified raster arrays for each attribute
             valid_mask: Boolean mask for valid pixels
+            attribute_order: Explicit attribute ordering for combination tuples
             
         Returns:
             List of unique value combinations
         """
         # Stack all classified arrays
         stacked_data = []
-        for attr in sorted(classified_data.keys()):
+        ordered_attrs = [
+            attr for attr in (attribute_order or list(classified_data.keys()))
+            if attr in classified_data
+        ]
+        for attr in ordered_attrs:
             stacked_data.append(classified_data[attr][valid_mask])
         
         # Find unique combinations
@@ -529,7 +542,7 @@ class DomainDiscretizer:
             # Create mask for this combination
             combination_mask = valid_mask.copy()
             
-            for i, attr in enumerate(sorted(classified_data.keys())):
+            for i, attr in enumerate(attributes):
                 attr_value = combination[i]
                 combination_mask &= (classified_data[attr] == attr_value)
             
@@ -621,10 +634,12 @@ class DomainDiscretizer:
             }
             
             # Add individual attribute values
-            for i, attr in enumerate(sorted(attributes)):
+            for i, attr in enumerate(attributes):
                 attr_name = attr.lower()
                 if attr_name == 'elevation':
                     hru_data['elevClass'] = combination[i]
+                elif attr_name == 'aspect':
+                    hru_data['aspectClass'] = combination[i]
                 elif attr_name == 'soilclass':
                     hru_data['soilClass'] = combination[i]
                 elif attr_name == 'landclass':
@@ -1049,11 +1064,14 @@ class DomainDiscretizer:
             ) / (8.0 * dy_m)
 
             # ------------------------------------------------------------------
-            # Aspect: degrees clockwise from North (GDAL convention, 0–360).
-            # arctan2(-dz/dy, dz/dx) gives the mathematical angle (CCW from East);
-            # rotating by 90° converts to geographic bearing (CW from North).
+            # Aspect: degrees clockwise from North (0–360).
+            # The gradient vector points uphill, so add 180° by default to convert
+            # to downslope-facing aspect (the common hydrologic convention).
+            # ASPECT_AZIMUTH_OFFSET_DEG can be overridden in config if needed.
             # ------------------------------------------------------------------
-            aspect_deg = (90.0 - np.degrees(np.arctan2(-dz_dy, dz_dx))) % 360.0
+            upslope_azimuth_deg = (90.0 - np.degrees(np.arctan2(-dz_dy, dz_dx))) % 360.0
+            aspect_offset_deg = float(self.config.get('ASPECT_AZIMUTH_OFFSET_DEG', 180.0))
+            aspect_deg = (upslope_azimuth_deg + aspect_offset_deg) % 360.0
 
             # Flat pixels: slope < threshold → class 0 (no aspect-based SW adjustment).
             # Valley bottoms and other low-gradient terrain are still valid HRU pixels;
@@ -1711,6 +1729,82 @@ class DomainDiscretizer:
             sort_columns.append('_original_hru_id')
             ascending.append(True)
             hru_gdf = hru_gdf.sort_values(sort_columns, ascending=ascending).reset_index(drop=True)
+        elif order_strategy in ['elevation_aspect', 'elev_aspect', 'elevation_then_aspect']:
+            sort_columns = []
+            ascending = []
+
+            # Resolve aspect class column once for optional filtering + ordering.
+            aspect_sort_col = None
+            if 'aspectClass' in hru_gdf.columns:
+                aspect_sort_col = 'aspectClass'
+            elif 'aspectClas' in hru_gdf.columns:
+                aspect_sort_col = 'aspectClas'
+
+            # Optional: remove flat-aspect HRUs (class 0) so each elevation band has
+            # exactly four directional HRUs in the requested sequence.
+            exclude_flat_aspect = bool(self.config.get('ASPECT_EXCLUDE_FLAT_HRUS', False))
+            if exclude_flat_aspect and aspect_sort_col is not None:
+                hru_gdf[aspect_sort_col] = pd.to_numeric(hru_gdf[aspect_sort_col], errors='coerce')
+                before_count = len(hru_gdf)
+                hru_gdf = hru_gdf[hru_gdf[aspect_sort_col] != 0].copy()
+                removed_count = before_count - len(hru_gdf)
+                if removed_count > 0:
+                    self.logger.info(
+                        f"Removed {removed_count} flat-aspect HRUs (class 0) prior to HRU_ID assignment"
+                    )
+
+            # Elevation-first ordering for combined HRUs:
+            # highest elevation bands first, then aspect class within each band.
+            if 'elevClass' in hru_gdf.columns:
+                hru_gdf['elevClass'] = pd.to_numeric(hru_gdf['elevClass'], errors='coerce')
+                sort_columns.append('elevClass')
+                ascending.append(False)
+            elif 'elev_mean' in hru_gdf.columns:
+                sort_columns.append('elev_mean')
+                ascending.append(False)
+
+            if aspect_sort_col is not None:
+                hru_gdf[aspect_sort_col] = pd.to_numeric(hru_gdf[aspect_sort_col], errors='coerce')
+
+                # Default 4-class directional order requested for East River workflow:
+                # 1=N, 2=E, 4=W, 3=S (class 0 flat is sorted last unless excluded).
+                aspect_order_cfg = self.config.get('HRU_ASPECT_CLASS_ORDER', [1, 2, 4, 3, 0])
+                if isinstance(aspect_order_cfg, str):
+                    parsed_order = [item.strip() for item in aspect_order_cfg.split(',') if item.strip()]
+                    try:
+                        aspect_order = [int(item) for item in parsed_order]
+                    except ValueError:
+                        self.logger.warning(
+                            f"Invalid HRU_ASPECT_CLASS_ORDER='{aspect_order_cfg}', using default [1,2,4,3,0]"
+                        )
+                        aspect_order = [1, 2, 4, 3, 0]
+                elif isinstance(aspect_order_cfg, (list, tuple)):
+                    try:
+                        aspect_order = [int(item) for item in aspect_order_cfg]
+                    except (TypeError, ValueError):
+                        self.logger.warning(
+                            f"Invalid HRU_ASPECT_CLASS_ORDER='{aspect_order_cfg}', using default [1,2,4,3,0]"
+                        )
+                        aspect_order = [1, 2, 4, 3, 0]
+                else:
+                    aspect_order = [1, 2, 4, 3, 0]
+
+                aspect_rank_map = {cls: rank for rank, cls in enumerate(aspect_order, start=1)}
+                hru_gdf['_aspect_rank'] = hru_gdf[aspect_sort_col].map(aspect_rank_map).fillna(999).astype(int)
+
+                sort_columns.append('_aspect_rank')
+                ascending.append(True)
+                # Keep deterministic numeric ordering as tie-breaker.
+                sort_columns.append(aspect_sort_col)
+                ascending.append(True)
+
+            if 'GRU_ID' in hru_gdf.columns:
+                sort_columns.append('GRU_ID')
+                ascending.append(True)
+
+            sort_columns.append('_original_hru_id')
+            ascending.append(True)
+            hru_gdf = hru_gdf.sort_values(sort_columns, ascending=ascending).reset_index(drop=True)
         elif order_strategy in ['original', 'input']:
             sort_columns = []
             ascending = []
@@ -1741,7 +1835,7 @@ class DomainDiscretizer:
         self.logger.info(
             f"Assigned HRU_ID using '{order_strategy}' ordering; old->new preview: {mapping_preview}"
         )
-        hru_gdf = hru_gdf.drop(columns=['_original_hru_id'])
+        hru_gdf = hru_gdf.drop(columns=['_original_hru_id', '_aspect_rank'], errors='ignore')
         
         return hru_gdf
 

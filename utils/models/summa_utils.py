@@ -456,6 +456,12 @@ class SummaPreProcessor:
             hru_ids = dat['hruId'].values.astype(int)
             aspect_deg, tan_slope, area_m2 = self._get_aspect_sw_arrays(hru_ids)
 
+            # Optional additive azimuth shift [deg] for SW correction only.
+            # This is applied to aspect angles before incidence calculations.
+            sw_rotation_deg = float(self.config.get('ASPECT_SW_AZIMUTH_ROTATION_DEG', 0.0))
+            if np.isfinite(sw_rotation_deg) and abs(sw_rotation_deg) > 1e-12:
+                aspect_deg = (aspect_deg + sw_rotation_deg) % 360.0
+
             # Convert SUMMA time coordinate (seconds since 1990-01-01) to datetime.
             time_vals = dat['time'].values.astype(np.float64)
             ref_time = pd.Timestamp('1990-01-01 00:00:00')
@@ -1711,6 +1717,7 @@ class SummaPreProcessor:
             with rasterio.open(self.dem_path) as src:
                 dem = src.read(1)
                 transform = src.transform
+                nodata = src.nodata
                 
                 # Get cell sizes
                 cell_size_x = abs(transform[0])  # dx
@@ -1719,24 +1726,46 @@ class SummaPreProcessor:
                 # Calculate gradients
                 dy, dx = np.gradient(dem.astype(np.float64), cell_size_y, cell_size_x)
                 
-                # Calculate aspect in radians (-π to π)
-                aspect_rad = np.arctan2(-dy, dx)  # Note: -dy because aspect is measured from North
-                
-                # Convert to degrees (0 to 360, where 0/360 = North, 90 = East, 180 = South, 270 = West)
-                aspect_deg = np.degrees(aspect_rad)
-                aspect_deg = (90 - aspect_deg) % 360  # Convert from math convention to compass bearing
+                # Calculate uphill azimuth from local DEM gradient.
+                aspect_rad = np.arctan2(-dy, dx)
+
+                # Convert to compass bearing (clockwise from North) and rotate to
+                # downslope-facing aspect by default (+180 deg). This matches HRU
+                # aspect classing used during discretization.
+                upslope_aspect_deg = (90 - np.degrees(aspect_rad)) % 360
+                aspect_offset_deg = float(self.config.get('ASPECT_AZIMUTH_OFFSET_DEG', 180.0))
+                aspect_deg = (upslope_aspect_deg + aspect_offset_deg) % 360
                 
                 # Handle flat areas (where both dx and dy are near zero)
                 flat_mask = (np.abs(dx) < 1e-8) & (np.abs(dy) < 1e-8)
-                aspect_deg[flat_mask] = -1  # Special value for flat areas
-                
-                # Use zonal_stats to get mean aspect for all HRUs at once
-                mean_aspects = rasterstats.zonal_stats(
+                # Compute circular means via zonal means of sin/cos(aspect) to
+                # avoid 0/360 wraparound artifacts (e.g., north becoming ~180).
+                valid_mask = np.isfinite(dem)
+                if nodata is not None:
+                    valid_mask &= (dem != nodata)
+                valid_mask &= ~flat_mask
+
+                nodata_fill = -9999.0
+                sin_aspect = np.full(dem.shape, nodata_fill, dtype=np.float64)
+                cos_aspect = np.full(dem.shape, nodata_fill, dtype=np.float64)
+
+                aspect_rad_valid = np.deg2rad(aspect_deg[valid_mask])
+                sin_aspect[valid_mask] = np.sin(aspect_rad_valid)
+                cos_aspect[valid_mask] = np.cos(aspect_rad_valid)
+
+                mean_sin = rasterstats.zonal_stats(
                     shp.geometry,
-                    aspect_deg,
+                    sin_aspect,
                     affine=transform,
                     stats=['mean'],
-                    nodata=src.nodata
+                    nodata=nodata_fill,
+                )
+                mean_cos = rasterstats.zonal_stats(
+                    shp.geometry,
+                    cos_aspect,
+                    affine=transform,
+                    stats=['mean'],
+                    nodata=nodata_fill,
                 )
             
             # Create results dictionary
@@ -1749,15 +1778,20 @@ class SummaPreProcessor:
                 else:
                     hru_id = int(hru_id_raw)  # Already a scalar
                     
-                mean_aspect = mean_aspects[idx]['mean']
-                
-                if mean_aspect is None or np.isnan(mean_aspect):
+                sin_val = mean_sin[idx]['mean']
+                cos_val = mean_cos[idx]['mean']
+
+                if (
+                    sin_val is None
+                    or cos_val is None
+                    or np.isnan(sin_val)
+                    or np.isnan(cos_val)
+                    or (abs(sin_val) < 1e-12 and abs(cos_val) < 1e-12)
+                ):
                     self.logger.warning(f"No valid aspect data found for HRU {hru_id}")
                     results[hru_id] = 180.0  # Default to south-facing
-                elif mean_aspect == -1:
-                    # Flat area
-                    results[hru_id] = 180.0  # Default to south-facing for flat areas
                 else:
+                    mean_aspect = (np.degrees(np.arctan2(sin_val, cos_val)) + 360.0) % 360.0
                     results[hru_id] = float(mean_aspect)
         
         except Exception as e:
