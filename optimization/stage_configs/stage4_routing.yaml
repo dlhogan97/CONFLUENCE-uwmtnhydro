@@ -1,0 +1,48 @@
+# ============================================================================
+# Stage 4: Hillslope Routing (distributed mode only)
+# ============================================================================
+# Goal: Match routed hydrograph shape, peak timing, and volume at the outlet.
+#       All process parameters are FROZEN from stages 1–3.
+#
+# Physical reasoning:
+#   routingGammaShape — shape parameter of the Gamma distribution for the
+#                       time-delay routing (subRouting = timeDlay).
+#                       Higher shape → more peaked, less spread response.
+#                       Typical mountain values: 2–4.
+#   routingGammaScale — scale parameter (seconds).  Controls mean travel time.
+#                       East River length ~50 km, v ~0.5 m/s → ~28 hours.
+#                       routingGammaScale ≈ 3600–86400 s is physically reasonable.
+#
+# Note: This stage uses averageRoutedRunoff (the basin-aggregated, routed
+#       output) for comparison against outlet streamflow.  This is the ONLY
+#       stage where routing output is compared to observations.
+#
+# Constrained by:
+#   - Outlet streamflow at USGS 09112500 (East River at Almont, CO)
+#     observations/streamflow_obs.csv, columns: date, value [m³/s]
+# ============================================================================
+
+name: stage4_routing
+description: "Hillslope time-delay routing: Gamma shape and scale"
+
+params:
+  - routingGammaShape
+  - routingGammaScale
+
+anchor_variable: averageRoutedRunoff   # basin-aggregated routed runoff
+anchor_obs_path: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/observations/formatted/streamflow_obs.csv
+coherence_type: streamflow             # no HRU coherence for routing; pure anchor
+
+# Routing is pure anchor — there's no meaningful coherence metric across HRUs.
+w_anchor: 0.9
+
+multiplier_search_bounds:
+  routingGammaShape: [0.3, 3.0]
+  routingGammaScale: [0.2, 5.0]
+
+max_iterations: 100
+popsize: 10           # pop = 10 × 2 = 20 members (small; only 2 params)
+tol: 0.002
+
+spinup_days: 365
+time_step_hours: 1.0

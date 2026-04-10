@@ -1,0 +1,61 @@
+# ============================================================================
+# Stage 2: Soil Hydraulics and Evapotranspiration
+# ============================================================================
+# Goal: Correct infiltration partitioning, soil moisture dynamics, and ET
+#       seasonal cycle.  Snow/radiation parameters are FROZEN from stage 1.
+#
+# Physical reasoning:
+#   k_soil        — saturated hydraulic conductivity.  Sandy loam at East River
+#                   should be ~1e-5 m/s.  Optimizer sometimes finds 5e-3 (gravel);
+#                   physical upper bound enforced at 1e-2 m/s.
+#   vGn_alpha     — Van Genuchten alpha (stored negative in SUMMA).  Controls
+#                   air-entry pressure; −0.5 to −2.0 m⁻¹ typical for loam.
+#   vGn_n         — shape parameter; higher n → steeper drying curve → faster
+#                   drainage.
+#   qSurfScale    — controls what fraction of the surface generates saturation
+#                   excess runoff.  Tightly coupled with rootingDepth.
+#   rootingDepth  — must not exceed soil column depth or roots access empty
+#                   aquifer zone.  East River meadows: ~0.5–1.5 m; forest: ~2–4 m.
+#   theta_sat     — porosity.  ROSETTA value for sandy loam ~0.41; allow ±30%.
+#   summerLAI     — summer leaf area index.  Varies by vegetation type; forest
+#                   HRUs should have higher values than alpine/barren.
+#
+# Constrained by:
+#   - ET from OpenET (monthly gridded estimates) — see observations/et_open_et.csv
+#   - Rising-limb shape from observed streamflow (if ET obs unavailable)
+# ============================================================================
+
+name: stage2_soil_et
+description: "Soil hydraulics and ET: k_soil, Van Genuchten params, LAI, rooting depth"
+
+params:
+  - k_soil
+  - vGn_alpha
+  - vGn_n
+  - qSurfScale
+  - rootingDepth
+  - theta_sat
+  - summerLAI
+
+anchor_variable: scalarTotalET    # per-HRU cumulative ET
+anchor_obs_path: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/observations/formatted/et_obs.csv
+coherence_type: et
+
+# Higher anchor weight here because OpenET gridded estimates are spatially dense.
+w_anchor: 0.5
+
+multiplier_search_bounds:
+  k_soil:       [0.05, 5.0]    # large range; hydraulic conductivity is highly uncertain
+  vGn_alpha:    [0.3,  2.0]    # multiplied on a negative value → larger mult = less negative
+  vGn_n:        [0.5,  2.0]
+  qSurfScale:   [0.2,  3.0]
+  rootingDepth: [0.5,  2.0]
+  theta_sat:    [0.7,  1.3]
+  summerLAI:    [0.5,  2.0]
+
+max_iterations: 300
+popsize: 12           # pop = 12 × 7 params = 84 members
+tol: 0.005
+
+spinup_days: 365
+time_step_hours: 1.0

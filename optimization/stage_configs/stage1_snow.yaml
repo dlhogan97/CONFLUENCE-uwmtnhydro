@@ -1,0 +1,54 @@
+# ============================================================================
+# Stage 1: Snow Accumulation and Melt
+# ============================================================================
+# Goal: Correct snow accumulation, peak timing, melt rate, and disappearance.
+#
+# Parameters are calibrated as global multipliers on the per-HRU base values
+# from trialParams.nc.  Physical bounds are enforced after multiplication in
+# parameter_manager.py.
+#
+# Physical reasoning:
+#   albedoDecayRate — controls how fast albedo decays after fresh snowfall.
+#                     SUMMA default (~3e6 s) can be too slow for dusty Colorado
+#                     snowpack.  Optimizer often prefers ~1e5 (non-physical).
+#                     Clamp lower bound to 1e5 s.
+#   Frad_direct     — partitions direct vs diffuse shortwave.  Higher elevation
+#                     → more direct; East River sits at 2700–4000 m.
+#   Frad_vis        — partitions visible vs NIR.  Controls albedo feedback.
+#
+# Constrained by:
+#   SNOTEL SWE at Butte (SNTL:CO:380) ~2930 m and Schofield Pass (SNTL:CO:737) ~3260 m
+# ============================================================================
+
+name: stage1_snow
+description: "Snow accumulation, albedo decay, shortwave partitioning"
+
+params:
+  - albedoDecayRate
+  - Frad_direct
+  - Frad_vis
+  - frozenPrecipMultip
+
+anchor_variable: scalarSWE
+anchor_obs_path: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/observations/formatted/snotel_swe.csv
+coherence_type: snow
+
+# Objective weights (w_anchor + w_coherence = 1.0)
+# Use high coherence weight because we only have 1–2 SNOTEL sites for ~8 HRUs.
+w_anchor: 0.4
+
+# Multiplier search bounds [lo, hi] — applied on top of the base parameter value.
+# albedoDecayRate: wide range because the physical range is 1e5–3e6 s (3 orders of magnitude).
+multiplier_search_bounds:
+  albedoDecayRate:    [0.05, 2.0]    # 5% – 200% of base (base may be ~3e6 s)
+  Frad_direct:        [0.5,  1.5]
+  Frad_vis:           [0.5,  1.5]
+  frozenPrecipMultip: [0.85, 1.15]  # PRISM-METSim forcing is good; fine-tuning only
+
+# Optimizer settings
+max_iterations: 200
+popsize: 12           # differential_evolution: pop = popsize × n_params = 12×4 = 48 members
+tol: 0.005
+
+spinup_days: 365
+time_step_hours: 1.0

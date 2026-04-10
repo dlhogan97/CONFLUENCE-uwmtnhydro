@@ -1,0 +1,55 @@
+# ============================================================================
+# Stage 3: Groundwater and Baseflow
+# ============================================================================
+# Goal: Match baseflow recession, storage buffering, and low-flow behavior.
+#       Snow and soil parameters are FROZEN from stages 1–2.
+#
+# Physical reasoning:
+#   aquiferScaleFactor   — storage scale of the bigBucket aquifer (m).
+#                          Controls how much total water the aquifer can hold.
+#                          East River has deep fractured rock; large scale factor
+#                          (10–50 m) is plausible.
+#   aquiferBaseflowExp   — nonlinearity of baseflow Q = k × S^exp.
+#                          exp=1 → linear reservoir; exp>1 → convex recession.
+#                          Typical mountain catchments: 1.5–3.0.
+#   aquiferBaseflowRate  — baseflow rate at storage = scaleFactor (m/s).
+#                          This is the drainage coefficient at 'normal' storage.
+#
+# IMPORTANT: Use pre-routing variables for diagnostics.
+#   Compare scalarAquiferBaseflow / scalarTotalRunoff at HRU level.
+#   Do NOT compare scalarTotalRunoff directly to streamflow observations.
+#
+# Constrained by:
+#   - Eckhardt-filtered baseflow from observed streamflow
+#     (observations/streamflow_obs.csv, columns: date, value [m³/s])
+#   - Recession curve slope (log-linear)
+#   - Baseflow index range 0.3–0.7 for East River
+# ============================================================================
+
+name: stage3_groundwater
+description: "Groundwater and baseflow recession: bigBucket aquifer parameters"
+
+params:
+  - aquiferScaleFactor
+  - aquiferBaseflowExp
+  - aquiferBaseflowRate
+
+anchor_variable: scalarAquiferBaseflow   # per-HRU aquifer baseflow flux
+anchor_obs_path: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/observations/formatted/streamflow_obs.csv
+coherence_type: baseflow
+
+# Split anchor/coherence: anchor compares simulated vs Eckhardt-separated baseflow;
+# coherence checks BFI range and inter-HRU recession consistency.
+w_anchor: 0.5
+
+multiplier_search_bounds:
+  aquiferScaleFactor:   [0.1, 10.0]    # wide: physically 0.1–100 m
+  aquiferBaseflowExp:   [0.3, 3.0]
+  aquiferBaseflowRate:  [0.1, 5.0]
+
+max_iterations: 150
+popsize: 12           # pop = 12 × 3 = 36 members
+tol: 0.005
+
+spinup_days: 365
+time_step_hours: 1.0
