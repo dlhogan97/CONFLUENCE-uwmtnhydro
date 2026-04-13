@@ -13,6 +13,7 @@ import calendar
 import logging
 import os
 import re
+import signal
 import shutil
 import subprocess
 import zipfile
@@ -286,16 +287,28 @@ def _build_prism_monthly_to_nc(var: str, month: str, selected_df, out_path: Path
 
 def _download_era5_if_missing(month: str, bounds, out_path: Path):
     if out_path.exists():
-        return out_path
+        try:
+            with xr.open_dataset(out_path, engine="netcdf4") as ds_exist:
+                has_u = "u10" in ds_exist.data_vars or "10m_u_component_of_wind" in ds_exist.data_vars
+                has_v = "v10" in ds_exist.data_vars or "10m_v_component_of_wind" in ds_exist.data_vars
+                has_td = "d2m" in ds_exist.data_vars or "2m_dewpoint_temperature" in ds_exist.data_vars
+            if has_u and has_v and has_td:
+                return out_path
+        except Exception:
+            pass
+        if out_path.exists():
+            out_path.unlink()
     if not HAS_CDSAPI:
         raise ImportError("cdsapi is required to download ERA5-Land when missing")
+
+    logger = logging.getLogger("metsim_batch")
 
     period = pd.Period(month, freq="M")
     year = f"{period.start_time.year:04d}"
     mm = f"{period.start_time.month:02d}"
     n_days = calendar.monthrange(period.start_time.year, period.start_time.month)[1]
     request = {
-        "variable": ["10m_u_component_of_wind", "10m_v_component_of_wind"],
+        "variable": ["10m_u_component_of_wind", "10m_v_component_of_wind", "2m_dewpoint_temperature"],
         "year": year,
         "month": mm,
         "day": [f"{d:02d}" for d in range(1, n_days + 1)],
@@ -303,8 +316,22 @@ def _download_era5_if_missing(month: str, bounds, out_path: Path):
         "format": "netcdf",
         "area": [float(bounds[3]), float(bounds[0]), float(bounds[1]), float(bounds[2])],
     }
-    c = cdsapi.Client()
-    c.retrieve("reanalysis-era5-land", request, str(out_path))
+    timeout_s = int(os.environ.get("ERA5_TIMEOUT_SECONDS", "900"))
+    max_retries = int(os.environ.get("ERA5_MAX_RETRIES", "3"))
+    last_err = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            logger.info("[%s] ERA5 download attempt %d/%d (timeout=%ss)", month, attempt, max_retries, timeout_s)
+            c = cdsapi.Client(timeout=timeout_s, quiet=True)
+            c.retrieve("reanalysis-era5-land", request, str(out_path))
+            break
+        except Exception as exc:
+            last_err = exc
+            logger.warning("[%s] ERA5 download attempt %d failed: %s", month, attempt, exc)
+            if out_path.exists():
+                out_path.unlink()
+            if attempt == max_retries:
+                raise RuntimeError(f"[{month}] ERA5 download failed after {max_retries} attempts") from last_err
     if zipfile.is_zipfile(out_path):
         unzip_target = out_path.with_name(out_path.stem + "_unzipped.nc")
         with zipfile.ZipFile(out_path, "r") as zf:
@@ -326,26 +353,52 @@ def _build_daymet_if_missing(month: str, catchment_gdf, selected_df, out_path: P
 
     from shapely.geometry import Polygon
 
+    logger = logging.getLogger("metsim_batch")
+
+    def _timeout_handler(signum, frame):
+        raise TimeoutError("Daymet request timed out")
+
+    def _call_with_timeout(func, timeout_s: int):
+        if timeout_s <= 0 or not hasattr(signal, "SIGALRM"):
+            return func()
+        old_handler = signal.getsignal(signal.SIGALRM)
+        signal.signal(signal.SIGALRM, _timeout_handler)
+        signal.alarm(timeout_s)
+        try:
+            return func()
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, old_handler)
+
     period = pd.Period(month, freq="M")
     start = period.start_time
     end = period.end_time
     polygon = Polygon(catchment_gdf.geometry.iloc[0].exterior.coords)
-    try:
-        ds_daymet = daymet.get_bygeom(
-            polygon,
-            dates=(start.date().isoformat(), end.date().isoformat()),
-            variables=["vp"],
-            time_scale="daily",
-        )
-    except Exception:
-        coords = list(zip(selected_df["lon"].to_numpy(), selected_df["lat"].to_numpy()))
-        ds_daymet = daymet.get_bycoords(
-            coords=coords,
-            dates=(start.date().isoformat(), end.date().isoformat()),
-            variables=["vp"],
-            time_scale="daily",
-            to_xarray=True,
-        )
+    timeout_s = int(os.environ.get("DAYMET_TIMEOUT_SECONDS", "900"))
+    max_retries = int(os.environ.get("DAYMET_MAX_RETRIES", "3"))
+    ds_daymet = None
+    last_err = None
+    coords = list(zip(selected_df["lon"].to_numpy(), selected_df["lat"].to_numpy()))
+    for attempt in range(1, max_retries + 1):
+        logger.info("[%s] Daymet by-coordinates attempt %d/%d (timeout=%ss)", month, attempt, max_retries, timeout_s)
+        try:
+            ds_daymet = _call_with_timeout(
+                lambda: daymet.get_bycoords(
+                    coords=coords,
+                    dates=(start.date().isoformat(), end.date().isoformat()),
+                    variables=["vp"],
+                    time_scale="daily",
+                    to_xarray=True,
+                ),
+                timeout_s,
+            )
+            break
+        except Exception as coords_exc:
+            last_err = coords_exc
+            logger.warning("[%s] Daymet by-coordinates attempt %d failed: %s", month, attempt, coords_exc)
+
+    if ds_daymet is None:
+        raise RuntimeError(f"[{month}] Daymet download failed after {max_retries} attempts") from last_err
 
     if "id" in ds_daymet.dims:
         lon_vals = selected_df["lon"].to_numpy()
@@ -389,105 +442,142 @@ def _build_missing_daily_input(month: str, cfg: BatchConfig, force_rebuild: bool
         _build_prism_monthly_to_nc("tmax", month, selected, prism_tmax, raw_dir / "prism_zips", cfg.prism_ftp_host)
         _build_prism_monthly_to_nc("ppt", month, selected, prism_ppt, raw_dir / "prism_zips", cfg.prism_ftp_host)
         _build_prism_monthly_to_nc("soltotal", month, selected, prism_swrad, raw_dir / "prism_zips", cfg.prism_ftp_host)
-        _build_daymet_if_missing(month, catchment, selected, daymet_vp)
+        try:
+            _build_daymet_if_missing(month, catchment, selected, daymet_vp)
+        except Exception as exc:
+            logging.getLogger("metsim_batch").warning(
+                "[%s] Daymet unavailable (%s); falling back to ERA5 dewpoint for vapor pressure",
+                month,
+                exc,
+            )
         era5_uv = _download_era5_if_missing(month, bounds, era5_uv)
 
-    for p in [prism_tmin, prism_tmax, prism_ppt, prism_swrad, daymet_vp, era5_uv]:
+    for p in [prism_tmin, prism_tmax, prism_ppt, prism_swrad, era5_uv]:
         if not p.exists():
             raise FileNotFoundError(f"Missing required source for {month}: {p}")
 
-    with xr.open_dataset(prism_tmin, engine="netcdf4") as ds_tmin, xr.open_dataset(prism_tmax, engine="netcdf4") as ds_tmax, xr.open_dataset(
-        prism_ppt, engine="netcdf4"
-    ) as ds_ppt, xr.open_dataset(prism_swrad, engine="netcdf4") as ds_swrad, xr.open_dataset(daymet_vp, engine="netcdf4") as ds_daymet, xr.open_dataset(
-        era5_uv, engine="netcdf4"
-    ) as ds_era5:
-        target_lat = np.sort(selected["lat"].unique())
-        target_lon = np.sort(selected["lon"].unique())
+    ds_daymet = xr.open_dataset(daymet_vp, engine="netcdf4") if daymet_vp.exists() else None
+    try:
+        with xr.open_dataset(prism_tmin, engine="netcdf4") as ds_tmin, xr.open_dataset(prism_tmax, engine="netcdf4") as ds_tmax, xr.open_dataset(
+            prism_ppt, engine="netcdf4"
+        ) as ds_ppt, xr.open_dataset(prism_swrad, engine="netcdf4") as ds_swrad, xr.open_dataset(era5_uv, engine="netcdf4") as ds_era5:
+            target_lat = np.sort(selected["lat"].unique())
+            target_lon = np.sort(selected["lon"].unique())
 
-        era5_lat = "latitude" if "latitude" in ds_era5.coords else "lat"
-        era5_lon = "longitude" if "longitude" in ds_era5.coords else "lon"
-        if float(ds_era5[era5_lon].max()) > 180.0:
-            ds_era5 = ds_era5.assign_coords({era5_lon: (((ds_era5[era5_lon] + 180) % 360) - 180)}).sortby(era5_lon)
-        era5_time = "time" if "time" in ds_era5.coords else "valid_time"
-        if era5_time != "time":
-            ds_era5 = ds_era5.rename({era5_time: "time"})
+            era5_lat = "latitude" if "latitude" in ds_era5.coords else "lat"
+            era5_lon = "longitude" if "longitude" in ds_era5.coords else "lon"
+            if float(ds_era5[era5_lon].max()) > 180.0:
+                ds_era5 = ds_era5.assign_coords({era5_lon: (((ds_era5[era5_lon] + 180) % 360) - 180)}).sortby(era5_lon)
+            era5_time = "time" if "time" in ds_era5.coords else "valid_time"
+            if era5_time != "time":
+                ds_era5 = ds_era5.rename({era5_time: "time"})
 
-        u_name = "u10" if "u10" in ds_era5.data_vars else "10m_u_component_of_wind"
-        v_name = "v10" if "v10" in ds_era5.data_vars else "10m_v_component_of_wind"
-        da_ws = np.hypot(ds_era5[u_name], ds_era5[v_name])
+            u_name = "u10" if "u10" in ds_era5.data_vars else "10m_u_component_of_wind"
+            v_name = "v10" if "v10" in ds_era5.data_vars else "10m_v_component_of_wind"
+            td_name = "d2m" if "d2m" in ds_era5.data_vars else "2m_dewpoint_temperature"
+            da_ws = np.hypot(ds_era5[u_name], ds_era5[v_name])
+            da_td = ds_era5[td_name]
 
-        ws_parts = []
-        for t in da_ws["time"].values:
-            da2d = da_ws.sel(time=t)
-            src_lat = da2d[era5_lat].values
-            src_lon = da2d[era5_lon].values
-            src_vals = da2d.values
-            src_lon_2d, src_lat_2d = np.meshgrid(src_lon, src_lat)
-            x_obs = src_lon_2d.ravel()
-            y_obs = src_lat_2d.ravel()
-            z_obs = src_vals.ravel()
-            valid = np.isfinite(z_obs)
-            x_tgt_2d, y_tgt_2d = np.meshgrid(target_lon, target_lat)
-            z_tgt, _ = _interpolate_to_target(
-                x_obs[valid],
-                y_obs[valid],
-                z_obs[valid],
-                x_tgt_2d.ravel(),
-                y_tgt_2d.ravel(),
+            ws_parts = []
+            vp_parts = []
+            for t in da_ws["time"].values:
+                da2d = da_ws.sel(time=t)
+                td2d = da_td.sel(time=t)
+                src_lat = da2d[era5_lat].values
+                src_lon = da2d[era5_lon].values
+                src_vals = da2d.values
+                td_vals = td2d.values
+                src_lon_2d, src_lat_2d = np.meshgrid(src_lon, src_lat)
+                x_obs = src_lon_2d.ravel()
+                y_obs = src_lat_2d.ravel()
+                z_obs = src_vals.ravel()
+                valid = np.isfinite(z_obs)
+                x_tgt_2d, y_tgt_2d = np.meshgrid(target_lon, target_lat)
+                z_tgt, _ = _interpolate_to_target(
+                    x_obs[valid],
+                    y_obs[valid],
+                    z_obs[valid],
+                    x_tgt_2d.ravel(),
+                    y_tgt_2d.ravel(),
+                )
+                z_grid = np.asarray(z_tgt).reshape(len(target_lat), len(target_lon))
+                ws_parts.append(
+                    xr.DataArray(
+                        z_grid,
+                        dims=("latitude", "longitude"),
+                        coords={"latitude": target_lat, "longitude": target_lon},
+                    ).expand_dims(time=[pd.Timestamp(t)])
+                )
+
+                td_obs = td_vals.ravel()
+                td_valid = np.isfinite(td_obs)
+                td_tgt, _ = _interpolate_to_target(
+                    x_obs[td_valid],
+                    y_obs[td_valid],
+                    td_obs[td_valid],
+                    x_tgt_2d.ravel(),
+                    y_tgt_2d.ravel(),
+                )
+                td_grid = np.asarray(td_tgt).reshape(len(target_lat), len(target_lon))
+                # Convert dewpoint temperature (K) to vapor pressure (Pa).
+                td_c = td_grid - 273.15
+                vp_pa = 611.2 * np.exp((17.67 * td_c) / (td_c + 243.5))
+                vp_parts.append(
+                    xr.DataArray(
+                        vp_pa,
+                        dims=("latitude", "longitude"),
+                        coords={"latitude": target_lat, "longitude": target_lon},
+                    ).expand_dims(time=[pd.Timestamp(t)])
+                )
+
+            da_ws_daily = xr.concat(ws_parts, dim="time").sortby("time").resample(time="1D").mean()
+            da_vp_daily_era5 = xr.concat(vp_parts, dim="time").sortby("time").resample(time="1D").mean()
+
+            month_slice = slice(pd.Timestamp(start).normalize(), pd.Timestamp(end).normalize())
+            tmin = ds_tmin["prism_tmin"].sel(time=month_slice)
+            tmax = ds_tmax["prism_tmax"].sel(time=month_slice)
+            precip = ds_ppt["prism_precip"].sel(time=month_slice)
+            shortwave = ds_swrad["prism_soltotal"].sel(time=month_slice) * (1.0e6 / 86400.0)
+            if ds_daymet is not None:
+                vp_name = "vp" if "vp" in ds_daymet.data_vars else list(ds_daymet.data_vars)[0]
+                vapor_pressure = ds_daymet[vp_name].sel(time=month_slice)
+            else:
+                vapor_pressure = da_vp_daily_era5.sel(time=month_slice)
+            da_ws_daily = da_ws_daily.sel(time=month_slice)
+
+            tmin, tmax, precip, shortwave, vapor_pressure, da_ws_daily = xr.align(
+                tmin,
+                tmax,
+                precip,
+                shortwave,
+                vapor_pressure,
+                da_ws_daily,
+                join="inner",
             )
-            z_grid = np.asarray(z_tgt).reshape(len(target_lat), len(target_lon))
-            ws_parts.append(
-                xr.DataArray(
-                    z_grid,
-                    dims=("latitude", "longitude"),
-                    coords={"latitude": target_lat, "longitude": target_lon},
-                ).expand_dims(time=[pd.Timestamp(t)])
+
+            ds_daily = xr.Dataset(
+                {
+                    "t_min": tmin,
+                    "t_max": tmax,
+                    "precip": precip,
+                    "shortwave": shortwave,
+                    "vapor_pressure": vapor_pressure,
+                    "wind": da_ws_daily,
+                },
+                coords={
+                    "time": tmin["time"],
+                    "latitude": tmin["latitude"],
+                    "longitude": tmin["longitude"],
+                },
             )
 
-        da_ws_daily = xr.concat(ws_parts, dim="time").sortby("time").resample(time="1D").mean()
-        vp_name = "vp" if "vp" in ds_daymet.data_vars else list(ds_daymet.data_vars)[0]
-
-        month_slice = slice(pd.Timestamp(start).normalize(), pd.Timestamp(end).normalize())
-        tmin = ds_tmin["prism_tmin"].sel(time=month_slice)
-        tmax = ds_tmax["prism_tmax"].sel(time=month_slice)
-        precip = ds_ppt["prism_precip"].sel(time=month_slice)
-        shortwave = ds_swrad["prism_soltotal"].sel(time=month_slice) * (1.0e6 / 86400.0)
-        vapor_pressure = ds_daymet[vp_name].sel(time=month_slice)
-        da_ws_daily = da_ws_daily.sel(time=month_slice)
-
-        tmin, tmax, precip, shortwave, vapor_pressure, da_ws_daily = xr.align(
-            tmin,
-            tmax,
-            precip,
-            shortwave,
-            vapor_pressure,
-            da_ws_daily,
-            join="inner",
-        )
-
-        ds_daily = xr.Dataset(
-            {
-                "t_min": tmin,
-                "t_max": tmax,
-                "precip": precip,
-                "shortwave": shortwave,
-                "vapor_pressure": vapor_pressure,
-                "wind": da_ws_daily,
-            },
-            coords={
-                "time": tmin["time"],
-                "latitude": tmin["latitude"],
-                "longitude": tmin["longitude"],
-            },
-        )
-
-        # Ensure the output contains every day in the target month, even if one
-        # source product is missing an endpoint day.
-        expected_days = pd.date_range(pd.Timestamp(start).normalize(), pd.Timestamp(end).normalize(), freq="D")
-        ds_daily = ds_daily.assign_coords(time=pd.DatetimeIndex(ds_daily["time"].values).normalize())
-        ds_daily = ds_daily.sortby("time")
-        ds_daily = ds_daily.sel(time=~ds_daily.get_index("time").duplicated())
-        ds_daily = ds_daily.reindex(time=expected_days)
+            # Ensure the output contains every day in the target month, even if one
+            # source product is missing an endpoint day.
+            expected_days = pd.date_range(pd.Timestamp(start).normalize(), pd.Timestamp(end).normalize(), freq="D")
+            ds_daily = ds_daily.assign_coords(time=pd.DatetimeIndex(ds_daily["time"].values).normalize())
+            ds_daily = ds_daily.sortby("time")
+            ds_daily = ds_daily.sel(time=~ds_daily.get_index("time").duplicated())
+            ds_daily = ds_daily.reindex(time=expected_days)
         ds_daily = ds_daily.ffill("time").bfill("time")
 
         shifted = pd.DatetimeIndex(ds_daily["time"].values).normalize() + pd.Timedelta(hours=cfg.day_start_hour)
@@ -499,6 +589,9 @@ def _build_missing_daily_input(month: str, cfg: BatchConfig, force_rebuild: bool
         ds_daily["vapor_pressure"].attrs["units"] = "Pa"
         ds_daily["wind"].attrs["units"] = "m s-1"
         ds_daily.to_netcdf(daily_out)
+    finally:
+        if ds_daymet is not None:
+            ds_daymet.close()
 
     return daily_out
 
@@ -862,6 +955,21 @@ def _month_worker(month: str, cfg: BatchConfig) -> str:
             logger.info("[%s] Cleaned temp workspace: %s", month, work_dir)
 
 
+def _prepare_daily_inputs(months: list[str], cfg: BatchConfig) -> None:
+    """Build month-level daily inputs serially before parallel MetSim execution."""
+    if not cfg.build_missing_daily:
+        return
+
+    logger = logging.getLogger("metsim_batch")
+    for month in months:
+        month_dir = cfg.basin_root / "forcing" / "monthly_workflow" / "metsim" / month
+        daily_src = month_dir / f"metsim_daily_input_{month}.nc"
+        if daily_src.exists():
+            continue
+        logger.info("[%s] Prebuilding daily input serially", month)
+        _build_missing_daily_input(month, cfg)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run MetSim monthly batch with multiprocessing and cleanup")
     parser.add_argument("--start-month", required=True, help="Start month YYYY-MM")
@@ -876,6 +984,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--keep-tmp", action="store_true")
     parser.add_argument("--no-mask", action="store_true", help="Disable mask application in final conversion")
     parser.add_argument("--build-missing-daily", action="store_true", help="Build missing monthly MetSim daily input inside each worker")
+    parser.add_argument(
+        "--serial-prebuild",
+        action="store_true",
+        help="Prebuild missing daily inputs serially before parallel month workers",
+    )
     parser.add_argument("--allow-download", action="store_true", help="Allow PRISM/Daymet/ERA5 API downloads when building missing daily input")
     parser.add_argument(
         "--catchment-shp",
@@ -919,7 +1032,11 @@ def main() -> int:
     logger.info("Output dir: %s", cfg.out_dir)
     logger.info("Temp root: %s", cfg.tmp_root)
     logger.info("Build missing daily inputs: %s", cfg.build_missing_daily)
+    logger.info("Serial prebuild phase: %s", bool(args.serial_prebuild))
     logger.info("Allow downloads: %s", cfg.allow_download)
+
+    if args.serial_prebuild:
+        _prepare_daily_inputs(months, cfg)
 
     successes = []
     failures = []

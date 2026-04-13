@@ -1497,6 +1497,21 @@ class LumpedWatershedDelineator:
             self.logger.error(f"Error details: {str(e)}")
             raise
 
+    def _validate_taudem_output(self, output_path: Path):
+        """Fail fast when a TauDEM step reports success but does not produce a usable output."""
+        if not output_path.exists():
+            raise FileNotFoundError(f"Expected TauDEM output not found: {output_path}")
+
+        if output_path.is_file() and output_path.stat().st_size == 0:
+            raise RuntimeError(f"TauDEM output is empty: {output_path}")
+
+        suffix = output_path.suffix.lower()
+        if suffix in {'.tif', '.tiff'}:
+            ds = gdal.Open(str(output_path))
+            if ds is None:
+                raise RuntimeError(f"TauDEM output raster is unreadable: {output_path}")
+            ds = None
+
     def delineate_lumped_watershed(self) -> Tuple[Optional[Path], Optional[Path]]:
         """
         Delineate a lumped watershed using either TauDEM or pysheds.
@@ -1722,8 +1737,16 @@ class LumpedWatershedDelineator:
             if not self.pour_point_path.is_file():
                 self.logger.error(f"Pour point file not found: {self.pour_point_path}")
                 return None
+
+            if not Path(self.dem_path).is_file():
+                self.logger.error(f"DEM file not found: {self.dem_path}")
+                return None
                 
             # Create output directory if it doesn't exist
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+
+            # Remove stale intermediate outputs from prior failed runs.
+            shutil.rmtree(self.output_dir, ignore_errors=True)
             self.output_dir.mkdir(parents=True, exist_ok=True)
             
             # Determine the correct MPI command
@@ -1743,17 +1766,37 @@ class LumpedWatershedDelineator:
             
             # TauDEM processing steps for lumped watershed delineation
             steps = [
-                f"{mpi_prefix}{self.taudem_dir}/pitremove -z {self.dem_path} -fel {self.output_dir}/fel.tif",
-                f"{mpi_prefix}{self.taudem_dir}/d8flowdir -fel {self.output_dir}/fel.tif -p {self.output_dir}/p.tif -sd8 {self.output_dir}/sd8.tif",
-                f"{mpi_prefix}{self.taudem_dir}/aread8 -p {self.output_dir}/p.tif -ad8 {self.output_dir}/ad8.tif",
-                f"{mpi_prefix}{self.taudem_dir}/threshold -ssa {self.output_dir}/ad8.tif -src {self.output_dir}/src.tif -thresh 100",
-                f"{mpi_prefix}{self.taudem_dir}/moveoutletstostrm -p {self.output_dir}/p.tif -src {self.output_dir}/src.tif -o {self.pour_point_path} -om {self.output_dir}/om.shp",
-                f"{mpi_prefix}{self.taudem_dir}/gagewatershed -p {self.output_dir}/p.tif -o {self.output_dir}/om.shp -gw {self.output_dir}/watershed.tif -id {self.output_dir}/watershed_id.txt"
+                (
+                    f"{mpi_prefix}{self.taudem_dir}/pitremove -z {self.dem_path} -fel {self.output_dir}/fel.tif",
+                    [self.output_dir / 'fel.tif'],
+                ),
+                (
+                    f"{mpi_prefix}{self.taudem_dir}/d8flowdir -fel {self.output_dir}/fel.tif -p {self.output_dir}/p.tif -sd8 {self.output_dir}/sd8.tif",
+                    [self.output_dir / 'p.tif', self.output_dir / 'sd8.tif'],
+                ),
+                (
+                    f"{mpi_prefix}{self.taudem_dir}/aread8 -p {self.output_dir}/p.tif -ad8 {self.output_dir}/ad8.tif",
+                    [self.output_dir / 'ad8.tif'],
+                ),
+                (
+                    f"{mpi_prefix}{self.taudem_dir}/threshold -ssa {self.output_dir}/ad8.tif -src {self.output_dir}/src.tif -thresh 100",
+                    [self.output_dir / 'src.tif'],
+                ),
+                (
+                    f"{mpi_prefix}{self.taudem_dir}/moveoutletstostrm -p {self.output_dir}/p.tif -src {self.output_dir}/src.tif -o {self.pour_point_path} -om {self.output_dir}/om.shp",
+                    [self.output_dir / 'om.shp'],
+                ),
+                (
+                    f"{mpi_prefix}{self.taudem_dir}/gagewatershed -p {self.output_dir}/p.tif -o {self.output_dir}/om.shp -gw {self.output_dir}/watershed.tif -id {self.output_dir}/watershed_id.txt",
+                    [self.output_dir / 'watershed.tif'],
+                ),
             ]
-            
-            for step in steps:
-                self.run_command(step)
-                self.logger.info(f"Completed TauDEM step: {step}")
+
+            for step_cmd, expected_outputs in steps:
+                self.run_command(step_cmd)
+                for output_path in expected_outputs:
+                    self._validate_taudem_output(output_path)
+                self.logger.info(f"Completed TauDEM step: {step_cmd}")
                 
             # Convert the watershed raster to polygon
             watershed_shp_path = self.project_dir / "shapefiles" / "river_basins" / f"{self.domain_name}_riverBasins_lumped.shp"

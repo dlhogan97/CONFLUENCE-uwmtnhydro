@@ -1,0 +1,71 @@
+# ============================================================================
+# optimization_config_bigBuckt_stages2to4.yaml
+# Full calibration stages 2–4 with all fixes applied:
+#   - Stage 2: tighter bounds from prior best, popsize=5
+#   - Stage 3: fixed anchor (scalarAquiferBaseflow vs Eckhardt-filtered obs)
+#   - Stage 4: routing on top of correctly calibrated aquifer
+#
+# Stage 1 (snow) is skipped — reusing frozen params from the original run.
+# Snow params are well-constrained and independent of the GW scheme.
+# ============================================================================
+
+log_level: INFO
+
+results_dir: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/optimization/staged_results_stages2to4
+
+stage_configs_dir: /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs
+
+stages:
+  - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs/stage2_soil_et.yaml
+  - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs/stage3_groundwater.yaml
+  - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs/stage4_routing.yaml
+
+run:
+  summa_exe: summa
+
+  summa_settings_dir: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/settings/SUMMA
+
+  # Snow params baked in from original stage 1 run.
+  base_trial_params_nc: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/optimization/staged_results/stage1_snow_frozen_params.nc
+
+  param_nc_filename: trialParams.nc
+
+  output_prefix: bigBuckt_singleGRU_elevation5_light
+  timeout_sec: 1800
+  parallel_workers: 12
+  random_seed: 42
+  spinup_days: 365
+  sim_start: "2013-10-01 00:00"
+  sim_end:   "2018-09-30 23:00"
+  time_step_hours: 1.0
+
+  basin_area_m2: 748251736.0
+
+  hru_elevations:
+    0: 3994.0
+    1: 3696.0
+    2: 3364.0
+    3: 3010.0
+    4: 2705.0
+
+  hru_aspects: {}
+
+  hru_landcover:
+    0: 16
+    1: 7
+    2: 1
+    3: 1
+    4: 7
+
+  snotel_sites:
+    - elevation: 2930.0
+      obs_path: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/observations/formatted/snotel_swe.csv
+    - elevation: 3260.0
+      obs_path: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/observations/formatted/schofield_swe.csv
+
+  streamflow_obs_path: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/observations/formatted/streamflow_obs.csv
+
+observations:
+  swe_obs_path: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/observations/formatted/snotel_swe.csv
+  et_obs_path: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/observations/formatted/et_obs.csv
+  streamflow_obs_path: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/observations/formatted/streamflow_obs.csv

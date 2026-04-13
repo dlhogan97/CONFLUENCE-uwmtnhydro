@@ -29,13 +29,15 @@
 name: stage3_groundwater
 description: "Groundwater and baseflow recession: bigBucket aquifer parameters"
 
+# These are GRU-level (basin-wide) parameters from basinParamInfo.txt.
+# They govern the explicit bucket aquifer for groundwatr = bigBuckt.
+# No spatial weights needed — they are inherently basin-scale.
 params:
   - aquiferScaleFactor
   - aquiferBaseflowExp
   - aquiferBaseflowRate
 
 anchor_variable: scalarAquiferBaseflow   # per-HRU aquifer baseflow flux
-anchor_obs_path: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/observations/formatted/streamflow_obs.csv
 coherence_type: baseflow
 
 # Split anchor/coherence: anchor compares simulated vs Eckhardt-separated baseflow;
@@ -43,12 +45,12 @@ coherence_type: baseflow
 w_anchor: 0.5
 
 multiplier_search_bounds:
-  aquiferScaleFactor:   [0.1, 10.0]    # wide: physically 0.1–100 m
+  aquiferScaleFactor:   [0.2, 5.0]    # wide: physically 0.1–100 m
   aquiferBaseflowExp:   [0.3, 3.0]
-  aquiferBaseflowRate:  [0.1, 5.0]
+  aquiferBaseflowRate:  [0.1, 10.0]
 
-max_iterations: 150
-popsize: 12           # pop = 12 × 3 = 36 members
+max_iterations: 75
+popsize: 10            # pop = 5 × 3 = 15 members; bounds kept wide — prior stage3 used wrong anchor
 tol: 0.005
 
 spinup_days: 365

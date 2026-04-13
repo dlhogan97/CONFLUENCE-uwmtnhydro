@@ -25,12 +25,9 @@ description: "Snow accumulation, albedo decay, shortwave partitioning"
 
 params:
   - albedoDecayRate
-  - Frad_direct
-  - Frad_vis
   - frozenPrecipMultip
 
 anchor_variable: scalarSWE
-anchor_obs_path: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/observations/formatted/snotel_swe.csv
 coherence_type: snow
 
 # Objective weights (w_anchor + w_coherence = 1.0)
@@ -40,14 +37,14 @@ w_anchor: 0.4
 # Multiplier search bounds [lo, hi] — applied on top of the base parameter value.
 # albedoDecayRate: wide range because the physical range is 1e5–3e6 s (3 orders of magnitude).
 multiplier_search_bounds:
-  albedoDecayRate:    [0.05, 2.0]    # 5% – 200% of base (base may be ~3e6 s)
-  Frad_direct:        [0.5,  1.5]
-  Frad_vis:           [0.5,  1.5]
-  frozenPrecipMultip: [0.85, 1.15]  # PRISM-METSim forcing is good; fine-tuning only
+  albedoDecayRate:    [0.5, 1.5]   # tightened from prior best (0.35) ±50%
+  # Frad_direct:        [0.90, 1.40]   # prior best 1.12; physically near 1.0
+  # Frad_vis:           [1.00, 1.55]   # prior best 1.27; East River gets high vis fraction
+  frozenPrecipMultip: [0.8, 1.2]   # prior best 1.15; 
 
 # Optimizer settings
-max_iterations: 200
-popsize: 12           # differential_evolution: pop = popsize × n_params = 12×4 = 48 members
+max_iterations: 75
+popsize: 10            # differential_evolution: pop = popsize × n_params = 5×4 = 20 members
 tol: 0.005
 
 spinup_days: 365

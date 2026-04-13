@@ -9,22 +9,21 @@ Simultaneous global optimization of all parameters leads to compensating errors
 relevant observation type, we prevent the optimizer from trading errors between
 snow, soil, groundwater, and routing (Clark et al. 2015; Beven 2006).
 
-Stages (sequential, each freezes its parameters before the next begins):
-  1. Snow / radiation  → constrained by SNOTEL SWE
-  2. Soil hydraulics + ET → constrained by OpenET / rising-limb Q
-  3. Groundwater / baseflow → constrained by separated baseflow from observed Q
-  4. Routing → constrained by outlet streamflow
+Stages are config-driven and run sequentially; each stage freezes its
+parameters before the next begins. Typical stages are snow, soil/ET,
+groundwater/baseflow, and routing.
 
 Each stage optimizes *multipliers* on the per-HRU base parameters, not raw values.
 This preserves spatial heterogeneity from the a-priori data.
 
 Usage
 -----
-    python staged_optimizer.py --config optimization/optimization_config.yaml
+    python staged_optimizer.py --config optimization/optimization_config_bigBuckt.yaml
+    python staged_optimizer.py --config optimization/optimization_config_noXplicit.yaml
 
 Or from Python:
     from staged_optimizer import run_all_stages
-    run_all_stages("optimization/optimization_config.yaml")
+    run_all_stages("optimization/optimization_config_bigBuckt.yaml")
 """
 
 from __future__ import annotations
@@ -54,7 +53,9 @@ from objective_functions import (
     compute_anchor_et,
     compute_anchor_streamflow_rising,
     compute_anchor_baseflow,
+    compute_anchor_runoff,
     compute_anchor_streamflow,
+    compute_anchor_generic,
     compute_coherence_snow,
     compute_coherence_et,
     compute_coherence_baseflow,
@@ -78,8 +79,9 @@ class StageConfig:
     name: str                           # e.g. "stage1_snow"
     params: List[str]                   # multiplier parameter names for this stage
     anchor_variable: str                # SUMMA output variable for anchor
-    anchor_obs_path: str                # path to observations CSV
-    coherence_type: str                 # "snow" | "et" | "baseflow" | "streamflow"
+    coherence_type: str                 # "snow" | "et" | "runoff" | "baseflow" | "streamflow"
+    anchor_obs_path: str = ""           # path to observations CSV (overridden by optimization config observations: block)
+    anchor_metric: str = "KGE"         # metric for anchor cost: KGE | KGE_log | NSE | NRMSE
     w_anchor: float = 0.4               # weight given to anchor vs coherence
     multiplier_search_bounds: Dict[str, Tuple[float, float]] = field(default_factory=dict)
     max_iterations: int = 150
@@ -88,6 +90,11 @@ class StageConfig:
     spinup_days: int = 365
     time_step_hours: float = 1.0
     description: str = ""
+    # Optional per-HRU spatial weights: {param_name: {landcover_class: weight, ...}}
+    # or {param_name: {hru_index: weight, ...}}.
+    # Weights carry directional spatial information; the global multiplier M carries
+    # only magnitude.  actual_param_i = base_i × weight_i × M.
+    spatial_weights: Dict[str, Dict] = field(default_factory=dict)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "StageConfig":
@@ -100,8 +107,9 @@ class StageConfig:
             name=data["name"],
             params=data["params"],
             anchor_variable=data["anchor_variable"],
-            anchor_obs_path=data["anchor_obs_path"],
+            anchor_obs_path=data.get("anchor_obs_path", ""),
             coherence_type=data["coherence_type"],
+            anchor_metric=data.get("anchor_metric", "KGE"),
             w_anchor=data.get("w_anchor", 0.4),
             multiplier_search_bounds=parsed_bounds,
             max_iterations=data.get("max_iterations", 150),
@@ -110,6 +118,7 @@ class StageConfig:
             spinup_days=data.get("spinup_days", 365),
             time_step_hours=data.get("time_step_hours", 1.0),
             description=data.get("description", ""),
+            spatial_weights=data.get("spatial_weights", {}),
         )
 
 
@@ -126,6 +135,84 @@ def load_obs_timeseries(csv_path: str, value_col: str = "value") -> pd.Series:
 def load_obs_monthly(csv_path: str, value_col: str = "value") -> pd.Series:
     """Load monthly obs CSV → pd.Series with DatetimeIndex (month-start)."""
     return load_obs_timeseries(csv_path, value_col)
+
+
+def _validate_required_stage_params(pm: ParameterManager, stage_cfgs: List[StageConfig]) -> None:
+    """Hard-fail if any stage parameter is missing from base trialParams.nc.
+
+    This prevents long optimization runs from failing later due to a misbuilt
+    trialParams file.
+    """
+    available = set(pm.base_dataset.data_vars)
+    missing_by_stage: Dict[str, List[str]] = {}
+
+    for sc in stage_cfgs:
+        missing = [p for p in sc.params if p not in available]
+        if missing:
+            missing_by_stage[sc.name] = missing
+
+    if missing_by_stage:
+        details = "\n".join(
+            f"  - {stage}: {', '.join(params)}"
+            for stage, params in missing_by_stage.items()
+        )
+        raise ValueError(
+            "Missing required stage parameters in base trialParams.nc.\n"
+            f"Missing by stage:\n{details}\n"
+            f"Available variables: {sorted(available)}"
+        )
+
+
+def _build_spatial_weight_arrays(
+    raw_weights: Dict[str, Dict],
+    hru_landcover: Dict[int, Any],
+    n_hru: int,
+) -> Dict[str, np.ndarray]:
+    """Expand per-landcover or per-HRU weight dicts to per-HRU numpy arrays.
+
+    Parameters
+    ----------
+    raw_weights:
+        {param_name: {landcover_class: weight}} or {param_name: {hru_index: weight}}.
+        Keys can be landcover strings ("barren", "forest", …) or integer HRU indices.
+        Any HRU without an explicit weight defaults to 1.0.
+    hru_landcover:
+        {hru_idx: landcover_class} mapping from optimization_config_bigBuckt.yaml
+        or optimization_config_noXplicit.yaml.
+        Landcover class can be a descriptive string (e.g., "barren") or
+        an integer/str code (e.g., 16 for MODIS barren).
+    n_hru:
+        Total number of HRUs.
+
+    Returns
+    -------
+    {param_name: np.ndarray of shape (n_hru,)}
+    """
+    result: Dict[str, np.ndarray] = {}
+    for param, weight_spec in raw_weights.items():
+        w_arr = np.ones(n_hru, dtype=float)
+        for hru_idx in range(n_hru):
+            # Prefer explicit HRU-index keys (int or string-of-int)
+            if hru_idx in weight_spec:
+                w_arr[hru_idx] = float(weight_spec[hru_idx])
+            elif str(hru_idx) in weight_spec:
+                w_arr[hru_idx] = float(weight_spec[str(hru_idx)])
+            else:
+                lc = hru_landcover.get(hru_idx, "")
+                # Match landcover labels or codes robustly.
+                # Accept exact key, stringified key, and case-insensitive string labels.
+                if lc in weight_spec:
+                    w_arr[hru_idx] = float(weight_spec[lc])
+                elif str(lc) in weight_spec:
+                    w_arr[hru_idx] = float(weight_spec[str(lc)])
+                elif isinstance(lc, str):
+                    lc_norm = lc.strip().lower()
+                    for k, v in weight_spec.items():
+                        if isinstance(k, str) and k.strip().lower() == lc_norm:
+                            w_arr[hru_idx] = float(v)
+                            break
+        result[param] = w_arr
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +235,20 @@ class TrialEvaluator:
         self.log_path = log_path
         self._trial_counter = 0
         self._obs = self._load_observations()
+
+        # Build per-HRU spatial weight arrays from the stage YAML spec.
+        self._spatial_weights: Dict[str, np.ndarray] = {}
+        if stage_cfg.spatial_weights:
+            hru_lc = {int(k): v for k, v in run_cfg.get("hru_landcover", {}).items()}
+            n_hru = len(hru_lc) or 1
+            self._spatial_weights = _build_spatial_weight_arrays(
+                stage_cfg.spatial_weights, hru_lc, n_hru
+            )
+            logger.info(
+                "Spatial weights active for %s: %s",
+                stage_cfg.name,
+                {k: list(v.round(3)) for k, v in self._spatial_weights.items()},
+            )
 
         # CSV log header
         with open(self.log_path, "w", newline="") as fh:
@@ -181,8 +282,11 @@ class TrialEvaluator:
             for i, p in enumerate(self.stage_cfg.params)
         }
 
-        # Write trial params
-        trial_ds = self.pm.apply_multipliers(multipliers)
+        # Write trial params (pass spatial weights so per-HRU weighting is applied)
+        trial_ds = self.pm.apply_multipliers(
+            multipliers,
+            spatial_weights=self._spatial_weights if self._spatial_weights else None,
+        )
         with tempfile.NamedTemporaryFile(suffix=".nc", delete=False) as tmp:
             tmp_path = tmp.name
         self.pm.write_trial_params(trial_ds, tmp_path)
@@ -199,6 +303,7 @@ class TrialEvaluator:
             settings_dir, output_dir,
             sim_start=self.run_cfg.get("sim_start"),
             sim_end=self.run_cfg.get("sim_end"),
+            out_file_prefix=self.run_cfg.get("output_prefix"),
         )
         Path(tmp_path).unlink(missing_ok=True)
 
@@ -236,6 +341,9 @@ class TrialEvaluator:
     def _compute_objectives(self, output_dir: Path) -> Tuple[float, float]:
         cfg = self.stage_cfg
         prefix = self.run_cfg.get("output_prefix", "")
+        # averageRoutedRunoff from SUMMA is in m s⁻¹ (depth per unit area per time).
+        # Streamflow observations are in m³/s.  Multiply by basin area to convert.
+        basin_area_m2 = float(self.run_cfg.get("basin_area_m2", 1.0))
 
         if cfg.coherence_type == "snow":
             all_swe = read_hru_output(output_dir, prefix, "scalarSWE",
@@ -303,8 +411,11 @@ class TrialEvaluator:
                 j_anc = compute_anchor_et(sim_a.values, obs_a.values)
             else:
                 try:
-                    sim_q = read_basin_output(output_dir, prefix, "averageRoutedRunoff",
-                                              cfg.spinup_days, cfg.time_step_hours)
+                    sim_q = (
+                        read_basin_output(output_dir, prefix, "averageRoutedRunoff",
+                                          cfg.spinup_days, cfg.time_step_hours)
+                        * basin_area_m2   # m/s → m³/s
+                    )
                     obs_q = load_obs_timeseries(self.run_cfg.get("streamflow_obs_path", ""))
                     sim_daily = sim_q.resample("D").mean()
                     sim_a, obs_a = sim_daily.align(obs_q, join="inner")
@@ -315,28 +426,56 @@ class TrialEvaluator:
         elif cfg.coherence_type == "baseflow":
             all_bf = read_hru_output(output_dir, prefix, "scalarAquiferBaseflow",
                                      cfg.spinup_days, cfg.time_step_hours)
-            sim_q = read_basin_output(output_dir, prefix, "averageRoutedRunoff",
-                                      cfg.spinup_days, cfg.time_step_hours)
+            sim_q_rate = read_basin_output(output_dir, prefix, "averageRoutedRunoff",
+                                           cfg.spinup_days, cfg.time_step_hours)
+            # Coherence uses dimensionless ratios (BFI): keep both in same m/s units
             all_bf_arr = {i: s.values for i, s in all_bf.items()}
-            sim_q_arr = sim_q.values
-            j_coh = compute_coherence_baseflow(all_bf_arr, sim_q_arr)
+            j_coh = compute_coherence_baseflow(all_bf_arr, sim_q_rate.values)
 
             if not self._obs.empty:
-                # Resample hourly sim to daily; align with daily obs
-                sim_daily = sim_q.resample("D").mean()
-                sim_a, obs_a = sim_daily.align(self._obs, join="inner")
-                j_anc = compute_anchor_baseflow(sim_a.values, obs_a.values)
+                # Anchor: compare simulated aquifer baseflow (m³/s) vs Eckhardt-separated
+                # observed streamflow.  Use scalarAquiferBaseflow directly — comparing total
+                # routed runoff to filtered baseflow diverges badly during snowmelt peaks.
+                bf_series_list = list(all_bf.values())
+                if bf_series_list:
+                    df_bf = pd.concat(bf_series_list, axis=1)
+                    sim_bf_m3s = df_bf.mean(axis=1) * basin_area_m2  # m/s → m³/s
+                    sim_daily_bf = sim_bf_m3s.resample("D").mean()
+                    sim_a, obs_a = sim_daily_bf.align(self._obs, join="inner")
+                    j_anc = compute_anchor_baseflow(sim_a.values, obs_a.values)
+                else:
+                    j_anc = 0.5
             else:
                 j_anc = 0.5
 
-        elif cfg.coherence_type in ("streamflow", "routing"):
-            sim_q = read_basin_output(output_dir, prefix, "averageRoutedRunoff",
-                                      cfg.spinup_days, cfg.time_step_hours)
+        elif cfg.coherence_type == "runoff":
+            # Soil stage: anchor to total basin streamflow; no HRU coherence.
+            sim_q = (
+                read_basin_output(output_dir, prefix, "averageRoutedRunoff",
+                                  cfg.spinup_days, cfg.time_step_hours)
+                * basin_area_m2   # m/s → m³/s
+            )
             j_coh = 0.0
             if not self._obs.empty:
                 sim_daily = sim_q.resample("D").mean()
                 sim_a, obs_a = sim_daily.align(self._obs, join="inner")
-                j_anc = compute_anchor_streamflow(sim_a.values, obs_a.values)
+                j_anc = compute_anchor_runoff(sim_a.values, obs_a.values,
+                                              metric=cfg.anchor_metric)
+            else:
+                j_anc = 0.5
+
+        elif cfg.coherence_type in ("streamflow", "routing"):
+            sim_q = (
+                read_basin_output(output_dir, prefix, "averageRoutedRunoff",
+                                  cfg.spinup_days, cfg.time_step_hours)
+                * basin_area_m2   # m/s → m³/s
+            )
+            j_coh = 0.0
+            if not self._obs.empty:
+                sim_daily = sim_q.resample("D").mean()
+                sim_a, obs_a = sim_daily.align(self._obs, join="inner")
+                j_anc = compute_anchor_streamflow(sim_a.values, obs_a.values,
+                                                  metric=cfg.anchor_metric)
             else:
                 j_anc = 0.5
 
@@ -500,7 +639,7 @@ def run_stage(
 # ---------------------------------------------------------------------------
 
 def run_all_stages(config_path: str | Path) -> None:
-    """Load config, run all four stages sequentially, freeze parameters between stages."""
+    """Load config, run configured stages sequentially, and freeze parameters between stages."""
     config_path = Path(config_path)
     with open(config_path) as fh:
         cfg = yaml.safe_load(fh)
@@ -516,6 +655,9 @@ def run_all_stages(config_path: str | Path) -> None:
 
     # Initialize parameter manager from the base trialParams.nc
     pm = ParameterManager(run_cfg["base_trial_params_nc"])
+    calib_init = run_cfg.get("base_calib_bounds_json")
+    if calib_init:
+        pm.apply_calib_bounds_values(calib_init)
 
     stage_configs_dir = Path(cfg.get("stage_configs_dir", "stage_configs"))
     stage_files = cfg.get("stages", [
@@ -525,19 +667,50 @@ def run_all_stages(config_path: str | Path) -> None:
         str(stage_configs_dir / "stage4_routing.yaml"),
     ])
 
+    # Fail fast if any stage parameter is missing in base trialParams.nc.
+    stage_cfgs = [StageConfig.from_yaml(sf) for sf in stage_files]
+    _validate_required_stage_params(pm, stage_cfgs)
+
     all_best: Dict[str, float] = {}
 
-    for stage_file in stage_files:
-        stage_cfg = StageConfig.from_yaml(stage_file)
+    # Pre-compute HRU landcover mapping (used by spatial weight expansion)
+    hru_lc = {int(k): v for k, v in run_cfg.get("hru_landcover", {}).items()}
+    n_hru = len(hru_lc) or 1
 
-        # Resolve relative obs paths against the config file's directory
-        if stage_cfg.anchor_obs_path and not Path(stage_cfg.anchor_obs_path).is_absolute():
+    # Build a lookup of coherence_type → obs path from the run config's
+    # `observations:` block.  These override any anchor_obs_path baked into
+    # the individual stage YAML files, making the stage configs basin-agnostic.
+    _obs_override: Dict[str, str] = {}
+    obs_block = cfg.get("observations", {})
+    if obs_block.get("swe_obs_path"):
+        _obs_override["snow"] = obs_block["swe_obs_path"]
+    if obs_block.get("et_obs_path"):
+        _obs_override["et"] = obs_block["et_obs_path"]
+    if obs_block.get("streamflow_obs_path"):
+        _obs_override["runoff"]      = obs_block["streamflow_obs_path"]
+        _obs_override["baseflow"]    = obs_block["streamflow_obs_path"]
+        _obs_override["streamflow"]  = obs_block["streamflow_obs_path"]
+        _obs_override["routing"]     = obs_block["streamflow_obs_path"]
+
+    for stage_cfg, stage_file in zip(stage_cfgs, stage_files):
+
+        # Inject basin-level obs paths from run config (overrides stage yaml).
+        if stage_cfg.coherence_type in _obs_override:
+            stage_cfg.anchor_obs_path = _obs_override[stage_cfg.coherence_type]
+        elif stage_cfg.anchor_obs_path and not Path(stage_cfg.anchor_obs_path).is_absolute():
+            # Fall back: resolve relative path against config file location
             stage_cfg.anchor_obs_path = str(config_path.parent / stage_cfg.anchor_obs_path)
 
         best_mults = run_stage(stage_cfg, pm, run_cfg, results_dir)
 
+        # Build spatial weight arrays for the freeze step so that the baked-in
+        # base values reflect  base × weight × M  (not just base × M).
+        stage_sw: Optional[Dict[str, np.ndarray]] = None
+        if stage_cfg.spatial_weights:
+            stage_sw = _build_spatial_weight_arrays(stage_cfg.spatial_weights, hru_lc, n_hru)
+
         # Freeze this stage's parameters into the base before the next stage
-        pm.freeze_params(best_mults, stage_cfg.params)
+        pm.freeze_params(best_mults, stage_cfg.params, spatial_weights=stage_sw)
 
         # Persist updated base params to disk so a restart can resume from here
         frozen_path = results_dir / f"{stage_cfg.name}_frozen_params.nc"
@@ -564,7 +737,15 @@ def run_all_stages(config_path: str | Path) -> None:
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Staged distributed SUMMA calibration")
-    p.add_argument("--config", required=True, help="Path to optimization_config.yaml")
+    p.add_argument(
+        "--config",
+        required=True,
+        help=(
+            "Path to an explicit optimization config file, e.g. "
+            "optimization/optimization_config_bigBuckt.yaml or "
+            "optimization/optimization_config_noXplicit.yaml"
+        ),
+    )
     p.add_argument("--stage", default=None,
                    help="Run only this stage YAML file (for testing / resuming)")
     p.add_argument("--log-level", default="INFO",
@@ -584,7 +765,11 @@ if __name__ == "__main__":
         results_dir = Path(cfg["results_dir"])
         run_cfg["trial_base_dir"] = str(results_dir / "_trials")
         pm = ParameterManager(run_cfg["base_trial_params_nc"])
+        calib_init = run_cfg.get("base_calib_bounds_json")
+        if calib_init:
+            pm.apply_calib_bounds_values(calib_init)
         stage_cfg = StageConfig.from_yaml(args.stage)
+        _validate_required_stage_params(pm, [stage_cfg])
         run_stage(stage_cfg, pm, run_cfg, results_dir)
     else:
         run_all_stages(args.config)

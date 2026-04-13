@@ -43,14 +43,14 @@ import pandas as pd
 
 STAGE_META = {
     "stage1_snow": {
-        "params": ["albedoDecayRate", "Frad_direct", "Frad_vis"],
+        "params": ["albedoDecayRate", "Frad_direct", "Frad_vis", "frozenPrecipMultip"],
         "anchor_label": "KGE (SWE vs SNOTEL)",
-        "pop_hint": 36,  # popsize × n_params
+        "pop_hint": 48,  # popsize × n_params
     },
     "stage2_soil_et": {
-        "params": ["k_soil", "vGn_alpha", "vGn_n", "qSurfScale", "rootingDepth", "theta_sat", "summerLAI"],
+        "params": ["k_soil", "vGn_alpha", "vGn_n", "qSurfScale", "rootingDepth", "theta_sat"],
         "anchor_label": "KGE (ET vs OpenET)",
-        "pop_hint": 84,
+        "pop_hint": 72,
     },
     "stage3_groundwater": {
         "params": ["aquiferScaleFactor", "aquiferBaseflowExp", "aquiferBaseflowRate"],
@@ -60,7 +60,7 @@ STAGE_META = {
     "stage4_routing": {
         "params": ["routingGammaShape", "routingGammaScale"],
         "anchor_label": "KGE (routed Q vs USGS)",
-        "pop_hint": 20,
+        "pop_hint": 24,
     },
 }
 

@@ -1,0 +1,93 @@
+# ============================================================================
+# Stage 2: Soil Hydraulics and Evapotranspiration
+# ============================================================================
+# Goal: Correct infiltration partitioning, soil moisture dynamics, and ET
+#       seasonal cycle.  Snow/radiation parameters are FROZEN from stage 1.
+#
+# Physical reasoning:
+#   k_soil        — saturated hydraulic conductivity.  Sandy loam at East River
+#                   should be ~1e-5 m/s.  Optimizer sometimes finds 5e-3 (gravel);
+#                   physical upper bound enforced at 1e-2 m/s.
+#   vGn_alpha     — Van Genuchten alpha (stored negative in SUMMA).  Controls
+#                   air-entry pressure; −0.5 to −2.0 m⁻¹ typical for loam.
+#   vGn_n         — shape parameter; higher n → steeper drying curve → faster
+#                   drainage.
+#   qSurfScale    — controls what fraction of the surface generates saturation
+#                   excess runoff.  Tightly coupled with rootingDepth.
+#   rootingDepth  — must not exceed soil column depth or roots access empty
+#                   aquifer zone.  East River meadows: ~0.5–1.5 m; forest: ~2–4 m.
+#   theta_sat     — porosity.  ROSETTA value for sandy loam ~0.41; allow ±30%.
+#
+# Constrained by:
+#   - ET from OpenET (monthly gridded estimates) — see observations/et_open_et.csv
+#   - Rising-limb shape from observed streamflow (if ET obs unavailable)
+# ============================================================================
+
+name: stage2_soil_et
+description: "Soil hydraulics and ET: k_soil, Van Genuchten params, rooting depth, porosity"
+
+params:
+  - k_soil
+  - vGn_alpha
+  - vGn_n
+  - qSurfScale
+  - rootingDepth
+  - theta_sat
+
+# ── Spatial weights ─────────────────────────────────────────────────────────
+# Keys use explicit MODIS class codes from hru_landcover in
+# optimization_config_bigBuckt.yaml or optimization_config_noXplicit.yaml:
+#   16 = barren/sparsely vegetated
+#    7 = open shrublands
+#    1 = evergreen needleleaf forest
+# Weights encode directional spatial information so M only carries magnitude:
+#   actual_param_hru_i = base_hru_i × weight_i × M
+#
+# trialParams.nc holds uniform domain-mean reference values for these params.
+# Weights scale each HRU relative to that reference:
+#   w < 1 → this HRU ends up below the domain mean
+#   w > 1 → this HRU ends up above the domain mean
+# The optimizer then finds M that scales the whole pattern up or down.
+#
+# Physical reasoning per parameter:
+#   rootingDepth:  alpine rock very shallow (<0.5m); evergreen forest deep (>1.5m)
+#   qSurfScale:    rocky alpine generates more saturation-excess runoff than shrub/forest
+#   k_soil:        rocky substrate lower than well-developed forest soils
+#   theta_sat:     rocky alpine has lower porosity than shrub/forest soils
+spatial_weights:
+  rootingDepth:
+    16: 0.40    # barren/subalpine rocky — 0.4 m reference depth
+    1:  1.50    # evergreen forest — 1.5 m reference depth
+    7:  1.00    # open shrublands — reference (= 1.0 m)
+  qSurfScale:
+    16: 1.60    # barren rocky areas → more saturation-excess runoff
+    1:  0.90    # evergreen forest infiltration buffers surface runoff
+    7:  0.70    # open shrublands — lower surface runoff than barren
+  k_soil:
+    16: 0.55    # barren rocky substrate → lower Ksat (~2.2e-5 m/s)
+    1:  1.50    # evergreen forest soils → higher Ksat (~6.0e-5 m/s)
+    7:  1.00    # open shrublands reference (~4.0e-5 m/s)
+  theta_sat:
+    16: 0.88    # barren rocky areas → lower porosity (~0.38)
+    1:  1.00    # evergreen forest loam reference (~0.43)
+    7:  1.12    # open shrublands → higher porosity (~0.48)
+
+anchor_variable: scalarTotalET    # per-HRU cumulative ET
+coherence_type: et
+
+# Higher anchor weight here because OpenET gridded estimates are spatially dense.
+w_anchor: 0.5
+
+multiplier_search_bounds:
+  k_soil:       [0.88, 1.22]   # prior best 0.33; sandy loam Ksat well-constrained
+  vGn_alpha:    [0.50, 1.5]   # prior best 0.50; air-entry pressure range narrow
+  vGn_n:        [0.67, 2.00]   # prior best 0.82; shape parameter moderately uncertain
+  qSurfScale:   [0.5, 5.0]   # prior best 0.72; saturation-excess runoff fraction
+  rootingDepth: [0.01, 3.]   # prior best 1.34; rooting depth plausible range
+
+max_iterations: 75
+popsize: 5            # pop = 5 × 6 params = 30 members
+tol: 0.005
+
+spinup_days: 365
+time_step_hours: 1.0

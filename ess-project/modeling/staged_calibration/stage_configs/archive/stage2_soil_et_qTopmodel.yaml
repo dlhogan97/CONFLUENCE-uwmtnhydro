@@ -1,0 +1,73 @@
+# ============================================================================
+# Stage 2: Soil Hydraulics and Evapotranspiration (qTopmodl variant)
+# ============================================================================
+# Goal: Correct infiltration partitioning, soil moisture dynamics, and ET
+#       seasonal cycle.  Snow/radiation parameters are FROZEN from stage 1.
+#
+# Differs from stage2_soil_et.yaml: k_soil is excluded here because under
+# qTopmodl it is tightly coupled to TOPMODEL transmissivity (T = k_soil ×
+# kAnisotropic × zScale_TOPMODEL) and must be calibrated jointly with the
+# other TOPMODEL parameters in stage 3.  Calibrating k_soil here first would
+# produce a compensating error that stage 3 cannot correct.
+#
+# Physical reasoning:
+#   vGn_alpha     — Van Genuchten alpha (stored negative in SUMMA).  Controls
+#                   air-entry pressure; −0.5 to −2.0 m⁻¹ typical for loam.
+#   vGn_n         — shape parameter; higher n → steeper drying curve → faster
+#                   drainage into the unsaturated zone.
+#   qSurfScale    — controls what fraction of the surface generates saturation
+#                   excess runoff.  Tightly coupled with rootingDepth.
+#   rootingDepth  — must not exceed soil column depth.  East River meadows:
+#                   ~0.5–1.5 m; forest: ~2–4 m.
+#   theta_sat     — porosity.  ROSETTA value for sandy loam ~0.41; allow ±30%.
+#
+# Constrained by:
+#   - ET from OpenET (monthly gridded estimates) — see observations/et_open_et.csv
+#   - Rising-limb shape from observed streamflow (if ET obs unavailable)
+# ============================================================================
+
+name: stage2_soil_et_qTopmodel
+description: "Soil hydraulics and ET (qTopmodl): Van Genuchten params, rooting depth, porosity — k_soil deferred to stage 3"
+
+params:
+  - vGn_alpha
+  - vGn_n
+  - qSurfScale
+  - rootingDepth
+  - theta_sat
+
+# ── Spatial weights ──────────────────────────────────────────────────────────
+# MODIS codes: 16 = barren/sparsely vegetated, 7 = open shrublands,
+#              1 = evergreen needleleaf forest
+spatial_weights:
+  rootingDepth:
+    16: 0.40    # barren/subalpine rocky — 0.4 m reference depth
+    1:  1.50    # evergreen forest — 1.5 m reference depth
+    7:  1.00    # open shrublands — reference (= 1.0 m)
+  qSurfScale:
+    16: 1.60    # barren rocky areas → more saturation-excess runoff
+    1:  0.90    # evergreen forest infiltration buffers surface runoff
+    7:  0.70    # open shrublands — lower surface runoff than barren
+  theta_sat:
+    16: 0.88    # barren rocky areas → lower porosity (~0.38)
+    1:  1.00    # evergreen forest loam reference (~0.43)
+    7:  1.12    # open shrublands → higher porosity (~0.48)
+
+anchor_variable: scalarTotalET    # per-HRU cumulative ET
+coherence_type: et
+
+w_anchor: 0.5
+
+multiplier_search_bounds:
+  vGn_alpha:    [0.25, 0.90]   # prior best 0.50; air-entry pressure range narrow
+  vGn_n:        [0.55, 1.20]   # prior best 0.82; shape parameter moderately uncertain
+  qSurfScale:   [0.35, 1.30]   # prior best 0.72; saturation-excess runoff fraction
+  rootingDepth: [0.80, 1.80]   # prior best 1.34; rooting depth plausible range
+  theta_sat:    [0.95, 1.55]   # prior best 1.30; porosity ±20% of best
+
+max_iterations: 75
+popsize: 5            # pop = 5 × 5 params = 25 members
+tol: 0.005
+
+spinup_days: 365
+time_step_hours: 1.0

@@ -153,25 +153,21 @@ FORCE_SHARED = {
 
 def build_param_tables(cfg, hru_info, bounds):
     """
-    For each param in PARAMS_TO_CALIBRATE:
-      - shared params → one value written to all HRU rows
-      - per-HRU params → default value from localParamInfo,
-        scaled by a simple elevation multiplier as a physically
-        motivated starting point. Replace with your lumped
-        calibrated value before running.
+        For each param in PARAMS_TO_CALIBRATE:
+            - shared params → one value written to all HRU rows
+            - per-HRU params → initialize with the localParamInfo default for
+                every HRU (uniform start state)
+
+        NOTE:
+            trialParams initialization is intentionally conservative here:
+            all HRU-dimension parameters start at SUMMA defaults from
+            localParamInfo.  Any explicit initialization from
+            calib_bounds_multiHRU.json can be applied later by the optimizer
+            via run.base_calib_bounds_json.
     """
     params_str = cfg.get('PARAMS_TO_CALIBRATE', '')
     param_names = [p.strip() for p in params_str.split(',') if p.strip()]
-    elevs    = hru_info['elevs']
-    ref_elev = hru_info['ref_elev']
     n_hru    = hru_info['n_hru']
-
-    # Elevation-scaling functions for per-HRU initial values.
-    # These are physically motivated starting points, not calibrated values.
-    # Replace starting_value with your lumped optimum when available.
-    def elev_scale(base, elev, ref, factor=0.3):
-        # positive factor → higher value at elevation
-        return base * (1. + factor * (elev - ref) / ref)
 
     shared_params  = {}
     per_hru_params = {}
@@ -185,32 +181,7 @@ def build_param_tables(cfg, hru_info, bounds):
         if name in FORCE_SHARED:
             shared_params[name] = default
         else:
-            # Generate per-HRU starting values scaled by elevation
-            if name == 'k_soil':
-                # higher k at elevation (coarser, shallower soils)
-                vals = [np.clip(elev_scale(default, e, ref_elev, +0.5),
-                                bounds[name]['min'], bounds[name]['max'])
-                        for e in elevs]
-            elif name == 'aquiferScaleFactor':
-                # smaller storage at elevation
-                vals = [np.clip(elev_scale(default, e, ref_elev, -0.4),
-                                bounds[name]['min'], bounds[name]['max'])
-                        for e in elevs]
-            elif name == 'aquiferBaseflowRate':
-                # faster drainage at elevation
-                vals = [np.clip(elev_scale(default, e, ref_elev, +0.4),
-                                bounds[name]['min'], bounds[name]['max'])
-                        for e in elevs]
-            elif name == 'qSurfScale':
-                # lower scale at elevation (more abrupt saturation)
-                vals = [np.clip(elev_scale(default, e, ref_elev, -0.3),
-                                bounds[name]['min'], bounds[name]['max'])
-                        for e in elevs]
-            else:
-                # no scaling guidance — use default for all HRUs
-                vals = [default] * n_hru
-
-            per_hru_params[name] = vals
+            per_hru_params[name] = [default] * n_hru
 
     return shared_params, per_hru_params
 
@@ -285,7 +256,7 @@ def make_cold_state(cfg, settings_dir, hru_info):
 # ═══════════════════════════════════════════════════════════════
 
 def make_trial_params(cfg, settings_dir, hru_info,
-                      shared_params, per_hru_params):
+                      shared_params, per_hru_params, bounds):
     hru_ids = hru_info['hru_ids']
     gru_ids = hru_info['gru_ids']
     n_hru   = hru_info['n_hru']
@@ -318,6 +289,12 @@ def make_trial_params(cfg, settings_dir, hru_info,
             v[:] = hru_ids
         elif name == 'gruId':
             v[:] = gru_ids
+        elif name in bounds and 'hru' in var.dimensions:
+            # Initialize all HRUs from localParamInfo defaults.
+            # This keeps trialParams physically grounded before any optional
+            # calib-bounds seeding is applied in the optimizer.
+            default = bounds[name]['default']
+            v[:] = [default] * n_hru
         elif name in all_params and 'hru' in var.dimensions:
             v[:] = all_params[name]
         elif 'hru' in var.dimensions:
@@ -390,7 +367,7 @@ if __name__ == '__main__':
     bounds       = parse_local_param_info(settings_dir, cfg)
     shared, per_hru = build_param_tables(cfg, hru_info, bounds)
     layer_depths = make_cold_state(cfg, settings_dir, hru_info)
-    make_trial_params(cfg, settings_dir, hru_info, shared, per_hru)
+    make_trial_params(cfg, settings_dir, hru_info, shared, per_hru, bounds)
     export_calib_bounds(cfg, settings_dir, hru_info, shared, per_hru, bounds)
 
     print('\nSummary:')

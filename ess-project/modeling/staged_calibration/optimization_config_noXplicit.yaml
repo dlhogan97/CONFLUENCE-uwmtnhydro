@@ -1,0 +1,134 @@
+# ============================================================================
+# optimization_config_noXplicit.yaml — Master config for staged distributed calibration
+# East River basin, Colorado (groundwatr = noXplict workflows)
+# ============================================================================
+
+# ---- Logging ---------------------------------------------------------------
+log_level: INFO   # DEBUG | INFO | WARNING
+
+# ---- Results output --------------------------------------------------------
+results_dir: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/optimization/staged_results
+
+# ---- Stage config files (run in order; each freezes params before next) ----
+stage_configs_dir: /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs
+
+stages:
+  - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs/stage1_snow.yaml
+  - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs/stage2_soil_et.yaml
+  # Groundwater stage intentionally omitted for noXplict workflows.
+  - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs/stage4_routing.yaml
+
+# ---- Run configuration -----------------------------------------------------
+run:
+  # SUMMA executable
+  summa_exe: summa
+
+  # Base SUMMA settings directory to copy for each trial.
+  # This should be a fully-preprocessed settings dir (fileManager.txt + all inputs).
+  summa_settings_dir: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/settings/SUMMA
+
+  # Base trialParams file with a-priori per-HRU parameter values.
+  # This is the file that multipliers are applied to.
+  base_trial_params_nc: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/settings/SUMMA/trialParams_multiHRU.nc
+
+  # Optional: seed initial parameter values from calib_bounds_multiHRU.json
+  # `value` fields before stage multipliers are applied.
+  # base_calib_bounds_json: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/settings/SUMMA/calib_bounds_multiHRU.json
+
+  # Filename of the trial params file as SUMMA expects it.
+  param_nc_filename: trialParams.nc
+
+  # SUMMA output file prefix — must match outFilePrefix in fileManager.txt.
+  # Update this when switching to a noXplict-specific settings snapshot.
+  output_prefix: noXplict_singleGRU_elevation5_light
+
+  # Timeout per SUMMA run in seconds (30 min = 1800 s).
+  timeout_sec: 1800
+
+  # Number of parallel workers for differential_evolution.
+  # Set to -1 to use all available CPUs, or 1 for sequential (easier debugging).
+  parallel_workers: 10
+
+  # Random seed for reproducibility.
+  random_seed: 42
+
+  # Spin-up days to trim from the start of each SUMMA output before computing metrics.
+  spinup_days: 365
+
+  # Calibration period for optimizer trials.
+  # SUMMA will be run from sim_start through sim_end for every trial.
+  # Use a period where all observations (SWE, ET, streamflow) overlap.
+  # The first spinup_days of output are discarded before computing metrics.
+  # Start 1 year before calib_start so spinup is covered (2013-10-01 + 365d → 2014-10-01).
+  sim_start: "2013-10-01 00:00"
+  sim_end:   "2018-09-30 23:00"
+
+  # SUMMA output time step in hours.
+  time_step_hours: 1.0
+
+  # Basin area in m² — used to convert SUMMA's averageRoutedRunoff (m/s, depth per
+  # unit area) to volumetric discharge (m³/s) for comparison with streamflow obs.
+  # Value from attributes.nc HRUarea sum: 748,251,736 m² ≈ 748 km².
+  basin_area_m2: 748251736.0
+
+  # ---------------------------------------------------------------------------
+  # HRU spatial metadata — elevation-only discretization (5 HRUs)
+  # ---------------------------------------------------------------------------
+  # HRU ordering: highest elevation first (elevClass 5 → 1).
+  # Keys are zero-based HRU indices as returned by read_hru_output.
+  # elevClass: 5=highest (~3994m), 4(~3696m), 3(~3364m), 2(~3010m), 1=lowest(~2705m)
+
+  hru_elevations:
+    0: 3994.0   # elevClass 5 — highest
+    1: 3696.0   # elevClass 4
+    2: 3364.0   # elevClass 3
+    3: 3010.0   # elevClass 2  ← closest to Butte SNOTEL (2930m)
+    4: 2705.0   # elevClass 1 — lowest
+
+  # No aspect discretization for the 5-HRU elevation-only domain
+  hru_aspects: {}
+
+  # HRU land cover by elevation band (explicit MODIS classes)
+  # 16=barren/sparsely vegetated, 7=open shrublands, 1=evergreen needleleaf forest
+  hru_landcover:
+    0: 16    # highest — barren/sparsely vegetated
+    1: 7     # upper subalpine — open shrublands
+    2: 1     # mid-elevation — evergreen needleleaf forest
+    3: 1     # lower forest — evergreen needleleaf forest
+    4: 7     # valley/bottom bands represented as open shrublands
+
+  # SNOTEL anchor sites for snow stage.
+  # Each site anchors the HRU whose elevation is closest to the station.
+  # KGE is computed per site then averaged for the anchor cost.
+  # Butte (SNTL:CO:380) = 2930 m → closest HRU at 3010 m
+  # Schofield Pass (SNTL:CO:737) = 3260 m → closest HRU at 3364 m
+  snotel_sites:
+    - elevation: 2930.0
+      obs_path: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/observations/formatted/snotel_swe.csv
+    - elevation: 3260.0
+      obs_path: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/observations/formatted/schofield_swe.csv
+
+  # Path to observed streamflow for baseflow and routing stages.
+  # Columns: date (YYYY-MM-DD), value (m³/s)
+  streamflow_obs_path: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/observations/formatted/streamflow_obs.csv
+
+# ============================================================================
+# Observation file format notes
+# ============================================================================
+# All CSVs must have at minimum two columns:
+#   date   — YYYY-MM-DD format
+#   value  — numeric, SI units
+#
+# observations/snotel_swe.csv    — daily SWE in mm (SNOTEL Butte or Schofield Pass)
+# observations/streamflow_obs.csv — daily Q in m³/s (USGS 09112500 East River at Almont)
+# observations/et_open_et.csv    — monthly ET in mm/month (OpenET gridded product)
+#
+# Download scripts:
+#   SNOTEL:     curl "https://wcc.sc.egov.usda.gov/reportGenerator/view_csv/customSingleStationReport/..."
+#   USGS:       python -c "import dataretrieval.nwis as nwis; ..."
+#   OpenET:     via OpenET API or Earth Engine
+
+observations:
+  swe_obs_path: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/observations/formatted/snotel_swe.csv
+  et_obs_path: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/observations/formatted/et_obs.csv
+  streamflow_obs_path: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/observations/formatted/streamflow_obs.csv

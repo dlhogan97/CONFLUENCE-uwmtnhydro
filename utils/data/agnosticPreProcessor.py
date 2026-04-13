@@ -1542,8 +1542,9 @@ class forcingResampler:
                 gdf_updated[new_hru_field] = range(1, len(gdf_updated) + 1)
                 actual_field = new_hru_field
             
-            # Create output path for the fixed shapefile
-            output_path = shapefile_path.parent / f"{shapefile_path.stem}_unique_ids.shp"
+            # Create process-unique output path to avoid concurrent worker races
+            # when multiple EASYMORE workers try to write the same shapefile.
+            output_path = shapefile_path.parent / f"{shapefile_path.stem}_unique_ids_{os.getpid()}.shp"
             
             # Save the updated shapefile
             gdf_updated.to_file(output_path)

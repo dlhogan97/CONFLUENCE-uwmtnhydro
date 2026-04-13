@@ -1,6 +1,6 @@
 # ============================================================================
-# optimization_config.yaml — Master config for staged distributed calibration
-# East River basin, Colorado — SUMMA bigBucket + drainage
+# optimization_config_bigBuckt.yaml — Master config for staged distributed calibration
+# East River basin, Colorado (groundwatr = bigBuckt workflows)
 # ============================================================================
 
 # ---- Logging ---------------------------------------------------------------
@@ -10,13 +10,15 @@ log_level: INFO   # DEBUG | INFO | WARNING
 results_dir: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/optimization/staged_results
 
 # ---- Stage config files (run in order; each freezes params before next) ----
-stage_configs_dir: /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/optimization/stage_configs
+stage_configs_dir: /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs
 
 stages:
-  - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/optimization/stage_configs/stage1_snow.yaml
-  - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/optimization/stage_configs/stage2_soil_et.yaml
-  - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/optimization/stage_configs/stage3_groundwater.yaml
-  - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/optimization/stage_configs/stage4_routing.yaml
+  - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs/stage1_snow.yaml
+  - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs/stage2_et.yaml
+  - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs/stage3_soil.yaml
+  - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs/stage3_groundwater.yaml
+  # Comment out the line below to skip routing calibration:
+  - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs/stage4_routing.yaml
 
 # ---- Run configuration -----------------------------------------------------
 run:
@@ -27,22 +29,26 @@ run:
   # This should be a fully-preprocessed settings dir (fileManager.txt + all inputs).
   summa_settings_dir: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/settings/SUMMA
 
-  # Base trialParams.nc with a-priori per-HRU parameter values.
+  # Base trialParams file with a-priori per-HRU parameter values.
   # This is the file that multipliers are applied to.
   base_trial_params_nc: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/settings/SUMMA/trialParams.nc
+
+  # Optional: seed initial parameter values from calib_bounds_multiHRU.json
+  # `value` fields before stage multipliers are applied.
+  # base_calib_bounds_json: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/settings/SUMMA/calib_bounds_multiHRU.json
 
   # Filename of the trial params file as SUMMA expects it.
   param_nc_filename: trialParams.nc
 
   # SUMMA output file prefix — must match outFilePrefix in fileManager.txt.
-  output_prefix: bigBuckt_singleGRU_elevation5_light
+  output_prefix: bigBuckt_singleGRU_elevations
 
   # Timeout per SUMMA run in seconds (30 min = 1800 s).
   timeout_sec: 1800
 
   # Number of parallel workers for differential_evolution.
   # Set to -1 to use all available CPUs, or 1 for sequential (easier debugging).
-  parallel_workers: 12
+  parallel_workers: 10
 
   # Random seed for reproducibility.
   random_seed: 42
@@ -55,11 +61,16 @@ run:
   # Use a period where all observations (SWE, ET, streamflow) overlap.
   # The first spinup_days of output are discarded before computing metrics.
   # Start 1 year before calib_start so spinup is covered (2013-10-01 + 365d → 2014-10-01).
-  sim_start: "2013-10-01 00:00"
-  sim_end:   "2018-09-30 23:00"
+  sim_start: "2007-10-01 00:00"
+  sim_end:   "2012-09-30 23:00"
 
   # SUMMA output time step in hours.
   time_step_hours: 1.0
+
+  # Basin area in m² — used to convert SUMMA's averageRoutedRunoff (m/s, depth per
+  # unit area) to volumetric discharge (m³/s) for comparison with streamflow obs.
+  # Value from attributes.nc HRUarea sum: 748,251,736 m² ≈ 748 km².
+  basin_area_m2: 748251736.0
 
   # ---------------------------------------------------------------------------
   # HRU spatial metadata — elevation-only discretization (5 HRUs)
@@ -78,13 +89,14 @@ run:
   # No aspect discretization for the 5-HRU elevation-only domain
   hru_aspects: {}
 
-  # HRU land cover by elevation band
+  # HRU land cover by elevation band (explicit MODIS classes)
+  # 16=barren/sparsely vegetated, 7=open shrublands, 1=evergreen needleleaf forest
   hru_landcover:
-    0: "barren"     # highest — alpine
-    1: "barren"     # upper subalpine
-    2: "forest"     # mid-elevation forest
-    3: "forest"     # lower forest
-    4: "grassland"  # valley bottom
+    0: 16    # highest — barren/sparsely vegetated
+    1: 7     # upper subalpine — open shrublands
+    2: 1     # mid-elevation — evergreen needleleaf forest
+    3: 1     # lower forest — evergreen needleleaf forest
+    4: 7     # valley/bottom bands represented as open shrublands
 
   # SNOTEL anchor sites for snow stage.
   # Each site anchors the HRU whose elevation is closest to the station.
@@ -102,15 +114,27 @@ run:
   streamflow_obs_path: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/observations/formatted/streamflow_obs.csv
 
 # ============================================================================
+# Observations — these override any anchor_obs_path in the stage YAML files,
+# so switching basins only requires editing this block (+ run: section above).
+# ============================================================================
+observations:
+  # Daily SWE in mm — fallback if no snotel_sites list above.
+  swe_obs_path: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/observations/formatted/snotel_swe.csv
+  # Monthly ET in mm/month (OpenET gridded product)
+  et_obs_path: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/observations/formatted/et_obs.csv
+  # Daily streamflow in m³/s — used by stage 3 (baseflow) and stage 4 (routing)
+  streamflow_obs_path: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/observations/formatted/streamflow_obs.csv
+
+# ============================================================================
 # Observation file format notes
 # ============================================================================
 # All CSVs must have at minimum two columns:
 #   date   — YYYY-MM-DD format
 #   value  — numeric, SI units
 #
-# observations/snotel_swe.csv    — daily SWE in mm (SNOTEL Butte or Schofield Pass)
+# observations/snotel_swe.csv     — daily SWE in mm (SNOTEL Butte or Schofield Pass)
 # observations/streamflow_obs.csv — daily Q in m³/s (USGS 09112500 East River at Almont)
-# observations/et_open_et.csv    — monthly ET in mm/month (OpenET gridded product)
+# observations/et_obs.csv         — monthly ET in mm/month (OpenET gridded product)
 #
 # Download scripts:
 #   SNOTEL:     curl "https://wcc.sc.egov.usda.gov/reportGenerator/view_csv/customSingleStationReport/..."

@@ -204,7 +204,7 @@ Default weights: `w_anchor=0.2, w_coherence=0.8`. Increase coherence weight if y
 ### Directory structure
 ```
 CONFLUENCE-uwmtnhydro/
-├── optimization/
+├── ess-project/modeling/staged_calibration/
 │   ├── staged_optimizer.py          # Main orchestration script
 │   ├── objective_functions.py       # Anchor + coherence metrics
 │   ├── parameter_manager.py         # Read/write trialParam.nc with multipliers
@@ -222,7 +222,8 @@ CONFLUENCE-uwmtnhydro/
 │   │   ├── stage1_best_params.json
 │   │   ├── stage1_optimization_log.csv
 │   │   └── ...
-│   └── optimization_config.yaml     # Master config
+│   ├── optimization_config_bigBuckt.yaml   # Explicit bigBuckt workflow config
+│   └── optimization_config_noXplicit.yaml  # Explicit noXplict workflow config
 ```
 
 ### Core modules to implement

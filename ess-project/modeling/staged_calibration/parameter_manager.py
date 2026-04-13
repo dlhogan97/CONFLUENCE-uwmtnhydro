@@ -20,6 +20,7 @@ Usage
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -32,45 +33,37 @@ logger = logging.getLogger(__name__)
 # Physical bounds applied *after* multiplication to prevent non-physical values.
 # vGn_alpha is stored negative in SUMMA — bounds are negative.
 PHYSICAL_BOUNDS: Dict[str, tuple] = {
-    "albedoDecayRate":           (1e5,  5e6),
-    "fixedThermalCond_snow":     (0.05, 1.0),
-    "Frad_direct":               (0.2,  0.95),
-    "Frad_vis":                  (0.2,  0.95),
-    "k_soil":                    (1e-7, 1e-2),
-    "vGn_alpha":                 (-3.0, -0.01),
-    "vGn_n":                     (1.01, 4.0),
-    "qSurfScale":                (1.0,  50.0),
-    "rootingDepth":              (0.1,  8.0),
-    "theta_sat":                 (0.3,  0.7),
-    "theta_res":                 (0.01, 0.25),
-    "summerLAI":                 (0.5,  10.0),
-    "aquiferScaleFactor":        (0.01, 100.0),
-    "aquiferBaseflowExp":        (0.5,  10.0),
-    "aquiferBaseflowRate":       (1e-10, 1e-4),
-    "routingGammaShape":         (1.0,  10.0),
-    "routingGammaScale":         (500.0, 172800.0),
-    "frozenPrecipMultip":        (0.5,  1.5),
+    "albedoDecayRate":               (1e5,  5e6),
+    "k_soil":                        (1e-7, 1e-2),
+    "vGn_alpha":                     (-3.0, -0.01),
+    "vGn_n":                         (1.01, 4.0),
+    "qSurfScale":                    (1.0,  50.0),
+    "rootingDepth":                  (0.1,  8.0),
+    "theta_sat":                     (0.3,  0.6),
+    "aquiferScaleFactor":            (0.01, 100.0),
+    "aquiferBaseflowExp":            (0.5,  10.0),
+    "aquiferBaseflowRate":           (1e-10, 1e-3),
+    # Routing (GRU-level)
+    "routingGammaShape":             (1.0,  10.0),
+    "routingGammaScale":             (500.0, 172800.0),
+    # "frozenPrecipMultip":            (0.80,  1.20), --- IGNORE ---
 }
 
 # Default multiplier search bounds for differential_evolution
 MULTIPLIER_BOUNDS: Dict[str, tuple] = {
-    "albedoDecayRate":       (0.1, 3.0),
-    "fixedThermalCond_snow": (0.5, 2.0),
-    "Frad_direct":           (0.5, 1.5),
-    "Frad_vis":              (0.5, 1.5),
-    "k_soil":                (0.1, 5.0),
-    "vGn_alpha":             (0.5, 2.0),
-    "vGn_n":                 (0.5, 2.0),
-    "qSurfScale":            (0.5, 3.0),
-    "rootingDepth":          (0.5, 2.0),
-    "theta_sat":             (0.5, 1.5),
-    "theta_res":             (0.5, 2.0),
-    "summerLAI":             (0.5, 2.0),
-    "aquiferScaleFactor":    (0.1, 5.0),
-    "aquiferBaseflowExp":    (0.5, 3.0),
-    "aquiferBaseflowRate":   (0.1, 5.0),
-    "routingGammaShape":     (0.5, 3.0),
-    "routingGammaScale":     (0.5, 3.0),
+    "albedoDecayRate":           (0.1,  10.0),
+    "k_soil":                    (0.1,  5.0),
+    "vGn_alpha":                 (0.5,  2.0),
+    "vGn_n":                     (0.5,  2.0),
+    "qSurfScale":                (0.5,  3.0),
+    "rootingDepth":              (0.5,  2.0),
+    "theta_sat":                 (0.5,  1.5),
+    "aquiferScaleFactor":        (0.1,  5.0),
+    "aquiferBaseflowExp":        (0.5,  3.0),
+    "aquiferBaseflowRate":       (0.1,  5.0),
+    "routingGammaShape":         (0.5,  3.0),
+    "routingGammaScale":         (0.5,  3.0),
+    # "frozenPrecipMultip":        (0.80, 1.20), --- IGNORE ---
 }
 
 
@@ -93,6 +86,7 @@ class ParameterManager:
         self,
         multipliers: Dict[str, float],
         param_names: Optional[List[str]] = None,
+        spatial_weights: Optional[Dict[str, np.ndarray]] = None,
     ) -> xr.Dataset:
         """Return a copy of the base dataset with multipliers applied and bounds clamped.
 
@@ -102,6 +96,16 @@ class ParameterManager:
             Mapping of param_name → scalar multiplier value.
         param_names:
             Subset of params to modify.  Defaults to all keys in *multipliers*.
+        spatial_weights:
+            Optional per-HRU weight arrays: {param_name: np.ndarray of shape (n_hru,)}.
+            When provided for a parameter, the effective multiplication is::
+
+                param_hru_i = base_hru_i × spatial_weight_i × M
+
+            This lets the YAML config carry directional spatial information (some HRUs
+            above 1, some below 1) while M carries only the global magnitude.
+            Spatial weights are *not* applied to GRU-dimension parameters
+            (e.g. routingGammaShape, basin__aquiferScaleFactor).
         """
         ds = self._base_ds.copy(deep=True)
         names = param_names if param_names is not None else list(multipliers.keys())
@@ -113,10 +117,19 @@ class ParameterManager:
                 continue
 
             original = ds[name].values.copy()
-            scaled = original * float(mult)
+
+            # Apply per-HRU spatial weights only for HRU-dimension variables.
+            # GRU-level params (routing, basin aquifer) get a plain scalar multiply.
+            is_hru_var = "hru" in ds[name].dims
+            if spatial_weights and name in spatial_weights and is_hru_var:
+                w = spatial_weights[name]  # shape (n_hru,)
+                scaled = original * w * float(mult)
+                logger.debug("%s: applying spatial weights %s × M=%.4f", name, list(w), mult)
+            else:
+                scaled = original * float(mult)
+
             clamped = self._clamp(name, scaled)
 
-            # Warn if >10% of values hit a physical bound
             n_clamp = np.sum(clamped != scaled)
             if n_clamp > 0:
                 frac = n_clamp / clamped.size
@@ -140,12 +153,17 @@ class ParameterManager:
         self,
         best_multipliers: Dict[str, float],
         param_names: List[str],
+        spatial_weights: Optional[Dict[str, np.ndarray]] = None,
     ) -> "ParameterManager":
-        """Permanently bake best multipliers into the base dataset for the next stage.
+        """Permanently bake best multipliers (and spatial weights) into the base dataset.
+
+        After freezing, the stored base values reflect ``base × weight × M`` so the
+        next stage inherits the correct spatially-differentiated parameter values.
 
         Returns self so stages can chain:  pm = pm.freeze_params(...)
         """
-        new_base = self.apply_multipliers(best_multipliers, param_names)
+        new_base = self.apply_multipliers(best_multipliers, param_names,
+                                          spatial_weights=spatial_weights)
         self._base_ds = new_base
         logger.info(
             "Froze %d parameters into base: %s",
@@ -156,6 +174,51 @@ class ParameterManager:
     def save_base(self, path: str | Path) -> None:
         """Save the current (possibly frozen) base dataset to disk."""
         self.write_trial_params(self._base_ds, path)
+
+    def apply_calib_bounds_values(self, calib_bounds_json: str | Path) -> "ParameterManager":
+        """Overwrite base parameters using `value` fields from calib-bounds JSON.
+
+        This is optional and intended for explicit initialization control.
+        Expected schema follows distributed_settings_builder output:
+        - shared: [{param, value, min, max}, ...]
+        - per_hru: [{param, hru_index, value, min, max}, ...]
+        """
+        path = Path(calib_bounds_json)
+        if not path.exists():
+            raise FileNotFoundError(f"Calibration bounds JSON not found: {path}")
+
+        with path.open() as fh:
+            payload = json.load(fh)
+
+        ds = self._base_ds.copy(deep=True)
+        n_updates = 0
+
+        for row in payload.get("shared", []):
+            name = row.get("param")
+            if not name or name not in ds:
+                continue
+            value = float(row.get("value"))
+            arr = np.asarray(ds[name].values)
+            arr[...] = value
+            ds[name].values[:] = self._clamp(name, arr)
+            n_updates += arr.size
+
+        for row in payload.get("per_hru", []):
+            name = row.get("param")
+            if not name or name not in ds or "hru" not in ds[name].dims:
+                continue
+            hru_index = int(row.get("hru_index"))
+            if hru_index < 0 or hru_index >= ds.sizes.get("hru", 0):
+                continue
+            value = float(row.get("value"))
+            arr = np.asarray(ds[name].values).copy()
+            arr[hru_index] = value
+            ds[name].values[:] = self._clamp(name, arr)
+            n_updates += 1
+
+        self._base_ds = ds
+        logger.info("Applied %d calibration-bound initial values from %s", n_updates, path)
+        return self
 
     @property
     def base_dataset(self) -> xr.Dataset:

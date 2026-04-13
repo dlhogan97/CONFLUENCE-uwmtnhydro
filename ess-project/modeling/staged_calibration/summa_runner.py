@@ -258,6 +258,7 @@ def patch_file_manager(
     file_manager_name: str = "fileManager.txt",
     sim_start: Optional[str] = None,
     sim_end: Optional[str] = None,
+    out_file_prefix: Optional[str] = None,
 ) -> Path:
     """Update paths and optionally simulation times in fileManager.txt.
 
@@ -268,6 +269,9 @@ def patch_file_manager(
     sim_start, sim_end:
         If provided, override simStartTime/simEndTime in fileManager.txt.
         Format: 'YYYY-MM-DD HH:MM' (SUMMA expects quoted strings in the file).
+    out_file_prefix:
+        If provided, override outFilePrefix so SUMMA output filenames match
+        what the optimizer expects when globbing for results.
 
     Returns the path to the patched fileManager.txt.
     """
@@ -291,10 +295,13 @@ def patch_file_manager(
         elif stripped.startswith("simEndTime") and sim_end is not None:
             key_part = line[: line.index("simEndTime") + len("simEndTime")]
             new_lines.append(f"{key_part}    '{sim_end}'")
+        elif stripped.startswith("outFilePrefix") and out_file_prefix is not None:
+            key_part = line[: line.index("outFilePrefix") + len("outFilePrefix")]
+            new_lines.append(f"{key_part}    '{out_file_prefix}'")
         else:
             new_lines.append(line)
 
     fm_path.write_text("\n".join(new_lines) + "\n")
-    logger.debug("Patched fileManager.txt → outputPath=%s  sim=%s→%s",
-                 output_dir, sim_start, sim_end)
+    logger.debug("Patched fileManager.txt → outputPath=%s  prefix=%s  sim=%s→%s",
+                 output_dir, out_file_prefix, sim_start, sim_end)
     return fm_path

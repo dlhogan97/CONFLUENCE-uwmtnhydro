@@ -75,7 +75,7 @@ def _peak_and_meltout(swe: np.ndarray, meltout_threshold_mm: float = 10.0) -> Tu
 # Baseflow separation (Eckhardt digital filter)
 # ---------------------------------------------------------------------------
 
-def eckhardt_baseflow(q: np.ndarray, bfi_max: float = 0.8, a: float = 0.98) -> np.ndarray:
+def eckhardt_baseflow(q: np.ndarray, bfi_max: float = 0.95, a: float = 0.98) -> np.ndarray:
     """Two-parameter digital Eckhardt baseflow filter.
 
     Parameters
@@ -180,15 +180,67 @@ def compute_anchor_baseflow(
 
 
 # ---------------------------------------------------------------------------
+# Generic metric dispatcher
+# ---------------------------------------------------------------------------
+
+def compute_anchor_generic(
+    sim: np.ndarray,
+    obs: np.ndarray,
+    metric: str = "KGE",
+) -> float:
+    """Compute anchor cost using the named metric.
+
+    Parameters
+    ----------
+    sim, obs : arrays of simulated and observed values (same units, aligned).
+    metric   : one of "KGE", "KGE_log", "NSE", "NRMSE".
+
+    Returns a cost value (lower = better, 0 = perfect fit).
+    """
+    m = metric.upper().replace("-", "_")
+    if m == "KGE":
+        return kge(sim, obs)
+    elif m == "KGE_LOG":
+        valid = np.isfinite(obs) & (obs > 0)
+        if valid.sum() < 10:
+            return 1.0
+        eps = 1e-3 * float(np.nanmean(obs[valid]))
+        return kge(np.log(sim + eps), np.log(obs + eps))
+    elif m == "NSE":
+        return nse(sim, obs)
+    elif m == "NRMSE":
+        return nrmse(sim, obs)
+    else:
+        raise ValueError(
+            f"Unknown anchor_metric {metric!r}. "
+            "Choose from: KGE, KGE_log, NSE, NRMSE"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Stage 3: Soil / runoff anchor metric
+# ---------------------------------------------------------------------------
+
+def compute_anchor_runoff(
+    sim_q: np.ndarray,
+    obs_q: np.ndarray,
+    metric: str = "KGE",
+) -> float:
+    """Anchor cost for soil stage — total streamflow using the named metric."""
+    return compute_anchor_generic(sim_q, obs_q, metric)
+
+
+# ---------------------------------------------------------------------------
 # Stage 4: Routing anchor metric
 # ---------------------------------------------------------------------------
 
 def compute_anchor_streamflow(
     sim_q: np.ndarray,
     obs_q: np.ndarray,
+    metric: str = "KGE",
 ) -> float:
-    """Anchor cost for routing stage — full hydrograph KGE."""
-    return kge(sim_q, obs_q)
+    """Anchor cost for routing stage — full hydrograph."""
+    return compute_anchor_generic(sim_q, obs_q, metric)
 
 
 # ---------------------------------------------------------------------------

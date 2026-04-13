@@ -366,6 +366,13 @@ class ModelManager:
         """
         Enhanced version that properly handles FUSE distributed modes.
         """
+        routing_model = str(self.config.get('ROUTING_MODEL', '')).strip().lower()
+        if self.config.get('SKIP_MIZUROUTE_ROUTING', False):
+            return False
+
+        if routing_model in {'none', 'off', 'false', 'linear_reservoir'}:
+            return False
+
         # Check for FUSE distributed modes
         models = self.config.get('HYDROLOGICAL_MODEL', '').split(',')
         if 'FUSE' in [m.strip() for m in models]:

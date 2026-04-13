@@ -74,7 +74,7 @@ EASYMORE_BATCH_SIZE: 12
 # ============================================================================
 HYDROLOGICAL_MODEL: SUMMA
 ROUTING_MODEL: linear_reservoir
-ROUTING_DELINEATION: distributed
+ROUTING_DELINEATION: lumped
 SUMMA_RUNOFF_VAR: averageRoutedRunoff
 
 # Route SUMMA runoff in-memory using the two-reservoir linear routing option.
@@ -384,8 +384,15 @@ OUTPUT_DIR: default
 CATCHMENT_PLOT_DIR: default
 SOIL_CLASS_PATH: default
 SOIL_CLASS_NAME: default
-LAND_CLASS_PATH: default
-LAND_CLASS_NAME: default
+LAND_CLASS_PATH: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/attributes/landclass
+LAND_CLASS_NAME: domain_East_River_distributed_NLCD_land_class.tif
+LAND_CLASS_SOURCE: NLCD
+LAND_CLASS_REMAP_TO_MODIS: true
+LAND_CLASS_REMAP_LOOKUP_PATH: default
+LAND_CLASS_REMAP_LOOKUP_EXPORT: default
+LAND_CLASS_REMAP_OUTPUT_NAME: default
+LAND_CLASS_REMAP_OVERWRITE: true
+LAND_CLASS_REMAP_NODATA: -9999
 RADIATION_PATH: default
 DATATOOL_PATH: /home/dlhogan/tools/src/datatool
 GISTOOL_PATH: /home/dlhogan/tools/src/gistool

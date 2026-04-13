@@ -1,0 +1,80 @@
+# ============================================================================
+# optimization_config_qTopmodel.yaml — Staged calibration for qTopmodl runs
+# East River basin, Colorado (groundwatr = qTopmodl)
+#
+# Starts from stage 2 — snow parameters from a prior bigBuckt/full run are
+# reused as-is via base_trial_params_nc pointing to stage1_snow_frozen_params.nc.
+# Snow params are well-constrained and do not change with groundwater scheme.
+#
+# Stage differences vs bigBuckt:
+#   Stage 2: stage2_soil_et_qTopmodel.yaml    — k_soil excluded (deferred to stage 3)
+#   Stage 3: stage3_groundwater_qTopmodel.yaml — k_soil, kAnisotropic,
+#                                                fieldCapacity, zScale_TOPMODEL
+#
+# Requires modelDecisions.txt to have:  groundwatr  qTopmodl
+# Update output_prefix to match outFilePrefix in fileManager.txt for this run.
+# ============================================================================
+
+log_level: INFO
+
+results_dir: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/optimization/staged_results_qTopmodel
+
+stage_configs_dir: /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs
+
+# Stage 1 (snow) is skipped — reusing frozen snow params from a prior run.
+stages:
+  - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs/stage2_soil_et_qTopmodel.yaml
+  - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs/stage3_groundwater_qTopmodel.yaml
+  - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs/stage4_routing.yaml
+
+run:
+  summa_exe: summa
+
+  summa_settings_dir: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/settings/SUMMA
+
+  # Snow params already baked in — start each trial from these frozen values.
+  # Update this path if you have a newer stage1 run to draw from.
+  base_trial_params_nc: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/optimization/staged_results/stage1_snow_frozen_params.nc
+
+  param_nc_filename: trialParams.nc
+
+  # Update to match outFilePrefix in fileManager.txt for the qTopmodel settings dir.
+  output_prefix: qTopmodel_singleGRU_elevation5_light
+  timeout_sec: 1800
+  parallel_workers: 12
+  random_seed: 42
+  spinup_days: 365
+  sim_start: "2013-10-01 00:00"
+  sim_end:   "2018-09-30 23:00"
+  time_step_hours: 1.0
+
+  basin_area_m2: 748251736.0
+
+  hru_elevations:
+    0: 3994.0
+    1: 3696.0
+    2: 3364.0
+    3: 3010.0
+    4: 2705.0
+
+  hru_aspects: {}
+
+  hru_landcover:
+    0: 16
+    1: 7
+    2: 1
+    3: 1
+    4: 7
+
+  snotel_sites:
+    - elevation: 2930.0
+      obs_path: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/observations/formatted/snotel_swe.csv
+    - elevation: 3260.0
+      obs_path: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/observations/formatted/schofield_swe.csv
+
+  streamflow_obs_path: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/observations/formatted/streamflow_obs.csv
+
+observations:
+  swe_obs_path: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/observations/formatted/snotel_swe.csv
+  et_obs_path: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/observations/formatted/et_obs.csv
+  streamflow_obs_path: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/observations/formatted/streamflow_obs.csv

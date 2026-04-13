@@ -2,7 +2,7 @@
 # Stage 4: Hillslope Routing (distributed mode only)
 # ============================================================================
 # Goal: Match routed hydrograph shape, peak timing, and volume at the outlet.
-#       All process parameters are FROZEN from stages 1–3.
+#       All non-routing parameters are frozen from previous stages.
 #
 # Physical reasoning:
 #   routingGammaShape — shape parameter of the Gamma distribution for the
@@ -30,18 +30,20 @@ params:
   - routingGammaScale
 
 anchor_variable: averageRoutedRunoff   # basin-aggregated routed runoff
-anchor_obs_path: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/observations/formatted/streamflow_obs.csv
 coherence_type: streamflow             # no HRU coherence for routing; pure anchor
 
 # Routing is pure anchor — there's no meaningful coherence metric across HRUs.
 w_anchor: 0.9
 
+# Base values in trialParams.nc (gru dim):
+#   routingGammaShape = 2.5  →  search range [0.5×2.5=1.25, 3×2.5=7.5] ✓ within [1,10]
+#   routingGammaScale = 46000 s →  search range [0.3×46k=13.8k, 3.75×46k=172.5k s] ✓ within [500,172800]
 multiplier_search_bounds:
-  routingGammaShape: [0.3, 3.0]
-  routingGammaScale: [0.2, 5.0]
+  routingGammaShape: [0.25,  3.0]
+  routingGammaScale: [0.3,  3.5]   # upper limit keeps scale below physical max (172800 s)
 
-max_iterations: 100
-popsize: 10           # pop = 10 × 2 = 20 members (small; only 2 params)
+max_iterations: 75
+popsize: 5            # pop = 5 × 2 = 10 members; routing is fast, tight search
 tol: 0.002
 
 spinup_days: 365
