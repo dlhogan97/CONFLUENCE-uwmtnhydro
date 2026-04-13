@@ -62,7 +62,7 @@ spatial_weights:
     1:  0.90    # forest — infiltration buffers surface runoff
     7:  0.70    # shrublands — lower surface runoff than barren
 
-anchor_variable: averageRoutedRunoff   # basin total routed runoff → streamflow
+anchor_variable: averageInstantRunoff   # basin total routed runoff → streamflow
 coherence_type: runoff                 # compares total Q to streamflow obs
 
 # anchor_metric: metric used to score simulated vs observed streamflow.
