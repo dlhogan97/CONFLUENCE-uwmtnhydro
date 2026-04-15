@@ -47,7 +47,7 @@ import yaml
 from scipy.optimize import differential_evolution
 
 from parameter_manager import ParameterManager, MULTIPLIER_BOUNDS
-from summa_runner import run_summa, read_hru_output, read_basin_output, setup_trial_run_dir, patch_file_manager
+from summa_runner import run_summa, read_hru_output, read_basin_output, setup_trial_run_dir, patch_file_manager, patch_model_decisions
 from objective_functions import (
     compute_anchor_snow,
     compute_anchor_et,
@@ -305,6 +305,9 @@ class TrialEvaluator:
             sim_end=self.run_cfg.get("sim_end"),
             out_file_prefix=self.run_cfg.get("output_prefix"),
         )
+        model_decisions = self.run_cfg.get("model_decisions_override", {})
+        if model_decisions:
+            patch_model_decisions(settings_dir, model_decisions)
         Path(tmp_path).unlink(missing_ok=True)
 
         # Run SUMMA

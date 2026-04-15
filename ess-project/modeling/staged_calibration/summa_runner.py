@@ -305,3 +305,44 @@ def patch_file_manager(
     logger.debug("Patched fileManager.txt → outputPath=%s  prefix=%s  sim=%s→%s",
                  output_dir, out_file_prefix, sim_start, sim_end)
     return fm_path
+
+
+def patch_model_decisions(
+    settings_dir: Path,
+    overrides: dict,
+    file_name: str = "modelDecisions.txt",
+) -> None:
+    """Override specific decision options in a trial's modelDecisions.txt.
+
+    Parameters
+    ----------
+    settings_dir : Path to the trial's settings directory.
+    overrides    : Mapping of decision name → value string,
+                   e.g. {"groundwatr": "noXplicit"}.
+    """
+    if not overrides:
+        return
+    md_path = settings_dir / file_name
+    if not md_path.exists():
+        raise FileNotFoundError(f"modelDecisions.txt not found at {md_path}")
+
+    lines = md_path.read_text().splitlines()
+    new_lines = []
+    for line in lines:
+        stripped = line.strip()
+        replaced = False
+        for key, value in overrides.items():
+            if stripped.startswith(key) and (len(stripped) == len(key) or not stripped[len(key)].isalnum()):
+                # Preserve the key and comment, replace only the value field
+                # Format: "key     value     ! comment"
+                parts = line.split("!")
+                comment = "!" + parts[1] if len(parts) > 1 else ""
+                indent = line[: len(line) - len(line.lstrip())]
+                new_lines.append(f"{indent}{key:<15}{value:<26}{comment}".rstrip())
+                replaced = True
+                break
+        if not replaced:
+            new_lines.append(line)
+
+    md_path.write_text("\n".join(new_lines) + "\n")
+    logger.debug("Patched modelDecisions.txt: %s", overrides)

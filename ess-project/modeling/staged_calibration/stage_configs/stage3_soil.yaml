@@ -54,13 +54,13 @@ spatial_weights:
     1:  0.80    # forest loam — lower air-entry (wetter longer)
     7:  1.00    # shrublands — reference
   vGn_n:
-    16: 1.20    # rocky → sharper retention curve
-    1:  0.85    # forest clay-loam → gentler curve
+    16: 3.00    # rocky → sharper retention curve
+    1:  2.00    # forest clay-loam → gentler curve
     7:  1.00    # shrublands — reference
   qSurfScale:
-    16: 1.60    # barren rocky → more saturation-excess surface runoff
-    1:  0.90    # forest — infiltration buffers surface runoff
-    7:  0.70    # shrublands — lower surface runoff than barren
+    16: 1.0    # barren rocky → more saturation-excess surface runoff
+    1:  1.0    # forest — infiltration buffers surface runoff
+    7:  1.0    # shrublands — lower surface runoff than barren
 
 anchor_variable: averageInstantRunoff   # basin total routed runoff → streamflow
 coherence_type: runoff                 # compares total Q to streamflow obs
@@ -76,8 +76,8 @@ w_anchor: 0.85
 
 multiplier_search_bounds:
   k_soil:       [0.1, 9.0]    # 1.5e-6 → 3e-5 m/s at base 1e-4
-  vGn_alpha:    [0.50, 2.0]    # multiplied against −2.0 → −1.0 to −4.0 m⁻¹
-  vGn_n:        [0.67, 2.00]   # 0.87 → 2.6 (Van Genuchten n must stay > 1)
+  # vGn_alpha:    [0.50, 2.0]    # multiplied against −2.0 → −1.0 to −4.0 m⁻¹
+  vGn_n:        [1, 1.5]   # 0.87 → 2.6 (Van Genuchten n must stay > 1)
   qSurfScale:   [0.20, 8.0]    # 0.2 → 8.0 × base
 
 max_iterations: 75

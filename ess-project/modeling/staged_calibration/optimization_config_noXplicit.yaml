@@ -7,16 +7,17 @@
 log_level: INFO   # DEBUG | INFO | WARNING
 
 # ---- Results output --------------------------------------------------------
-results_dir: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/optimization/staged_results
+results_dir: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/optimization/staged_results_noXplicit
 
 # ---- Stage config files (run in order; each freezes params before next) ----
 stage_configs_dir: /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs
 
 stages:
   - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs/stage1_snow.yaml
-  - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs/stage2_soil_et.yaml
+  - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs/stage2_et.yaml
+  - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs/stage3_soil.yaml
   # Groundwater stage intentionally omitted for noXplict workflows.
-  - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs/stage4_routing.yaml
+  - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs/stage5_routing.yaml
 
 # ---- Run configuration -----------------------------------------------------
 run:
@@ -29,7 +30,7 @@ run:
 
   # Base trialParams file with a-priori per-HRU parameter values.
   # This is the file that multipliers are applied to.
-  base_trial_params_nc: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/settings/SUMMA/trialParams_multiHRU.nc
+  base_trial_params_nc: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/settings/SUMMA/trialParams.nc
 
   # Optional: seed initial parameter values from calib_bounds_multiHRU.json
   # `value` fields before stage multipliers are applied.
@@ -38,9 +39,12 @@ run:
   # Filename of the trial params file as SUMMA expects it.
   param_nc_filename: trialParams.nc
 
-  # SUMMA output file prefix — must match outFilePrefix in fileManager.txt.
-  # Update this when switching to a noXplict-specific settings snapshot.
-  output_prefix: noXplict_singleGRU_elevation5_light
+  # SUMMA output file prefix — patched into fileManager.txt for every trial.
+  output_prefix: noXplicit_elevation
+
+  # Patch modelDecisions.txt for every trial — overrides bigBuckt base settings.
+  model_decisions_override:
+    groundwatr: noXplict
 
   # Timeout per SUMMA run in seconds (30 min = 1800 s).
   timeout_sec: 1800

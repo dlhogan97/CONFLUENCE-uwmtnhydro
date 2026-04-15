@@ -7,7 +7,7 @@
 log_level: INFO   # DEBUG | INFO | WARNING
 
 # ---- Results output --------------------------------------------------------
-results_dir: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/optimization/staged_results
+results_dir: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/optimization/staged_results_bigBuckt
 
 # ---- Stage config files (run in order; each freezes params before next) ----
 stage_configs_dir: /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs
@@ -16,9 +16,9 @@ stages:
   - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs/stage1_snow.yaml
   - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs/stage2_et.yaml
   - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs/stage3_soil.yaml
-  - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs/stage3_groundwater.yaml
+  - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs/stage4_groundwater.yaml
   # Comment out the line below to skip routing calibration:
-  - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs/stage4_routing.yaml
+  - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs/stage5_routing.yaml
 
 # ---- Run configuration -----------------------------------------------------
 run:
@@ -41,7 +41,7 @@ run:
   param_nc_filename: trialParams.nc
 
   # SUMMA output file prefix — must match outFilePrefix in fileManager.txt.
-  output_prefix: bigBuckt_singleGRU_elevations
+  output_prefix: bigBuckt_elevation
 
   # Timeout per SUMMA run in seconds (30 min = 1800 s).
   timeout_sec: 1800

@@ -40,9 +40,32 @@ SIM_START = "1999-10-01 00:00"
 SIM_END   = "2024-09-30 23:00"   # full water-year end
 OUT_PREFIX = "bigBuckt_distributed_baseline_20260413"
 SUMMA_EXE = "summa"
+GROUNDWATER_OPTION = None   # None = keep whatever is in modelDecisions.txt
 
 
 # ---------------------------------------------------------------------------
+
+def _patch_model_decisions(md_path: Path, overrides: dict[str, str]) -> None:
+    """Replace decision values in modelDecisions.txt for the given keys."""
+    lines = md_path.read_text().splitlines()
+    out = []
+    for line in lines:
+        stripped = line.strip()
+        replaced = False
+        for key, value in overrides.items():
+            if stripped.startswith(key) and (
+                len(stripped) == len(key) or not stripped[len(key)].isalnum()
+            ):
+                parts = line.split("!")
+                comment = "!" + parts[1] if len(parts) > 1 else ""
+                indent = line[: len(line) - len(line.lstrip())]
+                out.append(f"{indent}{key:<15}{value:<26}{comment}".rstrip())
+                replaced = True
+                break
+        if not replaced:
+            out.append(line)
+    md_path.write_text("\n".join(out) + "\n")
+
 
 def _patch_filemanager(fm_path: Path, patches: dict[str, str]) -> None:
     """Replace quoted values in fileManager.txt for the given keys."""
@@ -74,6 +97,18 @@ def main() -> None:
     p.add_argument("--end",            default=SIM_END,   dest="sim_end")
     p.add_argument("--out-prefix",     default=OUT_PREFIX)
     p.add_argument("--summa-exe",      default=SUMMA_EXE)
+    p.add_argument("--groundwater",    default=GROUNDWATER_OPTION,
+                   help="Override groundwater decision (e.g. noXplict, bigBuckt). "
+                        "Shorthand for --decision groundwatr=<value>.")
+    p.add_argument("--decision",       metavar="KEY=VALUE", action="append", default=[],
+                   help="Override any modelDecisions.txt entry. May be repeated: "
+                        "--decision stomResist=Jarvis --decision groundwatr=noXplict")
+    p.add_argument("--forcing-path",   type=Path, default=None,
+                   help="Override forcingPath in fileManager.txt (use for full-period runs "
+                        "when the source settings only cover a subset)")
+    p.add_argument("--forcing-list",   type=Path, default=None,
+                   help="Replace forcingFileList.txt with this file (e.g. the 303-file "
+                        "full-period list from the base settings dir)")
     p.add_argument("--dry-run",        action="store_true",
                    help="Print plan without running SUMMA")
     args = p.parse_args()
@@ -83,6 +118,8 @@ def main() -> None:
         sys.exit(f"ERROR: settings dir not found: {args.settings_dir}")
     if not args.trial_params.exists():
         sys.exit(f"ERROR: trial params not found: {args.trial_params}")
+    if args.forcing_list and not args.forcing_list.exists():
+        sys.exit(f"ERROR: forcing list not found: {args.forcing_list}")
 
     # ── Build run directory ──────────────────────────────────────────────────
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -95,6 +132,14 @@ def main() -> None:
     print(f"trialParams   : {args.trial_params}")
     print(f"Period        : {args.sim_start}  →  {args.sim_end}")
     print(f"Output prefix : {args.out_prefix}")
+    if args.groundwater:
+        print(f"groundwatr    : {args.groundwater} (override)")
+    for d in args.decision:
+        print(f"decision      : {d} (override)")
+    if args.forcing_path:
+        print(f"forcingPath   : {args.forcing_path} (override)")
+    if args.forcing_list:
+        print(f"forcingList   : {args.forcing_list} (override)")
 
     if args.dry_run:
         print("\n[dry-run] No files written, SUMMA not launched.")
@@ -107,17 +152,38 @@ def main() -> None:
     print("Installing calibrated trialParams.nc ...")
     shutil.copy2(args.trial_params, settings_copy / "trialParams.nc")
 
+    decision_overrides = {}
+    if args.groundwater:
+        decision_overrides["groundwatr"] = args.groundwater
+    for item in args.decision:
+        if "=" not in item:
+            sys.exit(f"ERROR: --decision must be 'KEY=VALUE': {item!r}")
+        k, v = item.split("=", 1)
+        decision_overrides[k.strip()] = v.strip()
+    if decision_overrides:
+        md_path = settings_copy / "modelDecisions.txt"
+        _patch_model_decisions(md_path, decision_overrides)
+        for k, v in decision_overrides.items():
+            print(f"Patched modelDecisions.txt → {k} = {v}")
+
+    if args.forcing_list:
+        shutil.copy2(args.forcing_list, settings_copy / "forcingFileList.txt")
+        print(f"Installed forcingFileList.txt from {args.forcing_list}")
+
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # ── Patch fileManager.txt ────────────────────────────────────────────────
     fm_path = settings_copy / "fileManager.txt"
-    _patch_filemanager(fm_path, {
+    fm_patches = {
         "simStartTime":  args.sim_start,
         "simEndTime":    args.sim_end,
         "outFilePrefix": args.out_prefix,
         "outputPath":    str(output_dir) + "/",
         "settingsPath":  str(settings_copy) + "/",
-    })
+    }
+    if args.forcing_path:
+        fm_patches["forcingPath"] = str(args.forcing_path) + "/"
+    _patch_filemanager(fm_path, fm_patches)
     print(f"Patched fileManager.txt → output to {output_dir}/")
 
     # ── Run SUMMA ────────────────────────────────────────────────────────────
