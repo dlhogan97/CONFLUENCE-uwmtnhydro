@@ -57,6 +57,21 @@ def nrmse(sim: np.ndarray, obs: np.ndarray) -> float:
         return 1.0
     return float(np.sqrt(np.mean((s - o) ** 2)) / np.mean(np.abs(o)))
 
+def total_bias(sim, obs):
+    denom = max(obs.sum(), 1e-12)
+    return abs(sim.sum() - obs.sum()) / denom  # lower is better
+
+def monthly_dist_bias(sim, obs):
+    # sim/obs should be pandas Series with DatetimeIndex
+    sim_m = sim.resample("MS").sum().groupby(sim.index.month).sum()
+    obs_m = obs.resample("MS").sum().groupby(obs.index.month).sum()
+
+    sim_f = (sim_m / max(sim_m.sum(), 1e-12)).reindex(range(1, 13), fill_value=0.0)
+    obs_f = (obs_m / max(obs_m.sum(), 1e-12)).reindex(range(1, 13), fill_value=0.0)
+    return (sim_f - obs_f).abs().mean()  # lower is better
+
+def monthly_plus_total(sim, obs, w_monthly=0.8):
+    return w_monthly * monthly_dist_bias(sim, obs) + (1 - w_monthly) * total_bias(sim, obs)
 
 def _peak_and_meltout(swe: np.ndarray, meltout_threshold_mm: float = 10.0) -> Tuple[int, float, int]:
     """Return (peak_day_idx, peak_value, meltout_day_idx) for a single SWE timeseries."""
@@ -75,7 +90,7 @@ def _peak_and_meltout(swe: np.ndarray, meltout_threshold_mm: float = 10.0) -> Tu
 # Baseflow separation (Eckhardt digital filter)
 # ---------------------------------------------------------------------------
 
-def eckhardt_baseflow(q: np.ndarray, bfi_max: float = 0.95, a: float = 0.98) -> np.ndarray:
+def eckhardt_baseflow(q: np.ndarray, bfi_max: float = 0.8, a: float = 0.98) -> np.ndarray:
     """Two-parameter digital Eckhardt baseflow filter.
 
     Parameters
@@ -165,8 +180,8 @@ def compute_anchor_streamflow_rising(
 def compute_anchor_baseflow(
     sim_q: np.ndarray,
     obs_q: np.ndarray,
-    bfi_max: float = 0.8,
-    a_recession: float = 0.98,
+    bfi_max: float = 0.65,
+    a_recession: float = 0.99,
 ) -> float:
     """Anchor cost for groundwater stage.
 
@@ -210,10 +225,12 @@ def compute_anchor_generic(
         return nse(sim, obs)
     elif m == "NRMSE":
         return nrmse(sim, obs)
+    elif m == "MONTHLY_PLUS_TOTAL":
+        return monthly_plus_total(sim, obs)
     else:
         raise ValueError(
             f"Unknown anchor_metric {metric!r}. "
-            "Choose from: KGE, KGE_log, NSE, NRMSE"
+            "Choose from: KGE, KGE_log, NSE, NRMSE, MONTHLY_PLUS_TOTAL"
         )
 
 
@@ -439,25 +456,32 @@ def compute_coherence_et(
 def compute_coherence_baseflow(
     all_hru_bf: Dict[int, np.ndarray],
     sim_q_total: Optional[np.ndarray] = None,
-    target_bfi_range: Tuple[float, float] = (0.3, 0.7),
+    all_hru_total_runoff: Optional[Dict[int, np.ndarray]] = None,
+    target_bfi_range: Tuple[float, float] = (0.1, 1.0),
 ) -> float:
     """Coherence cost for groundwater stage.
 
     Checks that the baseflow index (BFI = baseflow/total_runoff) is within
-    the physically expected range for the East River (0.3–0.7).
+    the configured acceptable range (default 0.1-1.0).
     """
     if not all_hru_bf:
         return 0.0
 
     costs = []
     for hid, bf in all_hru_bf.items():
-        if sim_q_total is None:
+        if all_hru_total_runoff is not None and hid in all_hru_total_runoff:
+            total_series = all_hru_total_runoff[hid]
+            n = min(len(bf), len(total_series))
+            total = np.nansum(np.abs(total_series[:n]))
+        elif sim_q_total is not None:
+            n = min(len(bf), len(sim_q_total))
+            total = np.nansum(np.abs(sim_q_total[:n]))
+        else:
             continue
-        n = min(len(bf), len(sim_q_total))
-        total = np.nansum(np.abs(sim_q_total[:n]))
-        if total == 0:
-            continue
-        bfi = np.nansum(np.abs(bf[:n])) / total
+        if not np.isfinite(total) or total <= 0:
+            bfi = 0.0
+        else:
+            bfi = np.nansum(np.abs(bf[:n])) / total
         lo, hi = target_bfi_range
         costs.append(max(0.0, lo - bfi) + max(0.0, bfi - hi))
 

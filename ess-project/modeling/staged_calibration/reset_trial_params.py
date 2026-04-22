@@ -21,6 +21,13 @@ Usage
 
     # Multiple overrides:
     python reset_trial_params.py --override k_soil=0.0005 --override albedoDecayRate=1.5e5
+
+    # Seed an elev×aspect trialParams from an elevation-only run (repeats each
+    # elevation band's params for every aspect class within that band):
+    python reset_trial_params.py \\
+        --output /path/to/elevAspect/trialParams.nc \\
+        --seed-elev /path/to/elevation_only/trialParams.nc
+    # Default 5 aspects per band (NE/SE/NW/SW/Flat); override with --aspects-per-band N
 """
 
 from __future__ import annotations
@@ -36,7 +43,7 @@ import xarray as xr
 # ---------------------------------------------------------------------------
 DEFAULT_PATH = Path(
     "/scratch/dlhogan/ess-project-data"
-    "/domain_East_River_distributed/settings/SUMMA/trialParams.nc"
+    "/domain_Tuolumne_River_lumped/settings/SUMMA/trialParams.nc"
 )
 
 # ---------------------------------------------------------------------------
@@ -53,10 +60,10 @@ DEFAULT_PATH = Path(
 # Uniform across HRUs: spatial variation handled by SUMMA slope/aspect geometry.
 # ---------------------------------------------------------------------------
 SNOW_PARAMS = {
-    "albedoDecayRate":    1.19e5,   # s  (localParamInfo default; Colorado dust → optimizer pulls toward ~3e5)
+    "albedoDecayRate":    8.19e5,   # s  (localParamInfo default; Colorado dust → optimizer pulls toward ~3e5)
     # "Frad_direct":        0.70,    # fraction  (localParamInfo default)
     # "Frad_vis":           0.50,    # fraction  (localParamInfo default)
-    "frozenPrecipMultip": 0.9,    # dimensionless  (no bias correction assumed at start)
+    "frozenPrecipMultip": 1.0,    # dimensionless  (no bias correction assumed at start)
 }
 
 # ---------------------------------------------------------------------------
@@ -64,20 +71,14 @@ SNOW_PARAMS = {
 # Domain-mean reference values; stage2 spatial weights differentiate by veg class.
 # ---------------------------------------------------------------------------
 SOIL_ET_PARAMS = {
-    # Saturated hydraulic conductivity — ROSETTA sandy loam ~4e-5 m/s as domain mean.
-    # Spatial weights: barren×0.55 → 2.2e-5, forest×1.5 → 6.0e-5, shrub×1.0 → 4.0e-5
-    "k_soil":       [1e-3, 1.54e-6, 1.22e-6, 1.22e-6, 1.20e-6],   # m/s
+    'k_soil': 5e-4,    # m/s
 
     # Van Genuchten — ROSETTA sandy loam defaults
-    "vGn_alpha":   -3,     # m⁻¹  (stored negative in SUMMA)
-    "vGn_n":        1.5,     # dimensionless
+    "vGn_alpha":   -2.7,     # m⁻¹  (stored negative in SUMMA)
+    "vGn_n":        1.3,     # dimensionless
 
     # Surface saturation-excess scale.  Domain mean ~1.0; spatial weights push
     # barren up (×1.6) and forest down (×0.9).
-    "qSurfScale":   5.00,     # dimensionless
-
-    # Rooting depth domain mean.  Spatial weights: barren×0.4 → 0.4m, forest×1.5 → 1.5m
-    "rootingDepth": 1.00,     # m
 
     # Porosity — ROSETTA sandy loam ~0.43 as domain mean
     "theta_sat":    0.45,     # m³/m³
@@ -85,10 +86,15 @@ SOIL_ET_PARAMS = {
         # Minimum stomatal resistance — domain mean ~100 s/m; spatial weights push
         # barren up (×1.5 → 150 s/m) and forest down (×0.7 → 70 s/m).
     "minStomatalResistance": 10.0,    # s/m
-    # "critSoilTranspire": 0.25,
-    # "critSoilWilting": 0.075,
-    "fieldCapacity": [0.2,0.28,0.29,0.29,0.31]
+    'qSurfScale': 5.5,
+    'zScale_TOPMODEL': 1.0,
+    'kAnisotropic': 0.1,
+    'rootingDepth': 0.5,
+    'fieldCapacity': 0.2,
+    # # 'vGn_alpha': [-3, -3, -3, -3, -3],
+    # # 'theta_sat': [0.35, 0.40, 0.45, 0.45, 0.45],
 }
+
 
 # ---------------------------------------------------------------------------
 # Stage 3 — Groundwater: bigBuckt HRU-level aquifer
@@ -123,19 +129,35 @@ ROUTING_PARAMS = {
     "routingGammaScale": 46000.0,   # s  (~12.8 hours mean travel time; basinParamInfo default)
 }
 
+# Parameters that should be removed entirely from trialParams.nc.
+DROP_PARAMS = ["critSoilTranspire", "critSoilWilting"]
+
 # ---------------------------------------------------------------------------
 
 def _set_hru(ds: xr.Dataset, name: str, value: "float | list[float]", n_hru: int) -> None:
     """Set a value for an HRU-dimension variable, creating it if absent.
 
     value may be a scalar (applied to all HRUs) or a list of length n_hru.
+    If n_hru=1 and a list is provided, the geometric mean is used for log-scale
+    params (conductivities) and arithmetic mean for others.
     """
     if isinstance(value, (list, np.ndarray)):
         arr = np.array(value, dtype=np.float64)
         if len(arr) != n_hru:
-            raise ValueError(
-                f"  {name}: provided {len(arr)} values but n_hru={n_hru}"
-            )
+            if n_hru == 1:
+                # Collapse to a single representative value for lumped domains.
+                # Use geometric mean for conductivity-like params (all positive, wide range),
+                # arithmetic mean otherwise.
+                if np.all(arr > 0) and (arr.max() / arr.min()) > 10:
+                    scalar = float(np.exp(np.mean(np.log(arr))))
+                else:
+                    scalar = float(np.mean(arr))
+                print(f"  {name:<25} list→scalar (lumped): {list(arr)} → {scalar:.4g}")
+                arr = np.array([scalar])
+            else:
+                raise ValueError(
+                    f"  {name}: provided {len(arr)} values but n_hru={n_hru}"
+                )
         label = f"[{', '.join(f'{v:.4g}' for v in arr)}]"
     else:
         arr = np.full(n_hru, value, dtype=np.float64)
@@ -149,10 +171,33 @@ def _set_hru(ds: xr.Dataset, name: str, value: "float | list[float]", n_hru: int
         print(f"  {name:<25} = {label}")
 
 
+def _drop_params(ds: xr.Dataset, names: list[str], dry_run: bool = False) -> xr.Dataset:
+    """Drop named variables from dataset when present."""
+    present = [name for name in names if name in ds]
+    if not present:
+        return ds
+
+    if dry_run:
+        print("[dry-run] Variables that WOULD be removed from dataset:")
+        for name in present:
+            print(f"  {name}")
+        print()
+        return ds
+
+    ds = ds.drop_vars(present)
+    print("Removed variables from dataset:")
+    for name in present:
+        print(f"  {name}")
+    print()
+    return ds
+
+
 def _set_gru(ds: xr.Dataset, name: str, value: float) -> None:
-    """Set a value for a GRU-dimension variable."""
+    """Set a value for a GRU-dimension variable, creating it if absent."""
+    arr = np.array([value], dtype=np.float64)
     if name not in ds:
-        print(f"  [skip] {name} — not in file")
+        ds[name] = xr.DataArray(arr, dims=["gru"])
+        print(f"  {name:<25} = {value}  (GRU) [created]")
         return
     ds[name].values[:] = value
     print(f"  {name:<25} = {value}  (GRU)")
@@ -176,6 +221,73 @@ def _parse_overrides(override_args: list[str]) -> dict:
     return result
 
 
+def _expand_from_elevation(
+    src_path: Path,
+    dst: xr.Dataset,
+    aspects_per_band: int,
+    dry_run: bool,
+) -> xr.Dataset:
+    """Expand elevation-only trialParams to an elev×aspect layout.
+
+    Each elevation-band value is repeated for every aspect class within
+    that band using np.repeat, preserving parameter order.
+    """
+    with xr.open_dataset(src_path) as _src:
+        src = _src.load()
+
+    n_src_hru = int(src.sizes.get("hru", 0))
+    n_dst_hru = int(dst.sizes.get("hru", 0))
+    expected_dst = n_src_hru * aspects_per_band
+    if n_dst_hru != expected_dst:
+        raise ValueError(
+            f"Destination has {n_dst_hru} HRUs but source ({n_src_hru}) × "
+            f"aspects_per_band ({aspects_per_band}) = {expected_dst}. "
+            "Check --aspects-per-band or source file."
+        )
+
+    for name, da in src.data_vars.items():
+        if name == "hruId":
+            continue
+        if "hru" in da.dims:
+            expanded = np.repeat(da.values, aspects_per_band)
+            if dry_run:
+                print(f"  {name:<25} expand {list(da.values)} → {list(expanded)}")
+            else:
+                if name not in dst:
+                    dst[name] = xr.DataArray(expanded.astype(da.dtype), dims=["hru"])
+                    print(f"  {name:<25} [created + expanded]")
+                else:
+                    dst[name].values[:] = expanded.astype(dst[name].dtype)
+                    print(f"  {name:<25} expanded {n_src_hru} → {n_dst_hru} HRUs")
+        elif "gru" in da.dims:
+            n_src_gru = int(src.sizes.get("gru", 1))
+            n_dst_gru = int(dst.sizes.get("gru", 1))
+            if n_src_gru != n_dst_gru:
+                print(f"  [skip] {name} — GRU count mismatch ({n_src_gru} vs {n_dst_gru})")
+                continue
+            if dry_run:
+                print(f"  {name:<25} GRU copy {list(da.values)}")
+            else:
+                if name not in dst:
+                    dst[name] = da.copy()
+                    print(f"  {name:<25} [created, GRU]")
+                else:
+                    dst[name].values[:] = da.values.astype(dst[name].dtype)
+                    print(f"  {name:<25} copied (GRU)")
+
+    # Always set hruId to 1-indexed sequential regardless of source
+    hru_ids = np.arange(1, n_dst_hru + 1, dtype=np.int32)
+    if "hruId" in dst:
+        dst["hruId"].values[:] = hru_ids
+    else:
+        dst["hruId"] = xr.DataArray(hru_ids, dims=["hru"])
+    if dry_run:
+        print(f"  {'hruId':<25} = {list(hru_ids)}")
+    else:
+        print(f"  {'hruId':<25} = 1–{n_dst_hru}")
+    return dst
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description="Reset trialParams.nc to clean calibration starting values")
     p.add_argument("--output", type=Path, default=DEFAULT_PATH,
@@ -188,17 +300,45 @@ def main() -> None:
                         "May be repeated: --override k_soil=5e-4 --override rootingDepth=0.4,1.0,1.5,1.5,1.0")
     p.add_argument("--dry-run", action="store_true",
                    help="Print planned values without writing the file")
+    p.add_argument("--seed-elev", type=Path, default=None, metavar="SOURCE_NC",
+                   help="Seed an elev×aspect trialParams from an elevation-only trialParams.nc. "
+                        "Each elevation band's values are repeated for every aspect class.")
+    p.add_argument("--aspects-per-band", type=int, default=5, metavar="N",
+                   help="Number of aspect classes per elevation band (default: 5)")
+    p.add_argument("--create", action="store_true",
+                   help="Create a new trialParams.nc from scratch if the output file does not exist. "
+                        "Use --n-hru and --n-gru to set dimensions.")
+    p.add_argument("--n-hru", type=int, default=1, metavar="N",
+                   help="Number of HRUs when creating a new file (default: 1)")
+    p.add_argument("--n-gru", type=int, default=1, metavar="N",
+                   help="Number of GRUs when creating a new file (default: 1)")
     args = p.parse_args()
 
+    if args.output.is_dir():
+        args.output = args.output / "trialParams.nc"
+
     if not args.output.exists():
-        # Seed from the default trialParams.nc if the target doesn't exist yet
         import shutil
-        if not DEFAULT_PATH.exists():
-            raise FileNotFoundError(
-                f"Output file not found and no default to seed from: {args.output}"
+        if args.create:
+            # Build a minimal skeleton netCDF with hruId and gruId
+            n_hru_new = args.n_hru
+            n_gru_new = args.n_gru
+            ds_new = xr.Dataset(
+                {
+                    "hruId": xr.DataArray(np.arange(1, n_hru_new + 1, dtype=np.int32), dims=["hru"]),
+                    "gruId": xr.DataArray(np.arange(1, n_gru_new + 1, dtype=np.int32), dims=["gru"]),
+                }
             )
-        shutil.copy2(DEFAULT_PATH, args.output)
-        print(f"Seeded {args.output.name} from {DEFAULT_PATH.name}")
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            ds_new.to_netcdf(args.output)
+            print(f"Created new trialParams.nc ({n_hru_new} HRU, {n_gru_new} GRU): {args.output}")
+        elif DEFAULT_PATH.exists():
+            shutil.copy2(DEFAULT_PATH, args.output)
+            print(f"Seeded {args.output.name} from {DEFAULT_PATH.name}")
+        else:
+            raise FileNotFoundError(
+                f"Output file not found. Use --create to build from scratch: {args.output}"
+            )
 
     overrides = _parse_overrides(args.override)
 
@@ -216,29 +356,42 @@ def main() -> None:
     if args.dry_run:
         print("[dry-run] Values that WOULD be written:\n")
 
-    all_hru_params = {**SNOW_PARAMS, **SOIL_ET_PARAMS}
-    if args.mode == "bigbuckt":
-        all_hru_params.update(AQUIFER_BIGBUCKT_PARAMS)
+    ds = _drop_params(ds, DROP_PARAMS, dry_run=args.dry_run)
+
+    if args.seed_elev is not None:
+        # --seed-elev path: expand elevation-only params → elev×aspect layout
+        if not args.seed_elev.exists():
+            raise FileNotFoundError(f"--seed-elev source not found: {args.seed_elev}")
+        print("── Expanding from elevation-only trialParams ───────────────")
+        ds = _expand_from_elevation(args.seed_elev, ds, args.aspects_per_band, args.dry_run)
     else:
-        all_hru_params.update(AQUIFER_QTOPMODEL_PARAMS)
-
-    print("── HRU parameters ──────────────────────────────────────────")
-    for name, val in all_hru_params.items():
-        if not args.dry_run:
-            _set_hru(ds, name, val, n_hru)
+        # Default: write hard-coded parameter blocks
+        all_hru_params = {**SNOW_PARAMS, **SOIL_ET_PARAMS}
+        if args.mode == "bigbuckt":
+            all_hru_params.update(AQUIFER_BIGBUCKT_PARAMS)
         else:
-            print(f"  {name:<25} = {val}")
+            all_hru_params.update(AQUIFER_QTOPMODEL_PARAMS)
 
-    print("\n── GRU parameters ──────────────────────────────────────────")
-    for name, val in ROUTING_PARAMS.items():
-        if not args.dry_run:
-            _set_gru(ds, name, val)
-        else:
-            print(f"  {name:<25} = {val}  (GRU)")
+        print("── HRU parameters ──────────────────────────────────────────")
+        for name, val in all_hru_params.items():
+            if not args.dry_run:
+                _set_hru(ds, name, val, n_hru)
+            else:
+                print(f"  {name:<25} = {val}")
+
+        print("\n── GRU parameters ──────────────────────────────────────────")
+        for name, val in ROUTING_PARAMS.items():
+            if not args.dry_run:
+                _set_gru(ds, name, val)
+            else:
+                print(f"  {name:<25} = {val}  (GRU)")
 
     if overrides:
         print("\n── Manual overrides (applied last) ─────────────────────────")
         for name, val in overrides.items():
+            if name in DROP_PARAMS:
+                print(f"  [skip] {name} is configured for removal from dataset")
+                continue
             # Route to HRU or GRU setter based on the variable's dimension in the file
             if name in ds and "gru" in ds[name].dims and "hru" not in ds[name].dims:
                 if isinstance(val, list):

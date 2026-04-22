@@ -1124,10 +1124,10 @@ class DomainDiscretizer:
         both mapped to label 1.
 
         4-class mapping (default):
-            1 = N  (315° – 45°)
-            2 = E  ( 45° – 135°)
-            3 = S  (135° – 225°)
-            4 = W  (225° – 315°)
+            1 = NE (  0° –  90°)
+            2 = SE ( 90° – 180°)
+            3 = SW (180° – 270°)
+            4 = NW (270° – 360°)
 
         8-class mapping:
             1 = N   (337.5° – 22.5°)
@@ -1156,14 +1156,12 @@ class DomainDiscretizer:
         classified = np.zeros_like(aspect_deg, dtype=int)
 
         if num_classes == 4:
-            # Bins centred on N/E/S/W; North wraps through 0°.
-            # [0, 45)  → N(1),  [45, 135) → E(2),  [135, 225) → S(3),
-            # [225, 315) → W(4),  [315, 360] → N(1)
-            classified[(aspect_deg >= 0)   & (aspect_deg <  45)]  = 1  # N lower wrap
-            classified[(aspect_deg >= 45)  & (aspect_deg < 135)]  = 2  # E
-            classified[(aspect_deg >= 135) & (aspect_deg < 225)]  = 3  # S
-            classified[(aspect_deg >= 225) & (aspect_deg < 315)]  = 4  # W
-            classified[(aspect_deg >= 315) & (aspect_deg <= 360)] = 1  # N upper wrap
+            # Bins centred on NE/SE/SW/NW at 45/135/225/315°.
+            # Boundaries align to 0/90/180/270 so no wrap-around is needed.
+            classified[(aspect_deg >= 0)   & (aspect_deg <  90)]  = 1  # NE
+            classified[(aspect_deg >= 90)  & (aspect_deg < 180)]  = 2  # SE
+            classified[(aspect_deg >= 180) & (aspect_deg < 270)]  = 3  # SW
+            classified[(aspect_deg >= 270) & (aspect_deg <= 360)] = 4  # NW
 
         elif num_classes == 8:
             # Bins centred on N/NE/E/SE/S/SW/W/NW; North wraps through 0°.
@@ -1708,6 +1706,66 @@ class DomainDiscretizer:
         except Exception as e:
             self.logger.error(f"Error calculating mean elevation: {str(e)}")
             hru_gdf['elev_mean'] = -9999
+
+        # Calculate mean slope for each HRU using circular mean (sin/cos decomposition).
+        self.logger.info("Calculating mean slope for each HRU")
+        try:
+            with rasterio.open(self.dem_path) as src:
+                dem = src.read(1).astype(np.float64)
+                transform = src.transform
+                dem_crs = src.crs
+                nodata = src.nodata
+
+            dem_nodata_mask = ~np.isfinite(dem)
+            if nodata is not None:
+                dem_nodata_mask |= (dem == nodata)
+            dem[dem_nodata_mask] = np.nan
+
+            cell_size_x = abs(transform[0])
+            cell_size_y = abs(transform[4])
+
+            # Convert geographic degrees → meters when DEM is in lat/lon.
+            if dem_crs is not None and dem_crs.is_geographic:
+                nrows = dem.shape[0]
+                lat_top = transform.f
+                lats = lat_top - (np.arange(nrows) + 0.5) * cell_size_y
+                dy_m = cell_size_y * 111320.0
+                dx_m = cell_size_x * 111320.0 * np.cos(np.deg2rad(lats))[:, np.newaxis]
+            else:
+                dy_m = cell_size_y
+                dx_m = cell_size_x
+
+            # Horn (1981) weighted 3x3 gradient kernel.
+            p = np.pad(dem, 1, mode='constant', constant_values=np.nan)
+            dz_dx = (
+                (p[0:-2, 2:] + 2 * p[1:-1, 2:] + p[2:, 2:])
+                - (p[0:-2, 0:-2] + 2 * p[1:-1, 0:-2] + p[2:, 0:-2])
+            ) / (8.0 * dx_m)
+            dz_dy = (
+                (p[2:, 0:-2] + 2 * p[2:, 1:-1] + p[2:, 2:])
+                - (p[0:-2, 0:-2] + 2 * p[0:-2, 1:-1] + p[0:-2, 2:])
+            ) / (8.0 * dy_m)
+
+            slope_rad = np.arctan(np.sqrt(dz_dx**2 + dz_dy**2))
+            slope_rad[dem_nodata_mask] = np.nan
+
+            nodata_fill = -9999.0
+            sin_slope = np.where(np.isfinite(slope_rad), np.sin(slope_rad), nodata_fill)
+            cos_slope = np.where(np.isfinite(slope_rad), np.cos(slope_rad), nodata_fill)
+
+            # Project HRU geometry to DEM CRS for zonal stats.
+            geom_for_slope = hru_gdf.to_crs(dem_crs).geometry if dem_crs != hru_gdf.crs else hru_gdf.geometry
+
+            zs_sin = rasterstats.zonal_stats(geom_for_slope, sin_slope, affine=transform, stats=['mean'], nodata=nodata_fill)
+            zs_cos = rasterstats.zonal_stats(geom_for_slope, cos_slope, affine=transform, stats=['mean'], nodata=nodata_fill)
+
+            mean_sin = np.array([s['mean'] if s['mean'] is not None else 0.0 for s in zs_sin])
+            mean_cos = np.array([s['mean'] if s['mean'] is not None else 1.0 for s in zs_cos])
+            hru_gdf['slope_mean_deg'] = np.clip(np.degrees(np.arctan2(mean_sin, mean_cos)), 0, 90)
+
+        except Exception as e:
+            self.logger.error(f"Error calculating mean slope: {str(e)}")
+            hru_gdf['slope_mean_deg'] = 15.0
 
         # Re-assign sequential HRU IDs using configurable ordering.
         # Default behavior is elevation-descending so HRU_ID=1 is the highest HRU.

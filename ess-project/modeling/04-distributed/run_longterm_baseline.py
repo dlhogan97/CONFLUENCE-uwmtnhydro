@@ -37,8 +37,8 @@ OUTPUT_BASE = Path(
 )
 RUN_NAME = "baseline_longterm"
 SIM_START = "1999-10-01 00:00"
-SIM_END   = "2024-09-30 23:00"   # full water-year end
-OUT_PREFIX = "bigBuckt_distributed_baseline_20260413"
+SIM_END   = "2021-09-30 23:00"   # full water-year end
+OUT_PREFIX = "qTopmodl_distributed_elevation_best"
 SUMMA_EXE = "summa"
 GROUNDWATER_OPTION = None   # None = keep whatever is in modelDecisions.txt
 

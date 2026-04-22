@@ -299,11 +299,13 @@ class TrialEvaluator:
             trial_params_nc=tmp_path,
             param_nc_filename=self.run_cfg.get("param_nc_filename", "trialParams.nc"),
         )
+        param_nc_filename = self.run_cfg.get("param_nc_filename", "trialParams.nc")
         fm_path = patch_file_manager(
             settings_dir, output_dir,
             sim_start=self.run_cfg.get("sim_start"),
             sim_end=self.run_cfg.get("sim_end"),
             out_file_prefix=self.run_cfg.get("output_prefix"),
+            trial_param_filename=param_nc_filename,
         )
         model_decisions = self.run_cfg.get("model_decisions_override", {})
         if model_decisions:
@@ -344,9 +346,33 @@ class TrialEvaluator:
     def _compute_objectives(self, output_dir: Path) -> Tuple[float, float]:
         cfg = self.stage_cfg
         prefix = self.run_cfg.get("output_prefix", "")
+        anchor_var = str(getattr(cfg, "anchor_variable", "") or "").strip()
         # averageRoutedRunoff from SUMMA is in m s⁻¹ (depth per unit area per time).
         # Streamflow observations are in m³/s.  Multiply by basin area to convert.
         basin_area_m2 = float(self.run_cfg.get("basin_area_m2", 1.0))
+
+        def _is_basin_volumetric_var(var_name: str) -> bool:
+            """Return True when a variable is already basin volumetric flow (m3/s)."""
+            v = str(var_name or "").strip()
+            if not v:
+                return False
+            # Known exception: basin__TotalRunoff is a depth-rate (m/s), not volumetric flow.
+            if v.lower() == "basin__totalrunoff":
+                return False
+            # Basin-prefixed fluxes (e.g., basin__ColumnOutflow) are volumetric in qTopmodl runs.
+            return v.startswith("basin__")
+
+        def _to_discharge_cms(series: pd.Series, var_name: str) -> pd.Series:
+            """Convert a flow series to m3/s only when it is reported as depth rate (m/s)."""
+            if _is_basin_volumetric_var(var_name):
+                return series
+            return series * basin_area_m2
+
+        def _to_depth_rate_mps(series: pd.Series, var_name: str) -> pd.Series:
+            """Convert a flow series to m/s only when it is reported as volumetric flow (m3/s)."""
+            if _is_basin_volumetric_var(var_name):
+                return series / basin_area_m2
+            return series
 
         if cfg.coherence_type == "snow":
             all_swe = read_hru_output(output_dir, prefix, "scalarSWE",
@@ -427,13 +453,37 @@ class TrialEvaluator:
                     j_anc = 0.5
 
         elif cfg.coherence_type == "baseflow":
-            all_bf = read_hru_output(output_dir, prefix, "scalarAquiferBaseflow",
+            baseflow_var = anchor_var or "scalarAquiferBaseflow"
+            all_bf = read_hru_output(output_dir, prefix, baseflow_var,
                                      cfg.spinup_days, cfg.time_step_hours)
-            sim_q_rate = read_basin_output(output_dir, prefix, "averageRoutedRunoff",
-                                           cfg.spinup_days, cfg.time_step_hours)
-            # Coherence uses dimensionless ratios (BFI): keep both in same m/s units
-            all_bf_arr = {i: s.values for i, s in all_bf.items()}
-            j_coh = compute_coherence_baseflow(all_bf_arr, sim_q_rate.values)
+            all_bf_arr = {
+                i: _to_depth_rate_mps(s, baseflow_var).values
+                for i, s in all_bf.items()
+            }
+
+            # Coherence uses BFI ratios in consistent units.
+            # - bigBuckt: scalarAquiferBaseflow is HRU depth-rate, compare to HRU scalarTotalRunoff
+            #             and compute mean BFI cost across HRUs.
+            # - qTopmodel-style basin baseflow vars (e.g., basin__ColumnOutflow): compare
+            #             area-normalized baseflow against basin__TotalRunoff.
+            if _is_basin_volumetric_var(baseflow_var):
+                runoff_var = "basin__TotalRunoff"
+                sim_q_rate = read_basin_output(output_dir, prefix, runoff_var,
+                                               cfg.spinup_days, cfg.time_step_hours)
+                sim_q_for_coherence = _to_depth_rate_mps(sim_q_rate, runoff_var)
+                j_coh = compute_coherence_baseflow(all_bf_arr, sim_q_for_coherence.values)
+            else:
+                runoff_var = "scalarTotalRunoff"
+                all_runoff = read_hru_output(output_dir, prefix, runoff_var,
+                                             cfg.spinup_days, cfg.time_step_hours)
+                all_runoff_arr = {
+                    i: _to_depth_rate_mps(s, runoff_var).values
+                    for i, s in all_runoff.items()
+                }
+                j_coh = compute_coherence_baseflow(
+                    all_bf_arr,
+                    all_hru_total_runoff=all_runoff_arr,
+                )
 
             if not self._obs.empty:
                 # Anchor: compare simulated aquifer baseflow (m³/s) vs Eckhardt-separated
@@ -442,8 +492,13 @@ class TrialEvaluator:
                 bf_series_list = list(all_bf.values())
                 if bf_series_list:
                     df_bf = pd.concat(bf_series_list, axis=1)
-                    sim_bf_m3s = df_bf.mean(axis=1) * basin_area_m2  # m/s → m³/s
-                    sim_daily_bf = sim_bf_m3s.resample("D").mean()
+                    # basin__ColumnOutflow is already volumetric discharge (m3/s);
+                    # only depth-rate variables need basin-area conversion.
+                    if _is_basin_volumetric_var(baseflow_var):
+                        sim_bf_cms = df_bf.mean(axis=1)
+                    else:
+                        sim_bf_cms = df_bf.mean(axis=1) * basin_area_m2
+                    sim_daily_bf = sim_bf_cms.resample("D").mean()
                     sim_a, obs_a = sim_daily_bf.align(self._obs, join="inner")
                     j_anc = compute_anchor_baseflow(sim_a.values, obs_a.values)
                 else:
@@ -453,10 +508,11 @@ class TrialEvaluator:
 
         elif cfg.coherence_type == "runoff":
             # Soil stage: anchor to total basin streamflow; no HRU coherence.
-            sim_q = (
-                read_basin_output(output_dir, prefix, "averageRoutedRunoff",
-                                  cfg.spinup_days, cfg.time_step_hours)
-                * basin_area_m2   # m/s → m³/s
+            runoff_var = anchor_var or "averageRoutedRunoff"
+            sim_q = _to_discharge_cms(
+                read_basin_output(output_dir, prefix, runoff_var,
+                                  cfg.spinup_days, cfg.time_step_hours),
+                runoff_var,
             )
             j_coh = 0.0
             if not self._obs.empty:
@@ -468,10 +524,11 @@ class TrialEvaluator:
                 j_anc = 0.5
 
         elif cfg.coherence_type in ("streamflow", "routing"):
-            sim_q = (
-                read_basin_output(output_dir, prefix, "averageRoutedRunoff",
-                                  cfg.spinup_days, cfg.time_step_hours)
-                * basin_area_m2   # m/s → m³/s
+            streamflow_var = anchor_var or "averageRoutedRunoff"
+            sim_q = _to_discharge_cms(
+                read_basin_output(output_dir, prefix, streamflow_var,
+                                  cfg.spinup_days, cfg.time_step_hours),
+                streamflow_var,
             )
             j_coh = 0.0
             if not self._obs.empty:

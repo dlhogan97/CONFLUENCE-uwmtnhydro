@@ -78,7 +78,6 @@ class SummaPreProcessor:
 
         # Lazy cache for HRU terrain properties used by optional SW correction.
         self._aspect_sw_hru_lookup: Optional[Dict[int, Dict[str, float]]] = None
-        self._aspect_sw_domain_location: Optional[Tuple[float, float, float]] = None
 
     def _filter_forcing_filenames(self, files: List[str], source_dir: Path) -> List[str]:
         """Filter forcing filenames by dataset prefix and optional product tag selector."""
@@ -337,8 +336,8 @@ class SummaPreProcessor:
             dat.close()
 
     def _initialize_aspect_sw_hru_lookup(self) -> None:
-        """Build per-HRU aspect/slope/area lookup from catchment and DEM."""
-        if self._aspect_sw_hru_lookup is not None and self._aspect_sw_domain_location is not None:
+        """Build per-HRU aspect/slope/area lookup from catchment shapefile and DEM."""
+        if self._aspect_sw_hru_lookup is not None:
             return
 
         shp_path = self.catchment_path / self.catchment_name
@@ -348,65 +347,36 @@ class SummaPreProcessor:
         shp = gpd.read_file(shp_path)
         hru_col = self.config.get('CATCHMENT_SHP_HRUID')
         area_col = self.config.get('CATCHMENT_SHP_AREA')
-        lat_col = self.config.get('CATCHMENT_SHP_LAT')
-        lon_col = self.config.get('CATCHMENT_SHP_LON')
-
         shp[hru_col] = shp[hru_col].astype(int)
 
         aspect_values = self._calculate_aspect_from_dem(shp)
-        tan_slope_values = self._calculate_tan_slope_from_dem(shp)
+
+        # Prefer slope_mean_deg column saved by discretizer (circular-mean, UTM-correct).
+        # Fall back to computing tan_slope from the DEM if the column is absent.
+        default_tan_slope = float(self.config.get('ASPECT_SW_DEFAULT_TAN_SLOPE', 0.1))
+        if 'slope_mean_deg' in shp.columns:
+            self.logger.info("Reading slope from shapefile slope_mean_deg column")
+            tan_slope_values: Dict[int, float] = {}
+            for _, row in shp.iterrows():
+                hru_id = int(row[hru_col])
+                slope_deg = float(row['slope_mean_deg']) if pd.notna(row['slope_mean_deg']) else 15.0
+                tan_slope_values[hru_id] = float(np.tan(np.radians(max(slope_deg, 0.01))))
+        else:
+            tan_slope_values = self._calculate_tan_slope_from_dem(shp)
 
         default_aspect_deg = float(self.config.get('ASPECT_SW_DEFAULT_ASPECT_DEG', 180.0))
-        default_tan_slope = float(self.config.get('ASPECT_SW_DEFAULT_TAN_SLOPE', 0.1))
 
         lookup: Dict[int, Dict[str, float]] = {}
         for _, row in shp.iterrows():
             hru_id = int(row[hru_col])
             area_val = float(row[area_col]) if area_col in row and pd.notna(row[area_col]) else 1.0
-            lat_val = float(row[lat_col]) if lat_col in row and pd.notna(row[lat_col]) else np.nan
-            lon_val = float(row[lon_col]) if lon_col in row and pd.notna(row[lon_col]) else np.nan
-
             lookup[hru_id] = {
                 'aspect_deg': float(aspect_values.get(hru_id, default_aspect_deg)),
                 'tan_slope': float(tan_slope_values.get(hru_id, default_tan_slope)),
                 'area_m2': max(area_val, 1.0),
-                'lat': lat_val,
-                'lon': lon_val,
             }
 
-        # Use area-weighted centroid as representative solar geometry location.
-        lat_values = np.array([v['lat'] for v in lookup.values()], dtype=np.float64)
-        lon_values = np.array([v['lon'] for v in lookup.values()], dtype=np.float64)
-        area_values = np.array([v['area_m2'] for v in lookup.values()], dtype=np.float64)
-        valid_geo = np.isfinite(lat_values) & np.isfinite(lon_values)
-
-        if np.any(valid_geo):
-            weights = area_values[valid_geo]
-            weight_sum = np.sum(weights)
-            if weight_sum > 0:
-                rep_lat = float(np.sum(lat_values[valid_geo] * weights) / weight_sum)
-                rep_lon = float(np.sum(lon_values[valid_geo] * weights) / weight_sum)
-            else:
-                rep_lat = float(np.nanmean(lat_values[valid_geo]))
-                rep_lon = float(np.nanmean(lon_values[valid_geo]))
-        else:
-            rep_lat, rep_lon = 38.66, -106.85
-
-        # Estimate representative elevation from DEM for clear-sky pressure correction.
-        try:
-            with rasterio.open(self.dem_path) as src:
-                dem_arr = src.read(1)
-                nodata = src.nodata
-            if nodata is not None:
-                dem_valid = dem_arr[dem_arr != nodata]
-            else:
-                dem_valid = dem_arr[np.isfinite(dem_arr)]
-            rep_elev = float(np.nanmean(dem_valid)) if dem_valid.size > 0 else 2500.0
-        except Exception:
-            rep_elev = 2500.0
-
         self._aspect_sw_hru_lookup = lookup
-        self._aspect_sw_domain_location = (rep_lat, rep_lon, rep_elev)
 
     def _get_aspect_sw_arrays(self, hru_ids: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Return per-HRU aspect, tan_slope, and area arrays aligned to forcing HRU order."""
@@ -432,7 +402,13 @@ class SummaPreProcessor:
         return aspect_deg, tan_slope, area_m2
 
     def _apply_aspect_shortwave_correction(self, dat: xr.Dataset, file: str) -> xr.Dataset:
-        """Apply a clear-sky, slope/aspect-aware SW correction to HRU forcing."""
+        """Apply DAH-based time-invariant SW correction to HRU forcing.
+
+        DAH (Diurnal Anisotropic Heating) index:
+            DAH = cos(alpha_max - alpha) * arctan(beta)
+        where alpha_max=202.5° (SW-facing maximum), alpha=HRU aspect, beta=slope angle.
+        Multiplier = 1 + DAH_SCALING_FACTOR * DAH, normalized so area-weighted mean = 1.
+        """
         if self.config.get('APPLY_ASPECT_SW_CORRECTION', False) != True:
             return dat
 
@@ -441,133 +417,49 @@ class SummaPreProcessor:
             return dat
 
         try:
-            import pvlib  # type: ignore
-        except Exception as exc:
-            self.logger.warning(
-                f"File {file}: pvlib not available; skipping aspect SW correction ({exc})"
-            )
-            return dat
-
-        try:
-            if 'time' not in dat.coords or 'hruId' not in dat:
-                self.logger.warning(f"File {file}: Missing time or hruId; skipping aspect SW correction")
+            if 'hruId' not in dat:
+                self.logger.warning(f"File {file}: Missing hruId; skipping aspect SW correction")
                 return dat
 
             hru_ids = dat['hruId'].values.astype(int)
             aspect_deg, tan_slope, area_m2 = self._get_aspect_sw_arrays(hru_ids)
 
-            # Optional additive azimuth shift [deg] for SW correction only.
-            # This is applied to aspect angles before incidence calculations.
-            sw_rotation_deg = float(self.config.get('ASPECT_SW_AZIMUTH_ROTATION_DEG', 0.0))
-            if np.isfinite(sw_rotation_deg) and abs(sw_rotation_deg) > 1e-12:
-                aspect_deg = (aspect_deg + sw_rotation_deg) % 360.0
+            alpha_max_rad = np.radians(202.5)
+            alpha_rad = np.radians(aspect_deg)
+            beta_rad = np.arctan(np.maximum(tan_slope, 1e-6))
+            dah = np.cos(alpha_max_rad - alpha_rad) * beta_rad
 
-            # Convert SUMMA time coordinate (seconds since 1990-01-01) to datetime.
-            time_vals = dat['time'].values.astype(np.float64)
-            ref_time = pd.Timestamp('1990-01-01 00:00:00')
-            times = pd.to_datetime(ref_time + pd.to_timedelta(time_vals, unit='s'))
-
-            assert self._aspect_sw_domain_location is not None
-            rep_lat, rep_lon, rep_elev = self._aspect_sw_domain_location
-            site = pvlib.location.Location(latitude=rep_lat, longitude=rep_lon, altitude=rep_elev)
-
-            solar_pos = site.get_solarposition(times)
-            clear_sky = site.get_clearsky(times)
-
-            apparent_zenith = solar_pos['apparent_zenith'].to_numpy(dtype=np.float64)
-            solar_azimuth = solar_pos['azimuth'].to_numpy(dtype=np.float64)
-            ghi = clear_sky['ghi'].to_numpy(dtype=np.float64)
-            dni = clear_sky['dni'].to_numpy(dtype=np.float64)
-            dhi = clear_sky['dhi'].to_numpy(dtype=np.float64)
-
-            beta = np.arctan(np.maximum(tan_slope, 1e-6))
-            cos_beta = np.cos(beta)
-            sin_beta = np.sin(beta)
-            aspect_rad = np.radians(aspect_deg)
-
-            zenith_rad = np.radians(apparent_zenith)
-            cos_zenith = np.cos(zenith_rad)
-            sin_zenith = np.sin(zenith_rad)
-            solar_azimuth_rad = np.radians(solar_azimuth)
-
-            cos_incident = (
-                cos_zenith[:, np.newaxis] * cos_beta[np.newaxis, :]
-                + sin_zenith[:, np.newaxis] * sin_beta[np.newaxis, :]
-                * np.cos(solar_azimuth_rad[:, np.newaxis] - aspect_rad[np.newaxis, :])
-            )
-            cos_incident = np.maximum(cos_incident, 0.0)
-
-            albedo = float(self.config.get('ASPECT_SW_GROUND_ALBEDO', 0.2))
-            albedo_by_time = np.full(len(times), albedo, dtype=np.float64)
-
-            monthly_albedo = self.config.get('ASPECT_SW_MONTHLY_ALBEDO')
-            if monthly_albedo is not None:
-                try:
-                    if isinstance(monthly_albedo, str):
-                        monthly_values = [float(v.strip()) for v in monthly_albedo.split(',') if v.strip()]
-                    else:
-                        monthly_values = [float(v) for v in monthly_albedo]
-
-                    if len(monthly_values) != 12:
-                        self.logger.warning(
-                            f"File {file}: ASPECT_SW_MONTHLY_ALBEDO has {len(monthly_values)} values; expected 12. "
-                            "Using scalar ASPECT_SW_GROUND_ALBEDO instead."
-                        )
-                    else:
-                        monthly_array = np.clip(np.array(monthly_values, dtype=np.float64), 0.0, 1.0)
-                        month_index = pd.DatetimeIndex(times).month.values - 1
-                        albedo_by_time = monthly_array[month_index]
-                except Exception as exc:
-                    self.logger.warning(
-                        f"File {file}: Failed to parse ASPECT_SW_MONTHLY_ALBEDO ({exc}); "
-                        "using scalar ASPECT_SW_GROUND_ALBEDO."
-                    )
-
-            poa_direct = dni[:, np.newaxis] * cos_incident
-            poa_diffuse = dhi[:, np.newaxis] * ((1.0 + cos_beta[np.newaxis, :]) / 2.0)
-            poa_ground = ghi[:, np.newaxis] * albedo_by_time[:, np.newaxis] * ((1.0 - cos_beta[np.newaxis, :]) / 2.0)
-            poa_clear = poa_direct + poa_diffuse + poa_ground
-
-            min_ghi = float(self.config.get('ASPECT_SW_MIN_GHI', 1.0))
-            denom = np.maximum(ghi[:, np.newaxis], min_ghi)
-            multiplier = poa_clear / denom
-
-            # Keep nighttime and very low-sun periods unmodified.
-            min_cosz = float(self.config.get('ASPECT_SW_MIN_COSZ', 0.02))
-            low_sun_mask = (cos_zenith <= min_cosz) | (ghi <= min_ghi)
-            multiplier[low_sun_mask, :] = 1.0
-
-            ratio_min = float(self.config.get('ASPECT_SW_RATIO_MIN', 0.2))
-            ratio_max = float(self.config.get('ASPECT_SW_RATIO_MAX', 2.5))
-            multiplier = np.clip(multiplier, ratio_min, ratio_max)
+            scaling_factor = float(self.config.get('DAH_SCALING_FACTOR', 1.0))
+            multiplier = 1.0 + scaling_factor * dah
 
             if self.config.get('ASPECT_SW_AREA_NORMALIZE', True) == True:
-                area_weights = np.maximum(area_m2, 1.0)
-                weighted_mean = np.sum(multiplier * area_weights[np.newaxis, :], axis=1) / np.sum(area_weights)
-                valid = weighted_mean > 0
-                multiplier[valid, :] = multiplier[valid, :] / weighted_mean[valid, np.newaxis]
+                weights = np.maximum(area_m2, 1.0)
+                basin_mean = np.sum(multiplier * weights) / np.sum(weights)
+                if basin_mean > 0:
+                    multiplier = multiplier / basin_mean
+
+            ratio_min = float(self.config.get('ASPECT_SW_RATIO_MIN', 0.5))
+            ratio_max = float(self.config.get('ASPECT_SW_RATIO_MAX', 1.5))
+            multiplier = np.clip(multiplier, ratio_min, ratio_max).astype(np.float32)
 
             sw = dat['SWRadAtm']
-            if sw.dims == ('time', 'hru'):
-                sw.values = sw.values * multiplier.astype(sw.values.dtype, copy=False)
-            elif sw.dims == ('hru', 'time'):
-                sw.values = sw.values * multiplier.T.astype(sw.values.dtype, copy=False)
+            mult_da = xr.DataArray(multiplier, dims='hru')
+            if sw.dims in [('time', 'hru'), ('hru', 'time')]:
+                dat['SWRadAtm'] = sw * mult_da
             else:
-                self.logger.warning(
-                    f"File {file}: Unexpected SWRadAtm dims {sw.dims}; skipping aspect SW correction"
-                )
+                self.logger.warning(f"File {file}: Unexpected SWRadAtm dims {sw.dims}; skipping aspect SW correction")
                 return dat
 
-            sw.attrs['aspect_sw_correction'] = 'clear_sky_slope_aspect_multiplier'
+            dat['SWRadAtm'].attrs['aspect_sw_correction'] = 'dah_multiplier'
             self.logger.info(
-                f"File {file}: Applied aspect SW correction (ratio range {ratio_min} to {ratio_max})"
+                f"File {file}: Applied DAH SW correction "
+                f"(scaling={scaling_factor}, range [{multiplier.min():.3f}, {multiplier.max():.3f}])"
             )
             return dat
 
         except Exception as exc:
-            self.logger.warning(f"File {file}: Failed aspect SW correction; leaving SWRadAtm unchanged ({exc})")
+            self.logger.warning(f"File {file}: Failed DAH SW correction; leaving SWRadAtm unchanged ({exc})")
             return dat
-            del dat
 
     def _fix_time_coordinate_comprehensive(self, dataset: xr.Dataset, filename: str) -> xr.Dataset:
         """
@@ -1825,34 +1717,59 @@ class SummaPreProcessor:
         
         try:
             with rasterio.open(self.dem_path) as src:
-                dem = src.read(1)
+                dem = src.read(1).astype(np.float64)
                 transform = src.transform
-                
-                # Get cell sizes
-                cell_size_x = abs(transform[0])  # dx
-                cell_size_y = abs(transform[4])  # dy
-                
-                # Calculate gradients
-                dy, dx = np.gradient(dem.astype(np.float64), cell_size_y, cell_size_x)
-                
-                # Calculate slope magnitude (rise over run)
-                slope_magnitude = np.sqrt(dx*dx + dy*dy)
-                
-                # Convert to tangent of slope angle
-                # slope_magnitude is already rise/run = tan(slope_angle)
-                tan_slope = slope_magnitude
-                
-                # Set minimum slope to avoid zero values (SUMMA may have issues with zero slope)
+                crs = src.crs
+                nodata = src.nodata
+
+                dem_nodata_mask = ~np.isfinite(dem)
+                if nodata is not None:
+                    dem_nodata_mask |= (dem == nodata)
+                dem[dem_nodata_mask] = np.nan
+
+                cell_size_x = abs(transform[0])
+                cell_size_y = abs(transform[4])
+
+                # Convert geographic cell spacing (degrees) to meters.
+                if crs is not None and crs.is_geographic:
+                    nrows = dem.shape[0]
+                    lat_top = transform.f
+                    lats = lat_top - (np.arange(nrows) + 0.5) * cell_size_y
+                    dy_m = cell_size_y * 111320.0
+                    dx_m = cell_size_x * 111320.0 * np.cos(np.deg2rad(lats))[:, np.newaxis]
+                else:
+                    dy_m = cell_size_y
+                    dx_m = cell_size_x
+
+                # Horn (1981) weighted 3x3 gradient kernel, matching aspect workflow.
+                p = np.pad(dem, 1, mode='constant', constant_values=np.nan)
+
+                dz_dx = (
+                    (p[0:-2, 2:] + 2 * p[1:-1, 2:] + p[2:, 2:])
+                    - (p[0:-2, 0:-2] + 2 * p[1:-1, 0:-2] + p[2:, 0:-2])
+                ) / (8.0 * dx_m)
+
+                dz_dy = (
+                    (p[2:, 0:-2] + 2 * p[2:, 1:-1] + p[2:, 2:])
+                    - (p[0:-2, 0:-2] + 2 * p[0:-2, 1:-1] + p[0:-2, 2:])
+                ) / (8.0 * dy_m)
+
+                slope_magnitude = np.sqrt(dz_dx * dz_dx + dz_dy * dz_dy)
+
                 min_slope = 1e-6
-                tan_slope = np.maximum(tan_slope, min_slope)
-                
-                # Use zonal_stats to get mean tan_slope for all HRUs at once
+                tan_slope = np.maximum(slope_magnitude, min_slope)
+                tan_slope[dem_nodata_mask] = np.nan
+
+                nodata_fill = -9999.0
+                tan_for_stats = np.where(np.isfinite(tan_slope), tan_slope, nodata_fill)
+
+                # Use zonal_stats to get mean tan_slope for all HRUs at once.
                 mean_tan_slopes = rasterstats.zonal_stats(
                     shp.geometry,
-                    tan_slope,
+                    tan_for_stats,
                     affine=transform,
                     stats=['mean'],
-                    nodata=src.nodata
+                    nodata=nodata_fill
                 )
             
             # Create results dictionary
@@ -2037,17 +1954,23 @@ class SummaPreProcessor:
                         att['vegTypeIndex'][idx] = 1  # Use a default value (1 = Evergreen Needleleaf)
                         continue
                     
-                    tmp_hist = []
-                    for j in range(1, 18):
-                        col_name = f'IGBP_{j}'
-                        tmp_hist.append(shp[col_name][shp_mask].values[0])
-                    
-                    tmp_lc = np.argmax(np.asarray(tmp_hist)) + 1
-                    
-                    if shp[f'IGBP_{tmp_lc}'][shp_mask].values[0] != tmp_hist[tmp_lc - 1]:
-                        self.logger.warning(f'Index and mode land class do not match at hru_id {attribute_hru}')
-                        tmp_lc = 1  # Use a default value (1 = Evergreen Needleleaf) instead of -999
-                    
+                    # Prefer the pre-computed dominant class from the shapefile when available.
+                    # The argmax-on-raw-IGBP-counts fallback can pick the wrong class when
+                    # missing IGBP_X columns are zero-filled and pixel counts differ from the
+                    # area-weighted dominant class used during discretisation.
+                    if 'landClass' in shp.columns:
+                        tmp_lc = int(shp['landClass'][shp_mask].values[0])
+                        self.logger.debug(f"HRU {attribute_hru}: using landClass={tmp_lc} from shapefile")
+                    else:
+                        tmp_hist = []
+                        for j in range(1, 18):
+                            col_name = f'IGBP_{j}'
+                            tmp_hist.append(shp[col_name][shp_mask].values[0])
+                        tmp_lc = np.argmax(np.asarray(tmp_hist)) + 1
+                        if shp[f'IGBP_{tmp_lc}'][shp_mask].values[0] != tmp_hist[tmp_lc - 1]:
+                            self.logger.warning(f'Index and mode land class do not match at hru_id {attribute_hru}')
+                            tmp_lc = 1
+
                     if tmp_lc == 17:
                         if any(val > 0 for val in tmp_hist[0:-1]):  # HRU is mostly water but other land classes are present
                             tmp_lc = np.argmax(np.asarray(tmp_hist[0:-1])) + 1  # select 2nd-most common class
@@ -2091,44 +2014,91 @@ class SummaPreProcessor:
             intersect_name = 'catchment_with_dem.shp'
 
         intersect_hruId_var = self.config.get('CATCHMENT_SHP_HRUID')
-        elev_column ='elev_mean'
+        elev_column = 'elev_mean'
 
         shp = gpd.read_file(intersect_path / intersect_name)
-
-        do_downHRUindex = self.config.get('SETTINGS_SUMMA_CONNECT_HRUS') == 'yes'
+        has_elev_class  = 'elevClass'  in shp.columns
+        has_aspect_class = 'aspectClas' in shp.columns
 
         with nc4.Dataset(attribute_file, "r+") as att:
             gru_data = {}
             for idx in range(len(att['hruId'])):
-                hru_id = att['hruId'][idx]
-                gru_id = att['hru2gruId'][idx]
+                hru_id = int(att['hruId'][idx])
+                gru_id = int(att['hru2gruId'][idx])
                 shp_mask = (shp[intersect_hruId_var].astype(int) == hru_id)
-                
+
                 if any(shp_mask):
-                    elevation = shp[elev_column][shp_mask].values[0]
+                    row = shp[shp_mask].iloc[0]
+                    elevation = float(row[elev_column])
                     att['elevation'][idx] = elevation
 
-                    if do_downHRUindex:
-                        if gru_id not in gru_data:
-                            gru_data[gru_id] = []
-                        gru_data[gru_id].append((hru_id, elevation))
+                    if gru_id not in gru_data:
+                        gru_data[gru_id] = []
+                    entry = {
+                        'hru_id':   hru_id,
+                        'elevation': elevation,
+                        'elev_class':   int(row['elevClass'])  if has_elev_class  else None,
+                        'aspect_class': int(row['aspectClas']) if has_aspect_class else None,
+                    }
+                    gru_data[gru_id].append(entry)
                 else:
                     self.logger.warning(f"No elevation data found for HRU {hru_id}")
 
-            if do_downHRUindex:
-                self._set_downHRUindex(att, gru_data)
+            self._set_downHRUindex(att, gru_data)
 
     def _set_downHRUindex(self, att, gru_data):
-        """Set the downHRUindex based on elevation data."""
+        """Set downHRUindex for each HRU.
+
+        When elevClass + aspectClas are present (elevation×aspect domain):
+          each HRU drains to the same-aspect HRU in the next lower elevation
+          band; the lowest band drains to the outlet (0).
+
+        Otherwise (elevation-only domain):
+          HRUs are chained elevation-descending within the GRU; lowest → 0.
+        """
         for gru_id, hru_list in gru_data.items():
-            sorted_hrus = sorted(hru_list, key=lambda x: x[1], reverse=True)
-            for i, (hru_id, _) in enumerate(sorted_hrus):
-                idx = np.where(att['hruId'][:] == hru_id)[0][0]
-                if i == len(sorted_hrus) - 1:
-                    att['downHRUindex'][idx] = 0  # outlet
-                else:
-                    att['downHRUindex'][idx] = sorted_hrus[i+1][0]
-                self.logger.info(f"Set downHRUindex for HRU {hru_id} to {att['downHRUindex'][idx]}")
+            use_elev_aspect = all(
+                h['elev_class'] is not None and h['aspect_class'] is not None
+                for h in hru_list
+            )
+
+            if use_elev_aspect:
+                # Build lookup: (elev_class, aspect_class) → hru_id
+                band_aspect_to_hru = {
+                    (h['elev_class'], h['aspect_class']): h['hru_id']
+                    for h in hru_list
+                }
+                sorted_bands = sorted({h['elev_class'] for h in hru_list}, reverse=True)
+
+                for h in hru_list:
+                    idx = np.where(att['hruId'][:] == h['hru_id'])[0][0]
+                    ec = h['elev_class']
+                    ac = h['aspect_class']
+                    # Find next lower band that has a matching aspect
+                    down_hru = 0  # default: outlet
+                    for lower_band in sorted_bands:
+                        if lower_band < ec:
+                            key = (lower_band, ac)
+                            if key in band_aspect_to_hru:
+                                down_hru = band_aspect_to_hru[key]
+                                break
+                    att['downHRUindex'][idx] = down_hru
+                    self.logger.info(
+                        f"Set downHRUindex for HRU {h['hru_id']} "
+                        f"(band {ec} aspect {ac}) → {down_hru}"
+                    )
+            else:
+                # Elevation-only: chain by elevation descending
+                sorted_hrus = sorted(hru_list, key=lambda h: h['elevation'], reverse=True)
+                for i, h in enumerate(sorted_hrus):
+                    idx = np.where(att['hruId'][:] == h['hru_id'])[0][0]
+                    if i == len(sorted_hrus) - 1:
+                        att['downHRUindex'][idx] = 0
+                    else:
+                        att['downHRUindex'][idx] = sorted_hrus[i + 1]['hru_id']
+                    self.logger.info(
+                        f"Set downHRUindex for HRU {h['hru_id']} → {att['downHRUindex'][idx]}"
+                    )
 
     def _get_default_path(self, path_key: str, default_subpath: str) -> Path:
         """

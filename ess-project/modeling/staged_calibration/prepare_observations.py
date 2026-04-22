@@ -32,26 +32,28 @@ import pandas as pd
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
+BASIN = "Tuolumne_River"
 SCRATCH_ROOT = Path("/scratch/dlhogan/ess-project-data")
 
-LUMPED_OBS_DIR = SCRATCH_ROOT / "domain_East_River_lumped" / "observations"
+LUMPED_OBS_DIR = SCRATCH_ROOT / f"domain_{BASIN}_lumped" / "observations"
 
-SNOW_RAW = LUMPED_OBS_DIR / "snow" / "380_Butte_sntl_obs.csv"
-STREAMFLOW_RAW = LUMPED_OBS_DIR / "streamflow" / "preprocessed" / "East_River_lumped_streamflow_processed.csv"
-ET_LUMPED_RAW = LUMPED_OBS_DIR / "et" / "openet_et_ensemble_East_monthly.csv"
+SNOW_RAW = next((LUMPED_OBS_DIR / "snow").glob("*.csv"), None)
+STREAMFLOW_RAW = LUMPED_OBS_DIR / "streamflow" / "preprocessed" / f"{BASIN}_lumped_streamflow_processed.csv"
+# save as first csv in directory
+ET_LUMPED_RAW = next((LUMPED_OBS_DIR / "et").glob("*.csv"), None)
 
 # Domain-specific output observation directories (formatted files written here)
 DOMAIN_OBS_DIRS = {
-    "lumped":                 SCRATCH_ROOT / "domain_East_River_lumped"                 / "observations" / "formatted",
-    "distributed":            SCRATCH_ROOT / "domain_East_River_distributed"            / "observations" / "formatted",
-    "distributed_elevAspect": SCRATCH_ROOT / "domain_East_River_distributed_elevAspect" / "observations" / "formatted",
+    "lumped":                 SCRATCH_ROOT / f"domain_{BASIN}_lumped"                 / "observations" / "formatted",
+    "distributed":            SCRATCH_ROOT / f"domain_{BASIN}_distributed"            / "observations" / "formatted",
+    "distributed_elevAspect": SCRATCH_ROOT / f"domain_{BASIN}_distributed_elevAspect" / "observations" / "formatted",
 }
 
 # Raw OpenET downloads (written by download_distributed_et.py)
 ET_RAW = {
     "lumped":                 ET_LUMPED_RAW,
-    "distributed":            SCRATCH_ROOT / "domain_East_River_distributed"            / "observations" / "et" / "openet_et_ensemble_East_distributed_monthly.csv",
-    "distributed_elevAspect": SCRATCH_ROOT / "domain_East_River_distributed_elevAspect" / "observations" / "et" / "openet_et_ensemble_East_elevAspect_monthly.csv",
+    "distributed":            SCRATCH_ROOT / f"domain_{BASIN}_distributed"            / "observations" / "et" / "openet_et_ensemble_East_distributed_monthly.csv",
+    "distributed_elevAspect": SCRATCH_ROOT / f"domain_{BASIN}_distributed_elevAspect" / "observations" / "et" / "openet_et_ensemble_East_elevAspect_monthly.csv",
 }
 
 INCHES_TO_MM = 25.4
@@ -69,11 +71,23 @@ def prepare_snow(out_path: Path) -> None:
     # Strip timezone, floor to date (SNOTEL readings are at 08:00 UTC)
     df["date"] = df["datetime"].dt.tz_localize(None).dt.normalize()
 
+    # tag any negative values as NaN
+    df["SWE"] = df["SWE"].apply(lambda x: x if x >= 0 else float("nan"))
+    
+    # set  very large diffs > 100 mm between consecutive days to nan, which may indicate data issues
+    df["SWE_diff"] = df["SWE"].diff().abs()
+    df.loc[df["SWE_diff"] > 100 / INCHES_TO_MM, "SWE"] = float("nan")
+    # drop swe_diff column
+    df = df.drop(columns=["SWE_diff"])
     # Confirm units and convert
-    if df["SWE_units"].iloc[0] != "in":
+    if df["SWE_units"].iloc[0] not in ["in", "INCHES"]:
         raise ValueError(f"Unexpected SWE units: {df['SWE_units'].unique()}")
     df["value"] = df["SWE"].astype(float) * INCHES_TO_MM
-
+    df["value"] = df["value"].apply(lambda x: x if x <= 1500 else float("nan"))
+    # interpolate values for up to last value
+    df["value"] = df["value"].interpolate()
+    # set values above 100 mm in July, August and September to 0
+    df.loc[(df["date"].dt.month.isin([7, 8, 9, 10])) & (df["value"] > 100), "value"] = 0
     # Daily: one reading per day already (SNOTEL is daily), but deduplicate just in case
     daily = (
         df[["date", "value"]]
@@ -104,8 +118,8 @@ def prepare_streamflow(out_path: Path) -> None:
     # Resample to daily mean; require at least 18 of 24 hourly values
     daily = df["value"].resample("1D").mean()
     # Mark days with too many missing hours as NaN
-    count = df["value"].resample("1D").count()
-    daily[count < 18] = float("nan")
+    # count = df["value"].resample("1D").count()
+    # daily[count < 18] = float("nan")
     daily = daily.dropna().reset_index()
     daily.columns = ["date", "value"]
     daily["date"] = daily["date"].dt.strftime("%Y-%m-%d")
@@ -126,8 +140,8 @@ OPENET_START_DATE = "2016-01-01"  # OpenET ensemble reliable coverage begins ~20
 
 # Per-HRU raw file locations (written by download_distributed_et.py --per-hru)
 ET_PER_HRU_RAW = {
-    "distributed":            SCRATCH_ROOT / "domain_East_River_distributed"            / "observations" / "et" / "openet_et_per_hru_distributed_monthly.csv",
-    "distributed_elevAspect": SCRATCH_ROOT / "domain_East_River_distributed_elevAspect" / "observations" / "et" / "openet_et_per_hru_distributed_elevAspect_monthly.csv",
+    "distributed":            SCRATCH_ROOT / f"domain_{BASIN}_distributed"            / "observations" / "et" / "openet_et_per_hru_distributed_monthly.csv",
+    "distributed_elevAspect": SCRATCH_ROOT / f"domain_{BASIN}_distributed_elevAspect" / "observations" / "et" / "openet_et_per_hru_distributed_elevAspect_monthly.csv",
 }
 
 

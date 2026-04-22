@@ -35,18 +35,21 @@ logger = logging.getLogger(__name__)
 PHYSICAL_BOUNDS: Dict[str, tuple] = {
     "albedoDecayRate":               (1e5,  5e6),
     "k_soil":                        (1e-7, 1e-2),
-    "vGn_alpha":                     (-3.0, -0.01),
-    "vGn_n":                         (1.3, 5.0),
-    "qSurfScale":                    (1.0,  50.0),
+    "vGn_alpha":                     (-3.0, -1.),
+    "vGn_n":                         (1.0, 2.0),
+    "qSurfScale":                    (1.0,  10.0),
     "rootingDepth":                  (0.1,  3.0),
     "theta_sat":                     (0.3,  0.6),
     "aquiferScaleFactor":            (0.01, 100.0),
     "aquiferBaseflowExp":            (0.5,  10.0),
     "aquiferBaseflowRate":           (1e-10, 1e-3),
+    "zScale_TOPMODEL":               (1.0, 5.0),
+    "kAnisotropic":                  (0.01, 5.0),
+    "minStomatalResistance":          (1,  20.0),
     # Routing (GRU-level)
     "routingGammaShape":             (1.0,  10.0),
     "routingGammaScale":             (500.0, 172800.0),
-    # "frozenPrecipMultip":            (0.80,  1.20), --- IGNORE ---
+    "frozenPrecipMultip":            (0.80,  1.20), 
 }
 
 # Default multiplier search bounds for differential_evolution
@@ -63,7 +66,7 @@ MULTIPLIER_BOUNDS: Dict[str, tuple] = {
     "aquiferBaseflowRate":       (0.1,  5.0),
     "routingGammaShape":         (0.5,  3.0),
     "routingGammaScale":         (0.5,  3.0),
-    # "frozenPrecipMultip":        (0.80, 1.20), --- IGNORE ---
+    "frozenPrecipMultip":        (0.80, 1.20), 
 }
 
 

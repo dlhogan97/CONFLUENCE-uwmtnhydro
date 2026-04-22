@@ -81,9 +81,11 @@ def run_summa(
     elapsed = time.perf_counter() - t0
 
     if result.returncode != 0:
-        # Log the first 20 lines of stderr for diagnosis
-        stderr_head = "\n".join(result.stderr.splitlines()[:20])
-        logger.warning("[%s] SUMMA exited %d (%.1fs)\n%s", label, result.returncode, elapsed, stderr_head)
+        # SUMMA writes FATAL ERROR messages to stdout; log both streams for diagnosis
+        stdout_tail = "\n".join(result.stdout.splitlines()[-20:])
+        stderr_head = "\n".join(result.stderr.splitlines()[:5])
+        logger.warning("[%s] SUMMA exited %d (%.1fs)\nSTDOUT(tail):\n%s\nSTDERR:\n%s",
+                       label, result.returncode, elapsed, stdout_tail, stderr_head)
         return False
 
     # Check for numerical instability strings even in a zero-exit run
@@ -259,6 +261,7 @@ def patch_file_manager(
     sim_start: Optional[str] = None,
     sim_end: Optional[str] = None,
     out_file_prefix: Optional[str] = None,
+    trial_param_filename: Optional[str] = None,
 ) -> Path:
     """Update paths and optionally simulation times in fileManager.txt.
 
@@ -272,6 +275,9 @@ def patch_file_manager(
     out_file_prefix:
         If provided, override outFilePrefix so SUMMA output filenames match
         what the optimizer expects when globbing for results.
+    trial_param_filename:
+        If provided, override trialParamFile so SUMMA reads the correct
+        trial-specific parameter file (e.g. 'trialParams_physReal.nc').
 
     Returns the path to the patched fileManager.txt.
     """
@@ -298,12 +304,15 @@ def patch_file_manager(
         elif stripped.startswith("outFilePrefix") and out_file_prefix is not None:
             key_part = line[: line.index("outFilePrefix") + len("outFilePrefix")]
             new_lines.append(f"{key_part}    '{out_file_prefix}'")
+        elif stripped.startswith("trialParamFile") and trial_param_filename is not None:
+            key_part = line[: line.index("trialParamFile") + len("trialParamFile")]
+            new_lines.append(f"{key_part}    '{trial_param_filename}'")
         else:
             new_lines.append(line)
 
     fm_path.write_text("\n".join(new_lines) + "\n")
-    logger.debug("Patched fileManager.txt → outputPath=%s  prefix=%s  sim=%s→%s",
-                 output_dir, out_file_prefix, sim_start, sim_end)
+    # logger.debug("Patched fileManager.txt → outputPath=%s  prefix=%s  trialParam=%s  sim=%s→%s",
+    #              output_dir, out_file_prefix, trial_param_filename, sim_start, sim_end)
     return fm_path
 
 
