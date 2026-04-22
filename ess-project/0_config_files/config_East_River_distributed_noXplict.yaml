@@ -29,7 +29,7 @@ FORCING_VARIABLES: default
 FORCING_MEASUREMENT_HEIGHT: 2
 FORCING_TIME_STEP_SIZE: 3600
 APPLY_LAPSE_RATE: true
-LAPSE_RATE: 0.0065
+LAPSE_RATE: 0.0035
 # Optional: apply clear-sky slope/aspect SW multiplier after EASYMORE remap.
 # Enable this for aspect-aware forcing experiments.
 APPLY_ASPECT_SW_CORRECTION: false

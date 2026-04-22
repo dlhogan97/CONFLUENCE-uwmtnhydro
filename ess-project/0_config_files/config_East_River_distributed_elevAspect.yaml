@@ -29,20 +29,13 @@ FORCING_VARIABLES: default
 FORCING_MEASUREMENT_HEIGHT: 2
 FORCING_TIME_STEP_SIZE: 3600
 APPLY_LAPSE_RATE: true
-LAPSE_RATE: 0.0065
-# Optional: apply clear-sky slope/aspect SW multiplier after EASYMORE remap.
-# Enable this for aspect-aware forcing experiments.
+LAPSE_RATE: 0.0035
+# Optional: apply DAH-based slope/aspect SW multiplier after EASYMORE remap.
 APPLY_ASPECT_SW_CORRECTION: false
 ASPECT_SW_AREA_NORMALIZE: true
-ASPECT_SW_GROUND_ALBEDO: 0.2
-ASPECT_SW_MONTHLY_ALBEDO: [0.75, 0.75, 0.65, 0.55, 0.45, 0.35, 0.25, 0.25, 0.25, 0.25, 0.55, 0.75]
-ASPECT_SW_MIN_COSZ: 0.02
-ASPECT_SW_MIN_GHI: 1.0
-ASPECT_SW_RATIO_MIN: 0.2
-ASPECT_SW_RATIO_MAX: 2.5
-# Additive azimuth shift [deg] used only inside SW correction.
-# Use +/-90 to diagnose quarter-turn convention mismatches.
-ASPECT_SW_AZIMUTH_ROTATION_DEG: -90.0
+ASPECT_SW_RATIO_MIN: 0.5
+ASPECT_SW_RATIO_MAX: 1.5
+DAH_SCALING_FACTOR: 1.0
 FORCING_SHAPE_LAT_NAME: lat
 FORCING_SHAPE_LON_NAME: lon
 

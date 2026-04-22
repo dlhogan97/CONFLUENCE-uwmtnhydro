@@ -23,9 +23,9 @@ description: "Evapotranspiration: rooting depth and ET process controls"
 
 params:
   - rootingDepth
-  # - minStomatalResistance
-  - critSoilTranspire
-  - critSoilWilting
+  - minStomatalResistance
+  # - critSoilTranspire
+  # - critSoilWilting
   # Add more ET params here as needed:
   # - theta_res
   # - leafScaleFactor (if using canopy scaling)
@@ -33,45 +33,49 @@ params:
 # ── Spatial weights ─────────────────────────────────────────────────────────
 # MODIS land cover codes from hru_landcover in optimization_config:
 #   16 = barren/sparsely vegetated
-#    7 = open shrublands
+#    8 = open shrublands
 #    1 = evergreen needleleaf forest
 spatial_weights:
   rootingDepth:
     16: 0.40    # alpine barren/rocky — shallow (~0.4 m)
     1:  1.50    # evergreen forest — deep roots (~1.5 m)
     7:  1.00    # open shrublands — reference depth (~1.0 m)
+  minStomatalResistance:
+    16: 1.0    # alpine barren/rocky — shallow (~0.4 m)
+    1:  1.0    # evergreen forest — deep roots (~1.5 m)
+    7:  1.00    # open shrublands — reference depth (~1.0 m)
   # minStomatalResistance:
   #   16: 1.00    # alpine plants may have higher stomatal resistance
   #   1:  1.00    # forest plants may have lower stomatal resistance
   #   7:  1.00    # shrublands — reference
-  critSoilTranspire:
-    16: 0.80    # alpine plants may stop transpiring at higher soil moisture (adapted to dry conditions)
-    1:  0.85    # forest plants may keep transpiring at lower soil moisture (buffered by deeper roots)
-    7:  1.00    # shrublands — reference
-  critSoilWilting:
-    16: 0.60    # alpine plants may wilt at higher soil moisture (less drought-tolerant)
-    1:  0.80    # forest plants may wilt at lower soil moisture (more drought-tolerant)
-    7:  1.00    # shrublands — reference
+  # critSoilTranspire:
+  #   16: 0.80    # alpine plants may stop transpiring at higher soil moisture (adapted to dry conditions)
+  #   1:  0.85    # forest plants may keep transpiring at lower soil moisture (buffered by deeper roots)
+  #   7:  1.00    # shrublands — reference
+  # critSoilWilting:
+  #   16: 0.60    # alpine plants may wilt at higher soil moisture (less drought-tolerant)
+  #   1:  0.80    # forest plants may wilt at lower soil moisture (more drought-tolerant)
+  #   7:  1.00    # shrublands — reference
 
 anchor_variable: scalarTotalET
 coherence_type: et
 
 # anchor_metric: metric used to score simulated vs observed ET.
 # Options: KGE | KGE_log | NSE | NRMSE
-anchor_metric: KGE
+anchor_metric: NSE
 
 # Higher anchor weight — OpenET gridded estimates spatially dense and reliable.
 w_anchor: 0.55
 
 multiplier_search_bounds:
   rootingDepth: [0.25, 4.0]   # barren floor ~0.1m, deep forest up to 3m
-  # minStomatalResistance: [0.7, 1.5]
-  critSoilTranspire: [0.7, 1.5]
-  critSoilWilting: [0.7, 1.5]
+  minStomatalResistance: [0.7, 1.5]
+  # critSoilTranspire: [0.7, 1.5]
+  # critSoilWilting: [0.7, 1.5]
 
 
 max_iterations: 75
-popsize: 10           # pop = 10 × 1 param = 10 members → fills 10 cores in 1 batch
+popsize: 8           # pop = 10 × 1 param = 10 members → fills 10 cores in 1 batch
 tol: 0.005
 
 spinup_days: 365

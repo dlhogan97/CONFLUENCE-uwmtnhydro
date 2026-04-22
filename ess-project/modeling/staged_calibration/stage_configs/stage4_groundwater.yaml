@@ -50,7 +50,7 @@ multiplier_search_bounds:
   aquiferBaseflowRate:  [0.1, 10.0]
 
 max_iterations: 75
-popsize: 10            # pop = 5 × 3 = 15 members; bounds kept wide — prior stage3 used wrong anchor
+popsize: 15            # pop = 5 × 3 = 15 members; bounds kept wide — prior stage3 used wrong anchor
 tol: 0.005
 
 spinup_days: 365

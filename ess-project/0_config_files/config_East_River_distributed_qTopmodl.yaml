@@ -128,11 +128,11 @@ SUMMA_DECISION_OPTIONS:
   f_Richards:
   - mixdform
   groundwatr:
-  - bigBuckt
+  - qTopmodl
   hc_profile:
-  - constant
+  - pow_prof
   bcLowrSoiH:
-  - drainage
+  - noXplict
   thCondSoil:
   - funcSoilWet
   spatial_gw:

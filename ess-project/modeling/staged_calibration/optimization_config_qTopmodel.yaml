@@ -21,9 +21,10 @@ results_dir: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/opt
 
 stage_configs_dir: /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs
 
-# Stage 1 (snow) is skipped — reusing frozen snow params from a prior run.
+# Stages 2 is skipped. rootingDepth calibrated has calibrated rootingDepth.
 stages:
-  - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs/stage2_et.yaml
+  # - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs/stage1_snow.yaml
+  # - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs/stage2_et.yaml
   - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs/stage4_groundwater_qTopmodel.yaml
   - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs/stage5_routing.yaml
 
@@ -38,14 +39,17 @@ run:
 
   # Base trialParams file with a-priori per-HRU parameter values.
   # This is the file that multipliers are applied to.
-  base_trial_params_nc: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/settings/SUMMA/trialParams_physReal.nc
+  # Points to the ET-frozen params so calibrated rootingDepth is preserved.
+  # k_soil and vGn_n should be patched to observation-based values before running
+  # (see patch command in project notes).
+  base_trial_params_nc: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/simulations/lightweight_distributed/run_20260421_120030/settings/SUMMA/trialParams.nc
 
   # Optional: seed initial parameter values from calib_bounds_multiHRU.json
   # `value` fields before stage multipliers are applied.
   # base_calib_bounds_json: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/settings/SUMMA/calib_bounds_multiHRU.json
 
   # Filename of the trial params file as SUMMA expects it.
-  param_nc_filename: trialParams_physReal.nc
+  param_nc_filename: trialParams.nc
 
   # SUMMA output file prefix — patched into fileManager.txt for every trial.
   output_prefix: qTopmodl_elevation
@@ -62,7 +66,7 @@ run:
 
   # Number of parallel workers for differential_evolution.
   # Set to -1 to use all available CPUs, or 1 for sequential (easier debugging).
-  parallel_workers: 15
+  parallel_workers: 8
 
   # Random seed for reproducibility.
   random_seed: 42
@@ -103,14 +107,14 @@ run:
   # No aspect discretization for the 5-HRU elevation-only domain
   hru_aspects: {}
 
-  # HRU land cover by elevation band (explicit MODIS classes)
+  # HRU land cover by elevation band (MODIS classes)
   # 16=barren/sparsely vegetated, 7=open shrublands, 1=evergreen needleleaf forest
   hru_landcover:
-    0: 16    # highest — barren/sparsely vegetated
-    1: 7     # upper subalpine — open shrublands
-    2: 1     # mid-elevation — evergreen needleleaf forest
-    3: 1     # lower forest — evergreen needleleaf forest
-    4: 7     # valley/bottom bands represented as open shrublands
+    0: 16    # highest (~3994m)  — barren/sparsely vegetated
+    1: 7     # upper (~3696m)    — open shrublands
+    2: 1     # mid (~3364m)      — evergreen needleleaf forest
+    3: 1     # lower (~3010m)    — evergreen needleleaf forest
+    4: 7     # valley (~2705m)   — open shrublands
 
   # SNOTEL anchor sites for snow stage.
   # Each site anchors the HRU whose elevation is closest to the station.

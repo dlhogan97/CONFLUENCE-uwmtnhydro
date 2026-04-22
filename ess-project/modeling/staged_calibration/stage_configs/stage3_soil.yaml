@@ -42,7 +42,7 @@ params:
 # ── Spatial weights ─────────────────────────────────────────────────────────
 # MODIS land cover codes from hru_landcover in optimization_config:
 #   16 = barren/sparsely vegetated
-#    7 = open shrublands
+#    8 = open shrublands
 #    1 = evergreen needleleaf forest
 spatial_weights:
   k_soil:
@@ -66,10 +66,10 @@ anchor_variable: averageInstantRunoff   # basin total routed runoff → streamfl
 coherence_type: runoff                 # compares total Q to streamflow obs
 
 # anchor_metric: metric used to score simulated vs observed streamflow.
-# Options: KGE | KGE_log | NSE | NRMSE
+# Options: KGE | KGE_log | NSE | NRMSE | MONTHLY_PLUS_TOTAL
 # KGE balances volume, timing, and variability.
 # KGE_log emphasises recession limbs and low flows.
-anchor_metric: KGE
+anchor_metric: MONTHLY_PLUS_TOTAL
 
 # Pure streamflow anchor — no HRU coherence metric for runoff stage.
 w_anchor: 0.85
@@ -80,8 +80,8 @@ multiplier_search_bounds:
   vGn_n:        [1, 1.5]   # 0.87 → 2.6 (Van Genuchten n must stay > 1)
   qSurfScale:   [0.20, 8.0]    # 0.2 → 8.0 × base
 
-max_iterations: 75
-popsize: 10            # pop = 3 × 5 params = 15 members (2 rounds of 12 cores → ~24 runs/gen)
+max_iterations: 50
+popsize: 15            # pop = 3 × 5 params = 15 members (2 rounds of 12 cores → ~24 runs/gen)
 tol: 0.005
 
 spinup_days: 365

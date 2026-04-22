@@ -37,10 +37,10 @@ w_anchor: 0.9
 
 # Base values in trialParams.nc (gru dim):
 #   routingGammaShape = 2.5  →  search range [0.5×2.5=1.25, 3×2.5=7.5] ✓ within [1,10]
-#   routingGammaScale = 46000 s →  search range [0.3×46k=13.8k, 3.75×46k=172.5k s] ✓ within [500,172800]
+#   routingGammaScale = 46000 s →  search range [0.3×46k=13.8k, 2.0×46k=92k s] ✓ within [500,172800]
 multiplier_search_bounds:
-  routingGammaShape: [0.25,  3.0]
-  routingGammaScale: [0.3,  3.5]   # upper limit keeps scale below physical max (172800 s)
+  routingGammaShape: [0.25,  2.0]
+  routingGammaScale: [0.3,  2.0]   # upper limit keeps scale below physical max (172800 s)
 
 max_iterations: 75
 popsize: 5            # pop = 5 × 2 = 10 members; routing is fast, tight search

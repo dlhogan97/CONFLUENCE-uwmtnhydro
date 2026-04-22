@@ -26,12 +26,23 @@ description: "Snow accumulation, albedo decay, shortwave partitioning"
 params:
   - albedoDecayRate
   - frozenPrecipMultip
-
+spatial_weights:
+  frozenPrecipMultip:
+    16: 0.8    # barren rocky substrate → lower Ksat (~2.2e-5 m/s)
+    1:  0.9    # evergreen forest soils → higher Ksat (~6.0e-5 m/s)
+    7:  1.0    # open shrublands reference (~4.0e-5 m/s)
+  albedoDecayRate:
+    16: 0.75    # barren rocky substrate → lower Ksat (~2.2e-5 m/s)
+    1:  1.0    # evergreen forest soils → higher Ksat (~6.0e-5 m/s)
+    7:  1.0    # open shrublands reference (~4.0e-5 m/s)
 anchor_variable: scalarSWE
 coherence_type: snow
+# anchor_metric: metric used to score simulated vs observed ET.
+# Options: KGE | KGE_log | NSE | NRMSE
+anchor_metric: NSE
 
 # Objective weights (w_anchor + w_coherence = 1.0)
-# Use high coherence weight because we only have 1–2 SNOTEL sites for ~8 HRUs.
+# Use high coherence weight because we only have 1–2 SNOTEL sites for ~5 HRUs.
 w_anchor: 0.4
 
 # Multiplier search bounds [lo, hi] — applied on top of the base parameter value.
@@ -43,8 +54,8 @@ multiplier_search_bounds:
   frozenPrecipMultip: [0.8, 1.2]   # prior best 1.15; 
 
 # Optimizer settings
-max_iterations: 75
-popsize: 10            # differential_evolution: pop = popsize × n_params = 5×4 = 20 members
+max_iterations: 50
+popsize: 6            # differential_evolution: pop = popsize × n_params = 5×4 = 20 members
 tol: 0.005
 
 spinup_days: 365
