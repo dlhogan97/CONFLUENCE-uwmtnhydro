@@ -50,6 +50,7 @@ PHYSICAL_BOUNDS: Dict[str, tuple] = {
     "routingGammaShape":             (1.0,  10.0),
     "routingGammaScale":             (500.0, 172800.0),
     "frozenPrecipMultip":            (0.80,  1.20), 
+    "tempCritRain":                 (270.0, 275.15),  # 0-3 °C in Kelvin
 }
 
 # Default multiplier search bounds for differential_evolution
@@ -67,6 +68,7 @@ MULTIPLIER_BOUNDS: Dict[str, tuple] = {
     "routingGammaShape":         (0.5,  3.0),
     "routingGammaScale":         (0.5,  3.0),
     "frozenPrecipMultip":        (0.80, 1.20), 
+    "tempCritRain":             (0.99, 1.01),
 }
 
 

@@ -1,0 +1,88 @@
+# ============================================================================
+# Stage 3: Soil Hydraulics
+# ============================================================================
+# Goal: Correct how water moves through the soil column — infiltration rate,
+#       drainage speed, saturation-excess runoff partitioning, and porosity.
+#       Snow and ET parameters are FROZEN from stages 1–2.
+#
+# Physical reasoning:
+#   k_soil       — saturated hydraulic conductivity.  Controls drainage rate
+#                  and infiltration-excess runoff.  Sandy loam ~1e-5 m/s;
+#                  gravel can reach 1e-3 m/s; tight silt ~1e-7 m/s.
+#   vGn_alpha    — Van Genuchten air-entry pressure (stored negative in SUMMA).
+#                  Higher |alpha| → soil desaturates faster after rain.
+#                  Loam range: −0.5 to −3.0 m⁻¹.
+#   vGn_n        — Van Genuchten shape parameter.  Higher n → sharper
+#                  retention curve → faster drainage below field capacity.
+#                  Sandy loam: 1.2–2.0; clay loam: 1.1–1.4.
+#   qSurfScale   — scales the fraction of the surface that generates
+#                  saturation-excess runoff.  Rocky barren alpine produces
+#                  more surface runoff than buffered forest soils.
+#   theta_sat    — total porosity.  Limits how much water the soil can hold
+#                  before generating saturation-excess.
+#
+# Constrained by:
+#   - Total streamflow at the outlet (USGS 09112500, East River at Almont)
+#   - anchor_metric controls which skill score is minimised
+#
+# Note: Unlike the routing stage, this stage targets how soil process controls
+#       affect total runoff generation — not the timing smoothing of routing.
+#       Use KGE or NSE for overall volume + timing; KGE_log to emphasise
+#       low-flow/recession periods.
+# ============================================================================
+
+name: stage3_soil
+description: "Soil hydraulics: k_soil, Van Genuchten params, surface runoff scale, porosity"
+
+params:
+  - k_soil
+  - vGn_alpha
+  - vGn_n
+  - qSurfScale
+# ── Spatial weights ─────────────────────────────────────────────────────────
+# MODIS land cover codes from hru_landcover in optimization_config:
+#   16 = barren/sparsely vegetated
+#    8 = open shrublands
+#    1 = evergreen needleleaf forest
+spatial_weights:
+  k_soil:
+    16: 0.55    # barren rocky substrate → lower Ksat (~5.5e-6 m/s at base 1e-5)
+    1:  1.50    # evergreen forest soils → higher Ksat (~1.5e-5 m/s)
+    7:  1.00    # open shrublands — domain-mean reference
+  vGn_alpha:
+    16: 1.30    # coarser/rocky — higher air-entry (desaturates faster)
+    1:  0.80    # forest loam — lower air-entry (wetter longer)
+    7:  1.00    # shrublands — reference
+  vGn_n:
+    16: 3.00    # rocky → sharper retention curve
+    1:  2.00    # forest clay-loam → gentler curve
+    7:  1.00    # shrublands — reference
+  qSurfScale:
+    16: 1.0    # barren rocky → more saturation-excess surface runoff
+    1:  1.0    # forest — infiltration buffers surface runoff
+    7:  1.0    # shrublands — lower surface runoff than barren
+
+anchor_variable: averageInstantRunoff   # basin total routed runoff → streamflow
+coherence_type: runoff                 # compares total Q to streamflow obs
+
+# anchor_metric: metric used to score simulated vs observed streamflow.
+# Options: KGE | KGE_log | NSE | NRMSE | MONTHLY_PLUS_TOTAL
+# KGE balances volume, timing, and variability.
+# KGE_log emphasises recession limbs and low flows.
+anchor_metric: MONTHLY_PLUS_TOTAL
+
+# Pure streamflow anchor — no HRU coherence metric for runoff stage.
+w_anchor: 0.85
+
+multiplier_search_bounds:
+  k_soil:       [0.1, 9.0]    # 1.5e-6 → 3e-5 m/s at base 1e-4
+  # vGn_alpha:    [0.50, 2.0]    # multiplied against −2.0 → −1.0 to −4.0 m⁻¹
+  vGn_n:        [1, 1.5]   # 0.87 → 2.6 (Van Genuchten n must stay > 1)
+  qSurfScale:   [0.20, 8.0]    # 0.2 → 8.0 × base
+
+max_iterations: 50
+popsize: 15            # pop = 3 × 5 params = 15 members (2 rounds of 12 cores → ~24 runs/gen)
+tol: 0.005
+
+spinup_days: 365
+time_step_hours: 1.0

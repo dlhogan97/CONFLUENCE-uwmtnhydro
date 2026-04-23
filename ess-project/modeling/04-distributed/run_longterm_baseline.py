@@ -26,19 +26,18 @@ from pathlib import Path
 # Defaults — edit here or pass as CLI args
 # ---------------------------------------------------------------------------
 SETTINGS_DIR = Path(
-    "/scratch/dlhogan/ess-project-data/domain_East_River_distributed/settings/SUMMA"
+    "/scratch/dlhogan/ess-project-data/domain_East_River_distributed_elevAspect/settings/SUMMA"
 )
 TRIAL_PARAMS_NC = Path(
-    "/scratch/dlhogan/ess-project-data/domain_East_River_distributed"
-    "/optimization/staged_results/final_trialParams.nc"
+    "/scratch/dlhogan/ess-project-data/domain_East_River_distributed_elevAspect/simulations/lightweight_distributed/run_20260422_152322/settings/SUMMA/trialParams.nc"
 )
 OUTPUT_BASE = Path(
-    "/scratch/dlhogan/ess-project-data/domain_East_River_distributed/simulations"
+    "/scratch/dlhogan/ess-project-data/domain_East_River_distributed_elevAspect/simulations"
 )
 RUN_NAME = "baseline_longterm"
 SIM_START = "1999-10-01 00:00"
 SIM_END   = "2021-09-30 23:00"   # full water-year end
-OUT_PREFIX = "qTopmodl_distributed_elevation_best"
+OUT_PREFIX = "qTopmodl_distributed_elevAspect_best"
 SUMMA_EXE = "summa"
 GROUNDWATER_OPTION = None   # None = keep whatever is in modelDecisions.txt
 

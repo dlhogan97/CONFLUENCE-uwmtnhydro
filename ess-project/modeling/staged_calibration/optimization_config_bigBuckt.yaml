@@ -13,7 +13,7 @@ results_dir: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/opt
 stage_configs_dir: /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs
 
 stages:
-  # - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs/stage1_snow.yaml
+  - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs/stage1_snow.yaml
   - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs/stage2_et.yaml
   - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs/stage3_soil.yaml
   - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs/stage4_groundwater.yaml
@@ -31,7 +31,7 @@ run:
 
   # Base trialParams file with a-priori per-HRU parameter values.
   # This is the file that multipliers are applied to.
-  base_trial_params_nc: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/settings/SUMMA/trialParams.nc
+  # base_trial_params_nc: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/settings/SUMMA/trialParams.nc
 
   # Optional: seed initial parameter values from calib_bounds_multiHRU.json
   # `value` fields before stage multipliers are applied.

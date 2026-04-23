@@ -96,19 +96,30 @@ class SummaPreProcessor:
 
         return sorted(selected)
 
-    def run_preprocessing(self):
+    def run_preprocessing(self, skip_forcing_prep: bool = False):
         """
         Run the complete SUMMA spatial preprocessing workflow.
 
-        This method orchestrates the  preprocessing pipeline.
+        Parameters
+        ----------
+        skip_forcing_prep : bool
+            When True, skip apply_datastep_and_lapse_rate() and use
+            pre-existing SUMMA_input forcing files as-is.  All settings-file
+            generation (attributes, coldState, trialParams, fileManager, …)
+            still runs normally.  Set this when forcing has already been
+            processed and only the settings files need to be regenerated.
+            Can also be set via config key SKIP_FORCING_PREP: true.
 
         Raises:
             Exception: If any step in the preprocessing pipeline fails.
         """
-        self.logger.info("Starting SUMMA spatial preprocessing")
-        
+        skip = skip_forcing_prep or str(self.config.get('SKIP_FORCING_PREP', 'false')).lower() == 'true'
+        self.logger.info("Starting SUMMA spatial preprocessing%s",
+                         " (forcing prep skipped)" if skip else "")
+
         try:
-            self.apply_datastep_and_lapse_rate()
+            if not skip:
+                self.apply_datastep_and_lapse_rate()
             self.copy_base_settings()
             self.create_file_manager()
             self.create_forcing_file_list()
@@ -621,7 +632,7 @@ class SummaPreProcessor:
                 elif var in ['SWRadAtm']:
                     # For solar radiation, interpolate during day, zero at night
                     filled_data = var_data.interpolate_na(dim='time', method='linear')
-                    filled_data = filled_data.fillna(method='ffill').fillna(method='bfill')
+                    filled_data = filled_data.ffill(dim='time').bfill(dim='time')
                     filled_data = filled_data.fillna(0.0)
                     self.logger.debug(f"File {filename}: Interpolated {var} NaN values")
                     
@@ -680,7 +691,7 @@ class SummaPreProcessor:
                     except ImportError:
                         self.logger.warning(f"File {filename}: scipy not available, using xarray interpolation")
                         filled_data = var_data.interpolate_na(dim='time', method='linear')
-                        filled_data = filled_data.fillna(method='ffill').fillna(method='bfill')
+                        filled_data = filled_data.ffill(dim='time').bfill(dim='time')
                         filled_data = filled_data.fillna(273.15)
                         filled_data = filled_data.clip(min=200.0, max=350.0)
                     
@@ -707,7 +718,7 @@ class SummaPreProcessor:
                 else:
                     # Standard interpolation for other variables
                     filled_data = var_data.interpolate_na(dim='time', method='linear')
-                    filled_data = filled_data.fillna(method='ffill').fillna(method='bfill')
+                    filled_data = filled_data.ffill(dim='time').bfill(dim='time')
                     
                     # If still NaN, use reasonable defaults
                     if np.any(np.isnan(filled_data.values)):

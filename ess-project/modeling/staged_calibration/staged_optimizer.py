@@ -518,7 +518,7 @@ class TrialEvaluator:
             if not self._obs.empty:
                 sim_daily = sim_q.resample("D").mean()
                 sim_a, obs_a = sim_daily.align(self._obs, join="inner")
-                j_anc = compute_anchor_runoff(sim_a.values, obs_a.values,
+                j_anc = compute_anchor_runoff(sim_a, obs_a,
                                               metric=cfg.anchor_metric)
             else:
                 j_anc = 0.5
@@ -534,7 +534,7 @@ class TrialEvaluator:
             if not self._obs.empty:
                 sim_daily = sim_q.resample("D").mean()
                 sim_a, obs_a = sim_daily.align(self._obs, join="inner")
-                j_anc = compute_anchor_streamflow(sim_a.values, obs_a.values,
+                j_anc = compute_anchor_streamflow(sim_a, obs_a,
                                                   metric=cfg.anchor_metric)
             else:
                 j_anc = 0.5

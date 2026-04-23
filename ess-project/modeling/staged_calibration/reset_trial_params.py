@@ -64,6 +64,7 @@ SNOW_PARAMS = {
     # "Frad_direct":        0.70,    # fraction  (localParamInfo default)
     # "Frad_vis":           0.50,    # fraction  (localParamInfo default)
     "frozenPrecipMultip": 1.0,    # dimensionless  (no bias correction assumed at start)
+    "tempCritRain": 273.15,    # K  (localParamInfo default; 0°C phase change)
 }
 
 # ---------------------------------------------------------------------------

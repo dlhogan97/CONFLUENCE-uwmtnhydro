@@ -46,7 +46,7 @@ FORCING_SHAPE_LON_NAME: lon
 # ============================================================================
 # 03. Domain and Runtime
 # ============================================================================
-MPI_PROCESSES: 12
+MPI_PROCESSES: 1
 FORCE_RUN_ALL_STEPS: false
 POUR_POINT_COORDS: 38.66443715/-106.848095
 BOUNDING_BOX_COORDS: 39.1/-107.2/38.5/-106.6

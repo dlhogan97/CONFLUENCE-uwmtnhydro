@@ -14,7 +14,7 @@ from typing import Dict, Any
 
 import yaml
 
-from run_east_river_distributed_workflow import _parse_steps, run_workflow
+from run_distributed_workflow import _parse_steps, run_workflow
 
 
 DEFAULT_LIGHT_STEPS = [

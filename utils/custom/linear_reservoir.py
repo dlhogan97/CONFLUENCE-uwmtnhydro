@@ -71,9 +71,41 @@ def log_nse(obs, sim, eps=0.01):
         return np.nan
     return 1.0 - np.sum((o - s)**2) / denom
 
+def log_kge(obs, sim, eps=0.01):
+    """KGE on log-transformed flows — emphasises low-flow / recession fit."""
+    mask = np.isfinite(obs) & np.isfinite(sim) & (obs > 0) & (sim > 0)
+    o = np.log(obs[mask] + eps)
+    s = np.log(sim[mask] + eps)
+    if len(o) < 10 or np.std(o) == 0:
+        return np.nan
+    r = np.corrcoef(o, s)[0, 1]
+    alpha = np.std(s) / np.std(o)
+    beta  = np.mean(s) / np.mean(o)
+    return 1.0 - np.sqrt((r - 1)**2 + (alpha - 1)**2 + (beta - 1)**2)
+
+def balanced(obs, sim, w_kge=0.25, w_nse=0.25, w_kge_log=0.25, w_nse_log=0.25):
+    """Composite metric balancing high-flow skill (KGE, NSE) and recession skill (log-KGE, log-NSE).
+
+    Weights default to equal (0.25 each). Adjust via calibrate_reservoirs(metric_weights=...).
+    Returns the weighted average; components that return NaN are excluded and weights renormalized.
+    """
+    components = [
+        (kge,     w_kge),
+        (nse,     w_nse),
+        (log_kge, w_kge_log),
+        (log_nse, w_nse_log),
+    ]
+    total_w, total_score = 0.0, 0.0
+    for fn, w in components:
+        v = fn(obs, sim)
+        if np.isfinite(v):
+            total_score += w * v
+            total_w += w
+    return total_score / total_w if total_w > 0 else np.nan
+
 # ── objective ────────────────────────────────────────────────────────
 
-def objective(params, q_in, obs, metric='nse', bounds=None):
+def objective(params, q_in, obs, metric='nse', bounds=None, metric_weights=None):
     k_fast, k_slow, f = params
 
     # Hard-penalize infeasible values so even unconstrained methods reject them.
@@ -86,8 +118,12 @@ def objective(params, q_in, obs, metric='nse', bounds=None):
 
     sim = two_reservoir_daily(q_in, k_fast, k_slow, f)
 
-    metrics = {'nse': nse, 'kge': kge, 'log_nse': log_nse}
-    score = metrics[metric](obs, sim)
+    if metric == 'balanced':
+        w = metric_weights or {}
+        score = balanced(obs, sim, **w)
+    else:
+        metrics = {'nse': nse, 'kge': kge, 'log_nse': log_nse, 'log_kge': log_kge}
+        score = metrics[metric](obs, sim)
 
     if not np.isfinite(score):
         return 1e6
@@ -103,14 +139,14 @@ def _project_to_bounds(x, bounds):
     ], dtype=np.float64)
 
 
-def _run_local_opt(x0, q_in, obs, metric, bounds, constraints):
+def _run_local_opt(x0, q_in, obs, metric, bounds, constraints, metric_weights=None):
     """Run one constrained local optimization from a given starting point."""
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         return minimize(
             objective,
             x0=x0,
-            args=(q_in, obs, metric, bounds),
+            args=(q_in, obs, metric, bounds, metric_weights),
             method='SLSQP',
             bounds=bounds,
             constraints=constraints,
@@ -118,12 +154,12 @@ def _run_local_opt(x0, q_in, obs, metric, bounds, constraints):
         )
 
 
-def _evaluate_point(x, q_in, obs, metric, bounds):
+def _evaluate_point(x, q_in, obs, metric, bounds, metric_weights=None):
     """Evaluate objective at a fixed point without local optimization."""
     x = np.asarray(x, dtype=np.float64).ravel()
     if x.size != 3:
         raise ValueError('evaluation point must contain exactly 3 values')
-    fun = objective(x, q_in, obs, metric, bounds)
+    fun = objective(x, q_in, obs, metric, bounds, metric_weights)
     if not np.isfinite(fun):
         return None
     return SimpleNamespace(x=x, fun=fun, success=True)
@@ -168,7 +204,8 @@ def _coerce_start_points(start_points, bounds):
 def calibrate_reservoirs(q_in, obs, metric='nse',
                           n_starts=300, seed=42,
                           strategy='adaptive',
-                          start_points=None):
+                          start_points=None,
+                          metric_weights=None):
     """
     Calibrate two-reservoir model against observed daily streamflow.
 
@@ -176,14 +213,19 @@ def calibrate_reservoirs(q_in, obs, metric='nse',
     ----------
     q_in   : SUMMA simulated daily runoff array
     obs    : observed daily streamflow (same units, same length)
-    metric : 'nse' | 'kge' | 'log_nse'
+    metric : 'nse' | 'kge' | 'log_nse' | 'log_kge' | 'balanced'
+        'balanced' is a composite of KGE + NSE + log-KGE + log-NSE.
+    metric_weights : dict, optional
+        Only used when metric='balanced'. Keys: w_kge, w_nse, w_kge_log, w_nse_log.
+        Defaults to equal weights (0.25 each).
+        Example: {'w_kge': 0.2, 'w_nse': 0.2, 'w_kge_log': 0.3, 'w_nse_log': 0.3}
     n_starts : number of local optimization starts
     strategy : 'adaptive' (learns from elite starts) or 'multistart' (uniform random)
-        start_points : optional initial guess(es) for [k_fast, k_slow, f_fast]
-                Accepted forms:
-                    - dict: {'k_fast': ..., 'k_slow': ..., 'f_fast': ...}
-                    - sequence: [k_fast, k_slow, f_fast]
-                    - list of dicts/sequences
+    start_points : optional initial guess(es) for [k_fast, k_slow, f_fast]
+        Accepted forms:
+            - dict: {'k_fast': ..., 'k_slow': ..., 'f_fast': ...}
+            - sequence: [k_fast, k_slow, f_fast]
+            - list of dicts/sequences
 
     Returns
     -------
@@ -200,9 +242,9 @@ def calibrate_reservoirs(q_in, obs, metric='nse',
     best_score  = np.inf
 
     # parameter bounds: [k_fast, k_slow, f]
-    bounds = [(0.01, 0.3),   # k_fast: 1–20 day residence time
-              (0.005, 0.10),  # k_slow: 10–200 day residence time
-              (0.5,  1.0)]    # f: fast fraction
+    bounds = [(0.05, 3),   # k_fast: 1–20 day residence time
+              (1e-6, 0.5),  # k_slow: 10–200 day residence time
+              (0.4,  1.0)]    # f: fast fraction
 
     constraints = [
         {'type': 'ineq', 'fun': lambda x: x[0] - x[1] - 1e-8}  # enforce k_fast > k_slow
@@ -219,11 +261,11 @@ def calibrate_reservoirs(q_in, obs, metric='nse',
     # Keep both the raw seeded scores and locally optimized seeded scores.
     seeded_starts = _coerce_start_points(start_points, bounds)
     for x0 in seeded_starts:
-        raw_seed_result = _evaluate_point(x0, q_in, obs, metric, bounds)
+        raw_seed_result = _evaluate_point(x0, q_in, obs, metric, bounds, metric_weights)
         if raw_seed_result is not None:
             all_results.append(raw_seed_result)
 
-        result = _run_local_opt(x0, q_in, obs, metric, bounds, constraints)
+        result = _run_local_opt(x0, q_in, obs, metric, bounds, constraints, metric_weights)
         local_runs += 1
         if np.isfinite(result.fun):
             all_results.append(result)
@@ -237,7 +279,7 @@ def calibrate_reservoirs(q_in, obs, metric='nse',
         for _ in range(n_starts):
             x0 = np.array([rng.uniform(lo, hi) for lo, hi in bounds], dtype=np.float64)
             x0[1] = min(x0[1], x0[0] * 0.5)  # ensure k_slow < k_fast at initialization
-            result = _run_local_opt(x0, q_in, obs, metric, bounds, constraints)
+            result = _run_local_opt(x0, q_in, obs, metric, bounds, constraints, metric_weights)
             local_runs += 1
             if np.isfinite(result.fun):
                 all_results.append(result)
@@ -270,7 +312,7 @@ def calibrate_reservoirs(q_in, obs, metric='nse',
                 x0[1] = min(x0[1], x0[0] - 1e-5)
                 x0 = _project_to_bounds(x0, bounds)
 
-                result = _run_local_opt(x0, q_in, obs, metric, bounds, constraints)
+                result = _run_local_opt(x0, q_in, obs, metric, bounds, constraints, metric_weights)
                 local_runs += 1
                 if np.isfinite(result.fun):
                     round_results.append(result)
@@ -314,6 +356,8 @@ def calibrate_reservoirs(q_in, obs, metric='nse',
         'nse':               nse(obs, sim),
         'kge':               kge(obs, sim),
         'log_nse':           log_nse(obs, sim),
+        'log_kge':           log_kge(obs, sim),
+        'balanced':          balanced(obs, sim, **(metric_weights or {})),
         'sim':               sim,
         'optimizer_success': best_result.success,
         'n_starts_used':     local_runs,

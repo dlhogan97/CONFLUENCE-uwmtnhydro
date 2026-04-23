@@ -63,8 +63,10 @@ def total_bias(sim, obs):
 
 def monthly_dist_bias(sim, obs):
     # sim/obs should be pandas Series with DatetimeIndex
-    sim_m = sim.resample("MS").sum().groupby(sim.index.month).sum()
-    obs_m = obs.resample("MS").sum().groupby(obs.index.month).sum()
+    sim_r = sim.resample("MS").sum()
+    obs_r = obs.resample("MS").sum()
+    sim_m = sim_r.groupby(sim_r.index.month).sum()
+    obs_m = obs_r.groupby(obs_r.index.month).sum()
 
     sim_f = (sim_m / max(sim_m.sum(), 1e-12)).reindex(range(1, 13), fill_value=0.0)
     obs_f = (obs_m / max(obs_m.sum(), 1e-12)).reindex(range(1, 13), fill_value=0.0)

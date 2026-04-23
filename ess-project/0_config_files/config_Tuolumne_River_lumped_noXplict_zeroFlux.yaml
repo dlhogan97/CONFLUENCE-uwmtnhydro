@@ -3,71 +3,50 @@
 # ============================================================================
 CONFLUENCE_DATA_DIR: /scratch/dlhogan/ess-project-data
 CONFLUENCE_CODE_DIR: /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro
-DOMAIN_NAME: East_River_distributed_elevAspect
-EXPERIMENT_ID: bigBuckt_elevAspect
+DOMAIN_NAME: Tuolumne_River_lumped
+EXPERIMENT_ID: noXplict_zeroflux
 EXPERIMENT_TIME_START: 1999-10-01 00:00
 EXPERIMENT_TIME_END: 2021-09-30 23:00
-CALIBRATION_PERIOD: 2007-10-01, 2012-09-30
-EVALUATION_PERIOD: 2013-10-01, 2018-09-30
+CALIBRATION_PERIOD: 2003-10-01, 2007-09-30
+EVALUATION_PERIOD: 2008-10-01, 2012-09-30
 CALIBRATION_MONTHS: [1,2,3,4,5,6,7,8,9,10,11,12]
 SPINUP_PERIOD: 1999-10-01, 2003-09-30
 
 # ============================================================================
 # 02. Forcing Controls
 # ============================================================================
-FORCING_PATH: /scratch/dlhogan/ess-project-data/domain_East_River_distributed_elevAspect/forcing/metsim_outputs
-# Fallback path used if FORCING_PATH is empty or unavailable.
-FORCING_PATH_FALLBACK: /scratch/dlhogan/ess-project-data/domain_East_River_distributed_elevAspect/forcing/merged_data
-# If FORCING_PATH is empty, copy monthly forcing files from this reusable source first.
-FORCING_COPY_SOURCE: /scratch/dlhogan/ess-project-data/domain_East_River_lumped/forcing/metsim_outputs
+FORCING_PATH: /scratch/dlhogan/ess-project-data/domain_Tuolumne_River_lumped/forcing/SUMMA_input
+FORCING_PATH_FALLBACK: /scratch/dlhogan/ess-project-data/domain_Tuolumne_River_lumped/forcing/basin_averaged_data
 FORCING_DATASET: METSIM
-RECALC_LONGWAVE: true
 FORCING_PRODUCT_TAG: metsim
 FORCE_REBUILD_SUMMA_INPUT: true
 KEEP_SUMMA_INPUT_BACKUP: false
 FORCING_VARIABLES: default
 FORCING_MEASUREMENT_HEIGHT: 2
 FORCING_TIME_STEP_SIZE: 3600
-APPLY_LAPSE_RATE: true
-LAPSE_RATE: 0.0035
-# Optional: apply DAH-based slope/aspect SW multiplier after EASYMORE remap.
-APPLY_ASPECT_SW_CORRECTION: false
-ASPECT_SW_AREA_NORMALIZE: true
-ASPECT_SW_RATIO_MIN: 0.5
-ASPECT_SW_RATIO_MAX: 1.5
-DAH_SCALING_FACTOR: 1.0
+APPLY_LAPSE_RATE: false
+LAPSE_RATE: 0.0065
 FORCING_SHAPE_LAT_NAME: lat
 FORCING_SHAPE_LON_NAME: lon
 
 # ============================================================================
 # 03. Domain and Runtime
 # ============================================================================
-MPI_PROCESSES: 1
+MPI_PROCESSES: 6
 FORCE_RUN_ALL_STEPS: false
 POUR_POINT_COORDS: 38.66443715/-106.848095
 BOUNDING_BOX_COORDS: 39.1/-107.2/38.5/-106.6
 DOMAIN_DEFINITION_METHOD: lumped
-SPATIAL_MODE: Distributed
+SPATIAL_MODE: Lumped
 GEOFABRIC_TYPE: TDX
 STREAM_THRESHOLD: 5000
 CLEANUP_INTERMEDIATE_FILES: true
 DELINEATE_BY_POURPOINT: true
 MOVE_OUTLETS_MAX_DISTANCE: 200
 MIN_GRU_SIZE: 0
-DOMAIN_DISCRETIZATION: elevation,aspect
-ELEVATION_BAND_SIZE: 372
-ASPECT_CLASS_NUMBER: 4
-ASPECT_FLAT_SLOPE_THRESHOLD: 8.0
-# Convert gradient-derived upslope azimuth to downslope-facing aspect.
-ASPECT_AZIMUTH_OFFSET_DEG: 180.0
-HRU_ID_ORDER: elevation_aspect
-# Enforce directional sequencing within each elevation band:
-# 1=N, 2=E, 4=W, 3=S, 0=flat.
-HRU_ASPECT_CLASS_ORDER: [1, 2, 4, 3, 0]
-# Keep flat-aspect class (0) HRUs in discretization and ID assignment.
-ASPECT_EXCLUDE_FLAT_HRUS: false
-# Optional: set to aspect or elevation,aspect for combined slicing in future runs.
-MIN_HRU_SIZE: 6
+DOMAIN_DISCRETIZATION: GRUs
+ELEVATION_BAND_SIZE: 200
+MIN_HRU_SIZE: 4
 RADIATION_CLASS_NUMBER: 5
 EASYMORE_MAX_CORES: 12
 EASYMORE_BATCH_SIZE: 12
@@ -76,30 +55,24 @@ EASYMORE_BATCH_SIZE: 12
 # 04. Model Selection and Main SUMMA Setup
 # ============================================================================
 HYDROLOGICAL_MODEL: SUMMA
-ROUTING_MODEL: linear_reservoir
+ROUTING_MODEL: mizuRoute
 ROUTING_DELINEATION: lumped
-SUMMA_RUNOFF_VAR: averageRoutedRunoff
+SUMMA_RUNOFF_VAR: averageInstantRunoff
 
-# Route SUMMA runoff in-memory using the two-reservoir linear routing option.
-USE_LINEAR_RESERVOIR_ROUTING: True
+# Optional routing alternative to mizuRoute for lumped/point streamflow scoring
+# Set ROUTING_MODEL to linear_reservoir to route SUMMA runoff in-memory during calibration.
+USE_LINEAR_RESERVOIR_ROUTING: false
 LINEAR_RESERVOIR_K_FAST_DEFAULT: 0.025
 LINEAR_RESERVOIR_K_SLOW_DEFAULT: 0.02
 LINEAR_RESERVOIR_F_FAST_DEFAULT: 0.75
 SUMMA_EXE: summa
-SETTINGS_SUMMA_USE_PARALLEL_SUMMA: true
+SETTINGS_SUMMA_USE_PARALLEL_SUMMA: false
 SETTINGS_SUMMA_PARALLEL_EXE: summa
-# local: run through mpirun/mpiexec on workstation; slurm: submit array jobs on HPC.
-SETTINGS_SUMMA_PARALLEL_MODE: local
-# auto picks first available from mpirun/mpiexec/srun.
-SETTINGS_SUMMA_MPI_LAUNCHER: auto
-SETTINGS_SUMMA_CONNECT_HRUS: true
-# Force alpine HRUs above treeline to barren MODIS class.
-SETTINGS_SUMMA_BARREN_ABOVE_ELEVATION: 3500
-SETTINGS_SUMMA_BARREN_CLASS: 16
+SETTINGS_SUMMA_CONNECT_HRUS: false
 SETTINGS_SUMMA_TRIALPARAM_N: 0
 SETTINGS_SUMMA_TRIALPARAM_1: null
-PARAMS_TO_CALIBRATE: k_soil,aquiferBaseflowRate,aquiferBaseflowExp,aquiferScaleFactor,qSurfScale,albedoDecayRate
-BASIN_PARAMS_TO_CALIBRATE: routingGammaShape, routingGammaScale, basin__aquiferHydCond, basin_aquiferScaleFactor, basin__aquiferBaseflowExp
+PARAMS_TO_CALIBRATE: k_soil, qSurfScale, frozenPrecipMultip, vGn_n, vGn_alpha, rootingDepth, albedoDecayRate, tempCritRain
+BASIN_PARAMS_TO_CALIBRATE: routingGammaScale, routingGammaShape
 SUMMA_DECISION_OPTIONS:
   snowIncept:
   - lightSnow
@@ -113,9 +86,9 @@ SUMMA_DECISION_OPTIONS:
   vegeParTbl:
   - MODIFIED_IGBP_MODIS_NOAH
   soilStress:
-  - SiB_Type
+  - NoahType
   stomResist:
-  - Jarvis
+  - BallBerry
   LAI_method:
   - monTable
   veg_traits:
@@ -131,11 +104,11 @@ SUMMA_DECISION_OPTIONS:
   f_Richards:
   - mixdform
   groundwatr:
-  - bigBuckt
+  - noXplict
   hc_profile:
   - constant
   bcLowrSoiH:
-  - drainage
+  - zeroFlux
   thCondSoil:
   - funcSoilWet
   spatial_gw:
@@ -165,7 +138,7 @@ DEPTH_SHAPE_FACTOR_BOUNDS:
 - 3.0
 
 # Optional routing-parameter calibration for ROUTING_MODEL: linear_reservoir
-CALIBRATE_LINEAR_RESERVOIR: false
+CALIBRATE_LINEAR_RESERVOIR: true
 LINEAR_RESERVOIR_PARAMS_TO_CALIBRATE: k_fast,k_slow,f_fast
 
 # mizuRoute (used with ROUTING_MODEL: mizuRoute)
@@ -173,7 +146,7 @@ EXE_NAME_MIZUROUTE: route_runoff
 SETTINGS_MIZU_WITHIN_BASIN: 0
 SETTINGS_MIZU_ROUTING_DT: 3600
 SETTINGS_MIZU_ROUTING_UNITS: m/s
-SETTINGS_MIZU_ROUTING_VAR: averageRoutedRunoff
+SETTINGS_MIZU_ROUTING_VAR: averageInstantRunoff
 SETTINGS_MIZU_OUTPUT_FREQ: single
 SETTINGS_MIZU_OUTPUT_VARS: 1
 SETTINGS_MIZU_MAKE_OUTLET: n/a
@@ -185,23 +158,22 @@ SETTINGS_MIZU_NEEDS_REMAP: false
 OPTIMISATION_METHODS:
 - iteration
 ITERATIVE_OPTIMIZATION_ALGORITHM: PSO
-NUMBER_OF_ITERATIONS: 50
+NUMBER_OF_ITERATIONS: 30
 POPULATION_SIZE: 20
-OPTIMIZATION_METRIC: KGE
+OPTIMIZATION_METRIC: NSE
 STREAMFLOW_OPTIMIZATION_TIMESCALE: 1D
-USE_MANUAL_AQUIFER_BASEFLOW: true
 
 DDS_R: 0.4
 NUMBER_OF_COMPLEXES: 2
 POINTS_PER_SUBCOMPLEX: 5
-NUMBER_OF_EVOLUTION_STEPS: 40
-EVOLUTION_STAGNATION: 15
-PERCENT_CHANGE_THRESHOLD: 0.005
-SWRMSIZE: 36
+NUMBER_OF_EVOLUTION_STEPS: 20
+EVOLUTION_STAGNATION: 5
+PERCENT_CHANGE_THRESHOLD: 0.01
+SWRMSIZE: 20
 PSO_COGNITIVE_PARAM: 1.5
 PSO_SOCIAL_PARAM: 1.5
 PSO_INERTIA_WEIGHT: 0.7
-PSO_INERTIA_REDUCTION_RATE: 0.97
+PSO_INERTIA_REDUCTION_RATE: 0.99
 DE_SCALING_FACTOR: 0.5
 DE_CROSSOVER_RATE: 0.9
 
@@ -209,17 +181,17 @@ EVALUATION_DATA: []
 ANALYSES: []
 SIM_REACH_ID: -1
 STREAMFLOW_DATA_PROVIDER: USGS
-DOWNLOAD_USGS_DATA: true
+DOWNLOAD_USGS_DATA: false
 DOWNLOAD_WSC_DATA: false
-STATION_ID: 09112500
+STATION_ID: 11274790
 DOWNLOAD_SNOTEL: 'false'
-SNOTEL_STATION: '380'
+SNOTEL_STATION: 'TUM'
 SNOTEL_PATH: /scratch/dlhogan/ess-project-data/meteorological-data/SNOTEL
 DOWNLOAD_FLUXNET: 'false'
 FLUXNET_STATION: CA-NS7
 FLUXNET_PATH: /scratch/dlhogan/ess-project-data/meteorological-data/fluxnet
 DOWNLOAD_USGS_GW: 'false'
-USGS_STATION: 09112500
+USGS_STATION: 11274790
 
 # ============================================================================
 # 06. Less Frequent: Other Model Families and Emulation
@@ -271,7 +243,7 @@ EMULATION_PARALLEL_ENSEMBLE: false
 EMULATION_MAX_PARALLEL_JOBS: 100
 EMULATION_SKIP_MIZUROUTE: false
 EMULATION_USE_ATTRIBUTES: false
-EMULATION_MAX_ITERATIONS': 3
+EMULATION_MAX_ITERATIONS: 3
 RUN_RANDOM_FOREST_EMULATION: false
 RUN_NEURAL_NETWORK_EMULATION: true
 EMULATION_TARGET_METRIC: NSE
@@ -308,7 +280,7 @@ RIVER_BASIN_SHP_RM_GRUID: GRU_ID
 RIVER_BASIN_SHP_HRU_TO_SEG: gru_to_seg
 RIVER_BASIN_SHP_AREA: GRU_area
 RIVER_BASINS_PATH: default
-RIVER_BASINS_NAME: East_River_distributed_riverBasins_lumped.shp
+RIVER_BASINS_NAME: default
 RIVER_NETWORK_SHP_LENGTH: Length
 RIVER_NETWORK_SHP_SEGID: LINKNO
 RIVER_NETWORK_SHP_DOWNSEGID: DSLINKNO
@@ -351,10 +323,10 @@ SETTINGS_SUMMA_PATH: default
 EXPERIMENT_OUTPUT_SUMMA: default
 EXPERIMENT_LOG_SUMMA: default
 SETTINGS_SUMMA_PARALLEL_PATH: default
-SUMMA_INSTALL_PATH: /home/dlhogan/bin
+SUMMA_INSTALL_PATH: /usr/local/bin
 SETTINGS_SUMMA_FILEMANAGER: fileManager.txt
 SETTINGS_SUMMA_FORCING_LIST: forcingFileList.txt
-SETTINGS_SUMMA_COLDSTATE: coldState.nc
+SETTINGS_SUMMA_COLDSTATE: coldState_updated.nc
 SETTINGS_SUMMA_TRIALPARAMS: trialParams.nc
 SETTINGS_SUMMA_ATTRIBUTES: attributes.nc
 SETTINGS_SUMMA_OUTPUT: outputControl.txt
@@ -379,7 +351,7 @@ INTERSECT_LAND_NAME: default
 OUTPUT_BASINS_PATH: default
 OUTPUT_RIVERS_PATH: default
 DEM_PATH: default
-DEM_NAME: domain_East_River_distributed_elv.tif
+DEM_NAME: default
 SOURCE_GEOFABRIC_BASINS_PATH: default
 SOURCE_GEOFABRIC_RIVERS_PATH: default
 TAUDEM_DIR: /home/dlhogan/tools/src/TauDEM/bin
@@ -387,16 +359,8 @@ OUTPUT_DIR: default
 CATCHMENT_PLOT_DIR: default
 SOIL_CLASS_PATH: default
 SOIL_CLASS_NAME: default
-LAND_CLASS_PATH: /scratch/dlhogan/ess-project-data/domain_East_River_distributed/attributes/landclass
-LAND_CLASS_NAME: domain_East_River_distributed_NLCD_land_class.tif
-LAND_CLASS_SOURCE: NLCD
-LAND_CLASS_REMAP_TO_MODIS: true
-LAND_CLASS_REMAP_LOOKUP_PATH: default
-LAND_CLASS_REMAP_LOOKUP_EXPORT: default
-LAND_CLASS_REMAP_OUTPUT_NAME: default
-LAND_CLASS_REMAP_OVERWRITE: true
-LAND_CLASS_REMAP_NODATA: -9999
-ASPECT_PATH: default
+LAND_CLASS_PATH: default
+LAND_CLASS_NAME: default
 RADIATION_PATH: default
 DATATOOL_PATH: /home/dlhogan/tools/src/datatool
 GISTOOL_PATH: /home/dlhogan/tools/src/gistool

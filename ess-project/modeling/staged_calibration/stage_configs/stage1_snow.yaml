@@ -26,6 +26,7 @@ description: "Snow accumulation, albedo decay, shortwave partitioning"
 params:
   - albedoDecayRate
   - frozenPrecipMultip
+  - tempCritRain
 spatial_weights:
   frozenPrecipMultip:
     16: 0.8    # barren rocky substrate → lower Ksat (~2.2e-5 m/s)
@@ -52,6 +53,7 @@ multiplier_search_bounds:
   # Frad_direct:        [0.90, 1.40]   # prior best 1.12; physically near 1.0
   # Frad_vis:           [1.00, 1.55]   # prior best 1.27; East River gets high vis fraction
   frozenPrecipMultip: [0.8, 1.2]   # prior best 1.15; 
+  tempCritRain:       [0.99, 1.01] # prior best 270.6 K; physically near 273.15 K
 
 # Optimizer settings
 max_iterations: 50
