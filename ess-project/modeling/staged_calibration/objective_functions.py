@@ -17,6 +17,7 @@ import logging
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+import pandas as pd
 from scipy.signal import lfilter
 
 logger = logging.getLogger(__name__)
@@ -75,6 +76,75 @@ def monthly_dist_bias(sim, obs):
 def monthly_plus_total(sim, obs, w_monthly=0.8):
     return w_monthly * monthly_dist_bias(sim, obs) + (1 - w_monthly) * total_bias(sim, obs)
 
+
+def _median_flow_day_by_wy(q):
+    """Per-water-year day on which cumulative streamflow reaches 50% of WY total.
+
+    `q` is a pandas Series with DatetimeIndex.  Day is counted from Oct 1
+    (water-year day 1).  Returns a Series indexed by water year.
+    """
+    import pandas as pd
+    if len(q) == 0:
+        return pd.Series(dtype=float)
+    q = q.dropna()
+    if len(q) == 0:
+        return pd.Series(dtype=float)
+    wy = q.index.year + (q.index.month >= 10).astype(int)
+    wy_doy = np.where(q.index.month >= 10,
+                      q.index.dayofyear - 273,
+                      q.index.dayofyear + 92)
+    df = pd.DataFrame({"q": q.values, "wy": wy, "wy_doy": wy_doy})
+
+    def _wy_p50(g):
+        g = g.sort_values("wy_doy")
+        cum = g["q"].cumsum()
+        total = cum.iloc[-1]
+        if total <= 0:
+            return np.nan
+        idx = (cum >= 0.5 * total).idxmax()
+        return float(g.loc[idx, "wy_doy"])
+
+    return df.groupby("wy", group_keys=False).apply(
+        _wy_p50, include_groups=False
+    ).dropna()
+
+
+def center_of_mass_error(sim, obs):
+    """Mean absolute day-difference between modeled and observed median-flow day.
+
+    `sim`/`obs` are pandas Series with DatetimeIndex (daily Q recommended).
+    For each water year, computes the day at which cumulative WY streamflow
+    reaches 50% of total.  Returns the mean |sim_day − obs_day| in days.
+    """
+    sim_p50 = _median_flow_day_by_wy(sim)
+    obs_p50 = _median_flow_day_by_wy(obs)
+    common = sim_p50.index.intersection(obs_p50.index)
+    if len(common) == 0:
+        return float("nan")
+    return float(np.abs(sim_p50.loc[common] - obs_p50.loc[common]).mean())
+
+
+def monthly_total_com(sim, obs,
+                     w_monthly: float = 0.4,
+                     w_total: float = 0.2,
+                     w_com: float = 0.4,
+                     com_norm_days: float = 30.0):
+    """Combined cost: monthly distribution + total volume bias + CoM timing.
+
+    `sim`/`obs` are pandas Series with DatetimeIndex.  CoM error is in days,
+    normalised by `com_norm_days` (default 30 → ±1 month is cost 1.0).
+    Default weights emphasise distribution + CoM equally; volume gets less
+    because monthly distribution already reflects most of it.
+    """
+    j_monthly = monthly_dist_bias(sim, obs)
+    j_total   = total_bias(sim, obs)
+    com_days  = center_of_mass_error(sim, obs)
+    if not np.isfinite(com_days):
+        # Fall back to pure monthly+total if CoM is undefined
+        return monthly_plus_total(sim, obs)
+    j_com = float(np.clip(com_days / com_norm_days, 0.0, 3.0))
+    return w_monthly * j_monthly + w_total * j_total + w_com * j_com
+
 def _peak_and_meltout(swe: np.ndarray, meltout_threshold_mm: float = 10.0) -> Tuple[int, float, int]:
     """Return (peak_day_idx, peak_value, meltout_day_idx) for a single SWE timeseries."""
     if np.all(~np.isfinite(swe)) or np.nanmax(swe) < meltout_threshold_mm:
@@ -114,6 +184,66 @@ def eckhardt_baseflow(q: np.ndarray, bfi_max: float = 0.8, a: float = 0.98) -> n
 # ---------------------------------------------------------------------------
 # Stage 1: Snow anchor metric
 # ---------------------------------------------------------------------------
+
+def compute_hypsometric_coherence_april1(
+    sim_swe_per_hru: Dict[int, "pd.Series"],
+    obs_aso_weights: Dict[int, float],
+) -> float:
+    """Cost = 1 - cosine_similarity( sim April-1 SWE shape, ASO normalized shape ).
+
+    Parameters
+    ----------
+    sim_swe_per_hru:
+        Dict of hru_idx → pd.Series of SWE (mm) with DatetimeIndex (daily or
+        sub-daily; resampled to daily mean inside).
+    obs_aso_weights:
+        Dict of hru_idx → ASO normalized SWE (basin-mean = 1) — your fixed
+        observational reference shape (median over flights).
+
+    Returns
+    -------
+    float in [0, 2] — 0 perfect, 1 orthogonal, 2 anti-correlated.
+    """
+    hrus = sorted(set(sim_swe_per_hru.keys()) & set(obs_aso_weights.keys()))
+    if len(hrus) < 3:
+        return 1.0
+
+    sim_april1 = []
+    for h in hrus:
+        s = sim_swe_per_hru[h]
+        if s.empty:
+            sim_april1.append(np.nan)
+            continue
+        s_daily = s.resample("D").mean()
+        # Median April-1 SWE across the calibration years
+        is_april1 = (s_daily.index.month == 4) & (s_daily.index.day == 1)
+        if not is_april1.any():
+            sim_april1.append(np.nan)
+            continue
+        sim_april1.append(float(s_daily[is_april1].median()))
+    sim_arr = np.asarray(sim_april1, dtype=float)
+    obs_arr = np.asarray([float(obs_aso_weights[h]) for h in hrus], dtype=float)
+
+    valid = np.isfinite(sim_arr) & np.isfinite(obs_arr)
+    if valid.sum() < 3:
+        return 1.0
+    sim_v, obs_v = sim_arr[valid], obs_arr[valid]
+
+    # Normalise each to its basin mean so we compare *shape*, not magnitude
+    sim_mean = np.nanmean(sim_v)
+    obs_mean = np.nanmean(obs_v)
+    if sim_mean <= 0 or obs_mean <= 0:
+        return 1.0
+    sim_n = sim_v / sim_mean
+    obs_n = obs_v / obs_mean
+
+    # Cosine similarity → cost
+    denom = np.linalg.norm(sim_n) * np.linalg.norm(obs_n)
+    if denom <= 0:
+        return 1.0
+    cos_sim = float(np.dot(sim_n, obs_n) / denom)
+    return float(1.0 - cos_sim)
+
 
 def compute_anchor_snow(
     sim_swe: np.ndarray,
@@ -229,10 +359,12 @@ def compute_anchor_generic(
         return nrmse(sim, obs)
     elif m == "MONTHLY_PLUS_TOTAL":
         return monthly_plus_total(sim, obs)
+    elif m == "MONTHLY_TOTAL_COM":
+        return monthly_total_com(sim, obs)
     else:
         raise ValueError(
             f"Unknown anchor_metric {metric!r}. "
-            "Choose from: KGE, KGE_log, NSE, NRMSE, MONTHLY_PLUS_TOTAL"
+            "Choose from: KGE, KGE_log, NSE, NRMSE, MONTHLY_PLUS_TOTAL, MONTHLY_TOTAL_COM"
         )
 
 

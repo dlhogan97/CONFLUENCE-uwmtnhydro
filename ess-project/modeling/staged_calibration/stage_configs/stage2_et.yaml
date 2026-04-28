@@ -74,9 +74,9 @@ multiplier_search_bounds:
   # critSoilWilting: [0.7, 1.5]
 
 
-max_iterations: 75
-popsize: 8           # pop = 10 × 1 param = 10 members → fills 10 cores in 1 batch
-tol: 0.005
+max_iterations: 25
+popsize: 5           # pop = 5 × 2 params = 10 members per gen
+tol: 0.02
 
 spinup_days: 365
 time_step_hours: 1.0

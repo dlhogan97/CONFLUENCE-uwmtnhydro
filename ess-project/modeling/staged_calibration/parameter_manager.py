@@ -49,7 +49,7 @@ PHYSICAL_BOUNDS: Dict[str, tuple] = {
     # Routing (GRU-level)
     "routingGammaShape":             (1.0,  10.0),
     "routingGammaScale":             (500.0, 172800.0),
-    "frozenPrecipMultip":            (0.80,  1.20), 
+    "frozenPrecipMultip":            (0.0,   3.0),    # widened: spatial-weighted by ASO ratios
     "tempCritRain":                 (270.0, 275.15),  # 0-3 °C in Kelvin
 }
 
@@ -67,8 +67,8 @@ MULTIPLIER_BOUNDS: Dict[str, tuple] = {
     "aquiferBaseflowRate":       (0.1,  5.0),
     "routingGammaShape":         (0.5,  3.0),
     "routingGammaScale":         (0.5,  3.0),
-    "frozenPrecipMultip":        (0.80, 1.20), 
-    "tempCritRain":             (0.99, 1.01),
+    "frozenPrecipMultip":        (0.7,  1.3),
+    "tempCritRain":             (0.985, 1.015),
 }
 
 

@@ -39,6 +39,14 @@ params:
   - vGn_alpha
   - vGn_n
   - qSurfScale
+  - temp_delta_lowelev    # forcing-side, additive K offset on bottom 3 HRUs
+
+# Forcing-side knob (applied to airtemp in METSIM forcing files, additive K).
+# Bottom 3 HRUs (1396, 1697, 2061 m) get the offset; others are zero via the
+# spatial_weights block below.  This shifts CoM earlier by warming low-elev
+# winter precip into rain (mostly captured during AR events).
+forcing_params:
+  - temp_delta_lowelev
 # ── Spatial weights ─────────────────────────────────────────────────────────
 # MODIS land cover codes from hru_landcover in optimization_config:
 #   16 = barren/sparsely vegetated
@@ -61,6 +69,17 @@ spatial_weights:
     16: 1.0    # barren rocky → more saturation-excess surface runoff
     1:  1.0    # forest — infiltration buffers surface runoff
     7:  1.0    # shrublands — lower surface runoff than barren
+  # Apply temp_delta only to the bottom 3 HRUs (2061, 1698, 1396 m).
+  # Per-HRU effective offset = weight × M (calibrated 0–3 K).
+  temp_delta_lowelev:
+    0: 0.0    # 3681 m
+    1: 0.0    # 3389 m
+    2: 0.0    # 3060 m
+    3: 0.0    # 2747 m
+    4: 0.0    # 2415 m
+    5: 1.0    # 2061 m
+    6: 1.0    # 1698 m
+    7: 1.0    # 1396 m
 
 anchor_variable: averageInstantRunoff   # basin total routed runoff → streamflow
 coherence_type: runoff                 # compares total Q to streamflow obs
@@ -69,20 +88,21 @@ coherence_type: runoff                 # compares total Q to streamflow obs
 # Options: KGE | KGE_log | NSE | NRMSE | MONTHLY_PLUS_TOTAL
 # KGE balances volume, timing, and variability.
 # KGE_log emphasises recession limbs and low flows.
-anchor_metric: MONTHLY_PLUS_TOTAL
+anchor_metric: MONTHLY_TOTAL_COM   # 0.4 monthly_dist + 0.2 total_bias + 0.4 CoM_norm_30d
 
 # Pure streamflow anchor — no HRU coherence metric for runoff stage.
 w_anchor: 0.85
 
 multiplier_search_bounds:
-  k_soil:       [0.1, 9.0]    # 1.5e-6 → 3e-5 m/s at base 1e-4
-  # vGn_alpha:    [0.50, 2.0]    # multiplied against −2.0 → −1.0 to −4.0 m⁻¹
-  vGn_n:        [1, 1.5]   # 0.87 → 2.6 (Van Genuchten n must stay > 1)
-  qSurfScale:   [0.20, 8.0]    # 0.2 → 8.0 × base
+  k_soil:               [0.1, 5.0]    # capped at 5×; >5× pushes into gravel Ksat territory
+  vGn_alpha:            [0.50, 2.0]
+  vGn_n:                [1, 1.5]
+  qSurfScale:           [0.5, 3.0]    # granitic basin warrants high runoff but 8× is unphysical
+  temp_delta_lowelev:   [0.0, 3.0]
 
-max_iterations: 50
-popsize: 15            # pop = 3 × 5 params = 15 members (2 rounds of 12 cores → ~24 runs/gen)
-tol: 0.005
+max_iterations: 20     # warm-start + looser tol → fewer gens needed
+popsize: 6             # pop = 6 × 5 params = 30 members per gen
+tol: 0.02
 
 spinup_days: 365
 time_step_hours: 1.0

@@ -51,7 +51,7 @@ name: stage3_groundwater_qTopmodel
 description: "Subsurface lateral flow (qTopmodl): k_soil, kAnisotropic, fieldCapacity, zScale_TOPMODEL"
 
 params:
-  # - k_soil
+  - k_soil
   - kAnisotropic
   - qSurfScale
   # - fieldCapacity
@@ -70,10 +70,10 @@ params:
 #   zScale_TOPMODEL: depth of contributing aquifer tracks soil development;
 #                    rocky alpine thin, forest/shrub deeper
 spatial_weights:
-  # k_soil:
-  #   16: 0.55    # barren rocky substrate → lower Ksat (~2.2e-5 m/s)
-  #   1:  1.50    # evergreen forest soils → higher Ksat (~6.0e-5 m/s)
-  #   7:  1.00    # open shrublands reference (~4.0e-5 m/s)
+  k_soil:
+    16: 0.55    # barren rocky substrate → lower Ksat
+    1:  1.50    # evergreen forest soils → higher Ksat
+    7:  1.00    # open shrublands reference
   kAnisotropic:
     16: 1.0    # rocky alpine — fracture-dominated, near-isotropic
     1:  0.5    # evergreen forest — layered organic horizons, higher H:V ratio
@@ -91,9 +91,9 @@ spatial_weights:
     1:  1.0    # deeper soil development under forest canopy
     7:  1.0    # open shrublands reference
 
-anchor_variable: averageRoutedRunoff   # per-GRU aquifer/lateral baseflow flux
-coherence_type: streamflow
-anchor_metric: KGE_log               # log-KGE emphasizes recession limb over melt peak
+anchor_variable: averageRoutedRunoff
+coherence_type: runoff
+anchor_metric: MONTHLY_TOTAL_COM
 
 # Note: if scalarAquiferBaseflow is not written for qTopmodl runs, check
 # outputControl.txt.  If unavailable, switch coherence_type to "streamflow"
@@ -101,15 +101,15 @@ anchor_metric: KGE_log               # log-KGE emphasizes recession limb over me
 w_anchor: 0.6
 
 multiplier_search_bounds:
-  # k_soil:          [0.15, 0.65]   # prior best (bigBuckt) 0.33; keep moderate range
+  k_soil:          [0.10, 3.0]    # Ksat 4e-6–1.2e-4 m/s; controls transmissivity magnitude
   qSurfScale:      [0.5, 2.0]
-  kAnisotropic:    [0.10, 3.0]    # wide: anisotropy highly uncertain; default=1.0
-  # fieldCapacity:   [0.50, 2.50]   # ~0.10–0.50 m³/m³ physically; multiplier on 0.20
-  zScale_TOPMODEL: [1.0, 2.0]
+  kAnisotropic:    [0.10, 3.0]
+  # fieldCapacity:   [0.50, 2.50]
+  zScale_TOPMODEL: [0.5, 5.0]    # 1.25–12.5m depth scale; deep granite plausible at high end
 
-max_iterations: 75
-popsize: 10            # pop = 5 × 4 params = 40 members
-tol: 0.005
+max_iterations: 30
+popsize: 6             # pop = 6 × 4 params = 24 members per gen
+tol: 0.01
 
 spinup_days: 365
 time_step_hours: 1.0

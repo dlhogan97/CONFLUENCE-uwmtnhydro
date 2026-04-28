@@ -85,6 +85,28 @@ def _repeat_hru_axis(values: np.ndarray, hru_axis: int, repeats: int) -> np.ndar
     return np.repeat(values, repeats=repeats, axis=hru_axis)
 
 
+def _compute_band_assignment(source_attrs: Path, target_attrs: Path, n_bands: int) -> np.ndarray | None:
+    """For each target HRU return the index of the nearest source elevation band.
+
+    Used when aspects-per-band are unequal (target HRU count not divisible by n_bands).
+    Returns None if elevations cannot be read or source band count does not match n_bands.
+    """
+    if not source_attrs.exists() or not target_attrs.exists():
+        return None
+    with xr.open_dataset(source_attrs) as ds:
+        src_data = ds.load()
+    with xr.open_dataset(target_attrs) as ds:
+        tgt_data = ds.load()
+    if "elevation" not in src_data or "elevation" not in tgt_data:
+        return None
+    src_elevs = np.asarray(src_data["elevation"].values).reshape(-1)
+    tgt_elevs = np.asarray(tgt_data["elevation"].values).reshape(-1)
+    if len(src_elevs) != n_bands:
+        return None
+    assignment = np.array([int(np.argmin(np.abs(src_elevs - e))) for e in tgt_elevs], dtype=int)
+    return assignment
+
+
 def _target_hru_from_attributes(target_trial: Path) -> tuple[int | None, np.ndarray | None]:
     """Return target HRU count (and optional hruId values) from attributes.nc."""
     attrs_path = target_trial.parent / "attributes.nc"
@@ -124,6 +146,13 @@ def _expand_trial_params(
     expected_tgt = n_bands * aspects_per_band
     attr_hru, attr_hru_ids = _target_hru_from_attributes(target_trial)
     desired_tgt_hru = int(attr_hru or (tgt_hru if tgt_hru > 0 else expected_tgt))
+
+    # Compute elevation-based band assignment for unequal aspects-per-band case.
+    source_attrs = source_trial.parent / "attributes.nc"
+    target_attrs = target_trial.parent / "attributes.nc"
+    band_assignment = _compute_band_assignment(source_attrs, target_attrs, n_bands)
+    if band_assignment is not None:
+        print(f"Elevation-based band assignment computed for {len(band_assignment)} target HRUs.")
 
     if src_hru not in (0, n_bands):
         raise ValueError(
@@ -180,12 +209,20 @@ def _expand_trial_params(
         if src_hru_len == tgt_hru_len:
             return src_vals
 
-        if src_hru_len == n_bands and tgt_hru_len >= n_bands and tgt_hru_len % n_bands == 0:
-            repeats = tgt_hru_len // n_bands
-            expanded = _repeat_hru_axis(src_vals, hru_axis=hru_axis, repeats=repeats)
-            if expanded.shape != target_shape:
-                raise ValueError(f"expanded shape {expanded.shape} != target {target_shape}")
-            return expanded
+        if src_hru_len == n_bands and tgt_hru_len >= n_bands:
+            if tgt_hru_len % n_bands == 0:
+                # Uniform case: every band has the same number of aspects.
+                repeats = tgt_hru_len // n_bands
+                expanded = _repeat_hru_axis(src_vals, hru_axis=hru_axis, repeats=repeats)
+                if expanded.shape != target_shape:
+                    raise ValueError(f"expanded shape {expanded.shape} != target {target_shape}")
+                return expanded
+            if band_assignment is not None and len(band_assignment) == tgt_hru_len:
+                # Non-uniform case: use elevation-based per-HRU band index lookup.
+                expanded = np.take(src_vals, band_assignment, axis=hru_axis)
+                if expanded.shape != target_shape:
+                    raise ValueError(f"expanded shape {expanded.shape} != target {target_shape}")
+                return expanded
 
         if src_hru_len == 1:
             return np.broadcast_to(src_vals, target_shape)

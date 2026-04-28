@@ -1,64 +1,100 @@
 # ============================================================================
-# Stage 1: Snow Accumulation and Melt
+# Stage 1: Snow Accumulation, Distribution, and Melt
 # ============================================================================
-# Goal: Correct snow accumulation, peak timing, melt rate, and disappearance.
+# Goals
+# -----
+# 1. Reproduce the ASO-observed hypsometric distribution of April-1 SWE.
+#    Modeled SWE has historically been ~300 m too high in elevation; this
+#    stage corrects the spatial shape via per-HRU spatial weights on
+#    `frozenPrecipMultip`.
+# 2. Get melt timing right via per-HRU `LWRadAtm` boost (top 4 HRUs > bottom).
+# 3. Capture warm AR-event rain at low elevations via `tempCritRain` (a
+#    further low-elev temp delta is calibrated in stage 3 against streamflow).
 #
-# Parameters are calibrated as global multipliers on the per-HRU base values
-# from trialParams.nc.  Physical bounds are enforced after multiplication in
-# parameter_manager.py.
+# Levers (priority order)
+# -----------------------
+#   frozenPrecipMultip — global multiplier × ASO-derived per-HRU weights.
+#                        Effective per-HRU value = base × ASO_weight × M.
+#                        Concentrates snow accumulation at the elevations ASO
+#                        actually observes it.
+#   lw_mult            — basin-wide multiplier with spatial weights that boost
+#                        LW at high HRUs (where over-accumulation has been
+#                        worst).  Forcing-side (applied to LWRadAtm).
+#   tempCritRain       — global rain/snow threshold multiplier.
 #
-# Physical reasoning:
-#   albedoDecayRate — controls how fast albedo decays after fresh snowfall.
-#                     SUMMA default (~3e6 s) can be too slow for dusty Colorado
-#                     snowpack.  Optimizer often prefers ~1e5 (non-physical).
-#                     Clamp lower bound to 1e5 s.
-#   Frad_direct     — partitions direct vs diffuse shortwave.  Higher elevation
-#                     → more direct; East River sits at 2700–4000 m.
-#   Frad_vis        — partitions visible vs NIR.  Controls albedo feedback.
+# Fixed (NOT calibrated this stage)
+# ----------------------------------
+#   albedoDecayRate at 4.19e+5 s (~5 days) — set in base trialParams.nc.
 #
-# Constrained by:
-#   SNOTEL SWE at Butte (SNTL:CO:380) ~2930 m and Schofield Pass (SNTL:CO:737) ~3260 m
+# Constraints
+# -----------
+#   SNOTEL SWE at Butte (CO:380, 2930 m) — point KGE
+#   ASO median April-1 SWE-by-elevation shape — hypsometric cosine similarity
 # ============================================================================
 
 name: stage1_snow
-description: "Snow accumulation, albedo decay, shortwave partitioning"
+description: "Snow accumulation, hypsometric redistribution, and melt timing"
 
 params:
-  - albedoDecayRate
   - frozenPrecipMultip
   - tempCritRain
+  - lw_mult            # forcing-side; per-HRU via spatial weights below
+
+# Forcing-side multipliers — applied to LWRadAtm in METSIM forcing files,
+# NOT to trialParams.nc.  Listed here so the trial loop routes them correctly.
+forcing_params:
+  - lw_mult
+
+# Spatial weights — per-HRU directional shape; the optimizer tunes the global
+# magnitude.  Effective value at HRU i = base × spatial_weight_i × M.
 spatial_weights:
+  # ASO median April-1 SWE normalized to basin mean (data-driven prior).
+  # Floor of 0.25 applied at the bottom 2 HRUs (1697, 1396 m) — snow there
+  # should be rare but not literally zero.
   frozenPrecipMultip:
-    16: 0.8    # barren rocky substrate → lower Ksat (~2.2e-5 m/s)
-    1:  0.9    # evergreen forest soils → higher Ksat (~6.0e-5 m/s)
-    7:  1.0    # open shrublands reference (~4.0e-5 m/s)
-  albedoDecayRate:
-    16: 0.75    # barren rocky substrate → lower Ksat (~2.2e-5 m/s)
-    1:  1.0    # evergreen forest soils → higher Ksat (~6.0e-5 m/s)
-    7:  1.0    # open shrublands reference (~4.0e-5 m/s)
+    0: 1.333    # 3681 m
+    1: 1.704    # 3389 m
+    2: 1.833    # 3060 m  (peak)
+    3: 1.501    # 2747 m
+    4: 1.052    # 2415 m
+    5: 0.404    # 2061 m
+    6: 0.25     # 1698 m  (floored from ASO 0.133)
+    7: 0.25     # 1396 m  (floored from ASO 0.040)
+  # LW boost concentrated at the top 4 HRUs to accelerate over-accumulated melt.
+  lw_mult:
+    0: 1.0      # 3681 m  (top 4)
+    1: 1.0      # 3389 m
+    2: 1.0      # 3060 m
+    3: 1.0      # 2747 m
+    4: 0.4      # 2415 m  (bottom 4)
+    5: 0.4      # 2061 m
+    6: 0.4      # 1698 m
+    7: 0.4      # 1396 m
+
 anchor_variable: scalarSWE
 coherence_type: snow
-# anchor_metric: metric used to score simulated vs observed ET.
-# Options: KGE | KGE_log | NSE | NRMSE
-anchor_metric: NSE
 
-# Objective weights (w_anchor + w_coherence = 1.0)
-# Use high coherence weight because we only have 1–2 SNOTEL sites for ~5 HRUs.
-w_anchor: 0.4
+# Anchor metric used for the SNOTEL site comparison; full anchor cost is
+# blended with hypsometric coherence (controlled by run_cfg.aso_anchor_weight).
+anchor_metric: NRMSE
 
-# Multiplier search bounds [lo, hi] — applied on top of the base parameter value.
-# albedoDecayRate: wide range because the physical range is 1e5–3e6 s (3 orders of magnitude).
+# Coherence weight (1 - w_anchor) handles the across-HRU shape consistency.
+w_anchor: 0.7
+
+# Multiplier search bounds [lo, hi] applied on top of base × spatial_weight.
 multiplier_search_bounds:
-  albedoDecayRate:    [0.5, 1.5]   # tightened from prior best (0.35) ±50%
-  # Frad_direct:        [0.90, 1.40]   # prior best 1.12; physically near 1.0
-  # Frad_vis:           [1.00, 1.55]   # prior best 1.27; East River gets high vis fraction
-  frozenPrecipMultip: [0.8, 1.2]   # prior best 1.15; 
-  tempCritRain:       [0.99, 1.01] # prior best 270.6 K; physically near 273.15 K
+  frozenPrecipMultip: [0.3,  1.4]   # widened: optimizer needed to push lower
+  tempCritRain:       [0.985, 1.015]   # ~±4 K spread for AR-event capture
+  lw_mult:            [1.0,  1.2]   # +0% to +20% LW (top 4 full, bottom 4 moderated by spatial weight)
 
-# Optimizer settings
-max_iterations: 50
-popsize: 6            # differential_evolution: pop = popsize × n_params = 5×4 = 20 members
-tol: 0.005
+# Optimizer settings — looser tol + smaller pop for faster convergence.
+# Total max evals = max_iterations × popsize × n_params = 25 × 5 × 3 = 375.
+max_iterations: 25
+popsize: 5
+tol: 0.02
 
 spinup_days: 365
 time_step_hours: 1.0
+
+# Optional warm-start: re-set in the optimization config wrapper.
+# warm_start_from: /scratch/.../staged_results_bigBuckt_lumped/final_best_params.json

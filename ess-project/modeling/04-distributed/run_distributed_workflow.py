@@ -130,13 +130,17 @@ def run_workflow(config_path: Path, steps: Iterable[str], reuse_domain: Path | N
         confluence.managers["domain"].define_domain()
 
     if "compute_aspect" in step_list:
-        from utils.geospatial.discretization_utils import DomainDiscretizer
-        domain_mgr = confluence.managers["domain"]
-        if domain_mgr.domain_discretizer is None:
-            domain_mgr.domain_discretizer = DomainDiscretizer(domain_mgr.config, domain_mgr.logger)
-        aspect_path = domain_mgr.domain_discretizer.compute_aspect_raster()
-        if aspect_path is None:
-            raise RuntimeError("compute_aspect step failed — aspect raster could not be created.")
+        disc_method = (confluence.managers["domain"].config.get("DOMAIN_DISCRETIZATION") or "").lower()
+        if "aspect" in disc_method:
+            from utils.geospatial.discretization_utils import DomainDiscretizer
+            domain_mgr = confluence.managers["domain"]
+            if domain_mgr.domain_discretizer is None:
+                domain_mgr.domain_discretizer = DomainDiscretizer(domain_mgr.config, domain_mgr.logger)
+            aspect_path = domain_mgr.domain_discretizer.compute_aspect_raster()
+            if aspect_path is None:
+                raise RuntimeError("compute_aspect step failed — aspect raster could not be created.")
+        else:
+            print(f"Skipping compute_aspect: DOMAIN_DISCRETIZATION={disc_method!r} does not include 'aspect'")
 
     if "discretize_domain" in step_list:
         confluence.managers["domain"].discretize_domain()

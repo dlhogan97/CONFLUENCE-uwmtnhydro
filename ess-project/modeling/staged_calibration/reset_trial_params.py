@@ -43,7 +43,7 @@ import xarray as xr
 # ---------------------------------------------------------------------------
 DEFAULT_PATH = Path(
     "/scratch/dlhogan/ess-project-data"
-    "/domain_Tuolumne_River_lumped/settings/SUMMA/trialParams.nc"
+    "/domain_Tuolumne_River_distributed_elev/settings/SUMMA/trialParams.nc"
 )
 
 # ---------------------------------------------------------------------------
@@ -60,7 +60,7 @@ DEFAULT_PATH = Path(
 # Uniform across HRUs: spatial variation handled by SUMMA slope/aspect geometry.
 # ---------------------------------------------------------------------------
 SNOW_PARAMS = {
-    "albedoDecayRate":    8.19e5,   # s  (localParamInfo default; Colorado dust → optimizer pulls toward ~3e5)
+    "albedoDecayRate":    4.19e5,   # s  (~5-day decay; fixed this calibration cycle, not optimized)
     # "Frad_direct":        0.70,    # fraction  (localParamInfo default)
     # "Frad_vis":           0.50,    # fraction  (localParamInfo default)
     "frozenPrecipMultip": 1.0,    # dimensionless  (no bias correction assumed at start)

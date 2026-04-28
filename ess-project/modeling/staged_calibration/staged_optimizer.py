@@ -48,6 +48,14 @@ from scipy.optimize import differential_evolution
 
 from parameter_manager import ParameterManager, MULTIPLIER_BOUNDS
 from summa_runner import run_summa, read_hru_output, read_basin_output, setup_trial_run_dir, patch_file_manager, patch_model_decisions
+from forcing_adjuster import write_adjusted_forcing, patch_forcing_path
+
+# Linear-reservoir routing lives in utils.custom; ensure it's importable
+import sys as _sys
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(_REPO_ROOT) not in _sys.path:
+    _sys.path.insert(0, str(_REPO_ROOT))
+from utils.custom.linear_reservoir import two_reservoir_daily  # noqa: E402
 from objective_functions import (
     compute_anchor_snow,
     compute_anchor_et,
@@ -59,6 +67,7 @@ from objective_functions import (
     compute_coherence_snow,
     compute_coherence_et,
     compute_coherence_baseflow,
+    compute_hypsometric_coherence_april1,
     combined_objective,
     eckhardt_baseflow,
 )
@@ -95,6 +104,14 @@ class StageConfig:
     # Weights carry directional spatial information; the global multiplier M carries
     # only magnitude.  actual_param_i = base_i × weight_i × M.
     spatial_weights: Dict[str, Dict] = field(default_factory=dict)
+    # Forcing-side multipliers applied to METSIM forcing netCDFs before SUMMA reads
+    # them. Currently recognised names: "precip_mult" (per-HRU pptrate scaling) and
+    # "lw_mult" (basin-wide LWRadAtm scaling).  These appear in `params` and behave
+    # like any other multiplier — bounds, spatial_weights, and warm-start all apply.
+    forcing_params: List[str] = field(default_factory=list)
+    # Optional warm-start: path to a *_best_params.json or final_best_params.json
+    # whose multipliers seed DE's initial population.
+    warm_start_from: Optional[str] = None
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "StageConfig":
@@ -119,6 +136,8 @@ class StageConfig:
             time_step_hours=data.get("time_step_hours", 1.0),
             description=data.get("description", ""),
             spatial_weights=data.get("spatial_weights", {}),
+            forcing_params=list(data.get("forcing_params", [])),
+            warm_start_from=data.get("warm_start_from"),
         )
 
 
@@ -147,7 +166,8 @@ def _validate_required_stage_params(pm: ParameterManager, stage_cfgs: List[Stage
     missing_by_stage: Dict[str, List[str]] = {}
 
     for sc in stage_cfgs:
-        missing = [p for p in sc.params if p not in available]
+        forcing_set = set(sc.forcing_params)
+        missing = [p for p in sc.params if p not in available and p not in forcing_set]
         if missing:
             missing_by_stage[sc.name] = missing
 
@@ -269,6 +289,55 @@ class TrialEvaluator:
             return load_obs_monthly(obs_path)
         return load_obs_timeseries(obs_path)
 
+    def _routing_params(self) -> Optional[Dict[str, float]]:
+        """Load shared two-reservoir routing params from JSON, cached.
+
+        When the run config sets `routing_params_json`, the streamflow-side
+        anchor metrics use basin__TotalRunoff routed through `two_reservoir_daily`
+        instead of SUMMA's `averageRoutedRunoff`.  Returns None when not set.
+        """
+        if hasattr(self, "_routing_cache"):
+            return self._routing_cache
+        path = self.run_cfg.get("routing_params_json")
+        if not path:
+            self._routing_cache = None
+            return None
+        p = Path(path)
+        if not p.exists():
+            logger.warning("routing_params_json not found: %s — skipping routing", p)
+            self._routing_cache = None
+            return None
+        with open(p) as fh:
+            data = json.load(fh)
+        self._routing_cache = {
+            "k_fast": float(data["k_fast"]),
+            "k_slow": float(data["k_slow"]),
+            "f_fast": float(data["f_fast"]),
+        }
+        return self._routing_cache
+
+    def _routed_daily_cms(self, output_dir: Path) -> Optional[pd.Series]:
+        """Read basin__TotalRunoff, convert to m³/s, daily-resample, and route.
+
+        Returns None when routing is not configured for this run.
+        """
+        rp = self._routing_params()
+        if rp is None:
+            return None
+        cfg = self.stage_cfg
+        basin_area_m2 = float(self.run_cfg.get("basin_area_m2", 1.0))
+        sim_q_rate = read_basin_output(
+            output_dir, self.run_cfg.get("output_prefix", ""),
+            "basin__TotalRunoff", cfg.spinup_days, cfg.time_step_hours,
+        )
+        sim_cms = sim_q_rate * basin_area_m2
+        sim_daily = sim_cms.resample("D").mean()
+        routed = two_reservoir_daily(
+            sim_daily.values,
+            k_fast=rp["k_fast"], k_slow=rp["k_slow"], f=rp["f_fast"],
+        )
+        return pd.Series(routed, index=sim_daily.index, name="routed_q_cms")
+
     def __call__(self, multiplier_vector: np.ndarray) -> float:
         """Evaluate a trial parameter set. Returns scalar cost."""
         self._trial_counter += 1
@@ -282,9 +351,14 @@ class TrialEvaluator:
             for i, p in enumerate(self.stage_cfg.params)
         }
 
+        # Split into forcing-side multipliers vs trialParams multipliers.
+        forcing_set = set(self.stage_cfg.forcing_params)
+        forcing_mults = {k: v for k, v in multipliers.items() if k in forcing_set}
+        trial_mults   = {k: v for k, v in multipliers.items() if k not in forcing_set}
+
         # Write trial params (pass spatial weights so per-HRU weighting is applied)
         trial_ds = self.pm.apply_multipliers(
-            multipliers,
+            trial_mults,
             spatial_weights=self._spatial_weights if self._spatial_weights else None,
         )
         with tempfile.NamedTemporaryFile(suffix=".nc", delete=False) as tmp:
@@ -311,6 +385,59 @@ class TrialEvaluator:
         if model_decisions:
             patch_model_decisions(settings_dir, model_decisions)
         Path(tmp_path).unlink(missing_ok=True)
+
+        # If this stage tunes forcing-side multipliers, materialise an adjusted
+        # forcing directory for this trial and re-point fileManager at it.
+        if forcing_mults:
+            base_forcing_dir = Path(self.run_cfg.get("base_forcing_dir") or "")
+            if not base_forcing_dir.exists():
+                raise FileNotFoundError(
+                    "forcing_params set on stage but run_cfg['base_forcing_dir'] "
+                    f"is not a real path: {base_forcing_dir!r}"
+                )
+            n_hru = int(self.run_cfg.get("n_hru") or len(self.run_cfg.get("hru_elevations", {})) or 1)
+
+            # Multiplicative forcing knobs use *perturbation-around-1* semantics:
+            #   effective_h = 1 + weight_h × (M − 1)
+            # weight_h=1.0 → HRU sees full M; weight_h=0.0 → HRU unperturbed.
+            # This avoids the trap of "weight=0.4 × M=1.20 = 0.48" which would
+            # actually CUT LW by 52% rather than apply a moderated boost.
+            def _per_hru_perturbation_mult(name: str) -> Optional[Dict[int, float]]:
+                if name not in forcing_mults:
+                    return None
+                M = float(forcing_mults[name])
+                w = self._spatial_weights.get(name)
+                if w is not None:
+                    return {i: 1.0 + float(w[i]) * (M - 1.0) for i in range(len(w))}
+                return {i: M for i in range(n_hru)}
+
+            hru_precip_mults = _per_hru_perturbation_mult("precip_mult")
+            hru_lw_mults     = _per_hru_perturbation_mult("lw_mult")
+
+            # Additive temperature offset uses *masked-magnitude* semantics:
+            #   delta_h = weight_h × M  (in K)
+            # weight_h=1.0 → HRU gets full M Kelvin offset; weight_h=0.0 → no offset.
+            hru_temp_deltas: Optional[Dict[int, float]] = None
+            if "temp_delta_lowelev" in forcing_mults:
+                M = float(forcing_mults["temp_delta_lowelev"])
+                w = self._spatial_weights.get("temp_delta_lowelev")
+                if w is not None:
+                    hru_temp_deltas = {i: float(w[i]) * M for i in range(len(w))}
+                else:
+                    hru_temp_deltas = {i: M for i in range(n_hru)}
+
+            trial_forcing_dir = Path(self.run_cfg["trial_base_dir"]) / trial_id / "forcing"
+            write_adjusted_forcing(
+                base_forcing_dir=base_forcing_dir,
+                trial_forcing_dir=trial_forcing_dir,
+                sim_start=str(self.run_cfg.get("sim_start", "")),
+                sim_end=str(self.run_cfg.get("sim_end", "")),
+                n_hru=n_hru,
+                hru_precip_multipliers=hru_precip_mults,
+                hru_lw_multipliers=hru_lw_mults,
+                hru_temp_deltas_K=hru_temp_deltas,
+            )
+            patch_forcing_path(fm_path, trial_forcing_dir)
 
         # Run SUMMA
         converged = run_summa(
@@ -401,15 +528,30 @@ class TrialEvaluator:
                     sim_a, obs_a = sim_daily.align(obs_daily, join="inner")
                     if len(sim_a) >= 10:
                         site_kges.append(compute_anchor_snow(sim_a.values, obs_a.values))
-                j_anc = float(np.mean(site_kges)) if site_kges else 0.5
+                j_anc_snotel = float(np.mean(site_kges)) if site_kges else 0.5
             elif not self._obs.empty:
                 anchor_swe_s = self._select_anchor_hru(all_swe)
                 sim_daily = anchor_swe_s.resample("D").mean()
                 obs_daily = self._obs.resample("D").mean()
                 sim_a, obs_a = sim_daily.align(obs_daily, join="inner")
-                j_anc = compute_anchor_snow(sim_a.values, obs_a.values)
+                j_anc_snotel = compute_anchor_snow(sim_a.values, obs_a.values)
             else:
-                j_anc = 0.5
+                j_anc_snotel = 0.5
+
+            # Optional hypsometric anchor: ASO normalized SWE shape on April 1
+            # vs simulated April-1 SWE shape (cosine similarity).  Activated
+            # whenever `aso_swe_weights` is present in run_cfg.
+            aso_w = self.run_cfg.get("aso_swe_weights")
+            if aso_w:
+                aso_w_int = {int(k): float(v) for k, v in aso_w.items()}
+                j_anc_hypso = compute_hypsometric_coherence_april1(all_swe, aso_w_int)
+                # Blend weight (default 0.5/0.5).  Lives at run_cfg level so it
+                # can be tuned per domain without editing code.
+                w_aso = float(self.run_cfg.get("aso_anchor_weight", 0.5))
+                w_snotel = 1.0 - w_aso
+                j_anc = w_snotel * j_anc_snotel + w_aso * j_anc_hypso
+            else:
+                j_anc = j_anc_snotel
 
         elif cfg.coherence_type == "et":
             # scalarTotalET + scalarSnowSublimation — both negative (flux leaving surface)
@@ -508,15 +650,20 @@ class TrialEvaluator:
 
         elif cfg.coherence_type == "runoff":
             # Soil stage: anchor to total basin streamflow; no HRU coherence.
-            runoff_var = anchor_var or "averageRoutedRunoff"
-            sim_q = _to_discharge_cms(
-                read_basin_output(output_dir, prefix, runoff_var,
-                                  cfg.spinup_days, cfg.time_step_hours),
-                runoff_var,
-            )
+            # Prefer routed basin__TotalRunoff when shared two-reservoir routing
+            # is configured.  Fall back to SUMMA's internal averageRoutedRunoff
+            # when no routing JSON is provided (legacy behavior).
             j_coh = 0.0
-            if not self._obs.empty:
+            sim_daily = self._routed_daily_cms(output_dir)
+            if sim_daily is None:
+                runoff_var = anchor_var or "averageRoutedRunoff"
+                sim_q = _to_discharge_cms(
+                    read_basin_output(output_dir, prefix, runoff_var,
+                                      cfg.spinup_days, cfg.time_step_hours),
+                    runoff_var,
+                )
                 sim_daily = sim_q.resample("D").mean()
+            if not self._obs.empty:
                 sim_a, obs_a = sim_daily.align(self._obs, join="inner")
                 j_anc = compute_anchor_runoff(sim_a, obs_a,
                                               metric=cfg.anchor_metric)
@@ -524,15 +671,17 @@ class TrialEvaluator:
                 j_anc = 0.5
 
         elif cfg.coherence_type in ("streamflow", "routing"):
-            streamflow_var = anchor_var or "averageRoutedRunoff"
-            sim_q = _to_discharge_cms(
-                read_basin_output(output_dir, prefix, streamflow_var,
-                                  cfg.spinup_days, cfg.time_step_hours),
-                streamflow_var,
-            )
             j_coh = 0.0
-            if not self._obs.empty:
+            sim_daily = self._routed_daily_cms(output_dir)
+            if sim_daily is None:
+                streamflow_var = anchor_var or "averageRoutedRunoff"
+                sim_q = _to_discharge_cms(
+                    read_basin_output(output_dir, prefix, streamflow_var,
+                                      cfg.spinup_days, cfg.time_step_hours),
+                    streamflow_var,
+                )
                 sim_daily = sim_q.resample("D").mean()
+            if not self._obs.empty:
                 sim_a, obs_a = sim_daily.align(self._obs, join="inner")
                 j_anc = compute_anchor_streamflow(sim_a, obs_a,
                                                   metric=cfg.anchor_metric)
@@ -633,6 +782,35 @@ def run_stage(
     logger.info("Running differential_evolution: maxiter=%d  popsize=%d  workers=%d",
                 stage_cfg.max_iterations, stage_cfg.popsize, workers)
 
+    # Warm-start: build a Sobol-init population and inject the seed multiplier
+    # vector as the first member.  DE will polish from there.
+    init_pop = "sobol"
+    if stage_cfg.warm_start_from:
+        ws_path = Path(stage_cfg.warm_start_from)
+        if not ws_path.exists():
+            logger.warning("warm_start_from not found: %s — using cold sobol init", ws_path)
+        else:
+            with open(ws_path) as fh:
+                ws_data = json.load(fh)
+            # Accept either {"best_multipliers": {...}} or a flat dict of multipliers
+            seed = ws_data.get("best_multipliers", ws_data)
+            from scipy.stats import qmc
+            n_pop = stage_cfg.popsize * len(stage_cfg.params)
+            sampler = qmc.Sobol(d=len(stage_cfg.params), seed=run_cfg.get("random_seed", 42))
+            sample01 = sampler.random(n=n_pop)
+            lo = np.array([b[0] for b in bounds])
+            hi = np.array([b[1] for b in bounds])
+            sobol_pop = lo + sample01 * (hi - lo)
+            seed_vec = np.array([
+                float(seed.get(p, 0.5 * (bounds[i][0] + bounds[i][1])))
+                for i, p in enumerate(stage_cfg.params)
+            ])
+            seed_vec = np.clip(seed_vec, lo, hi)
+            sobol_pop[0] = seed_vec
+            init_pop = sobol_pop
+            logger.info("Warm-start seed: %s", {p: round(float(seed_vec[i]), 4)
+                                                for i, p in enumerate(stage_cfg.params)})
+
     # Convergence callback: called after each generation with the current population.
     # Logs best/mean cost and estimated KGE so progress is visible in the log file.
     _gen_counter = [0]
@@ -671,6 +849,7 @@ def run_stage(
         polish=False,
         disp=False,      # suppress scipy's own output; we log via callback
         callback=_convergence_callback,
+        init=init_pop,
     )
 
     best_multipliers = {p: float(result.x[i]) for i, p in enumerate(stage_cfg.params)}
@@ -752,6 +931,13 @@ def run_all_stages(config_path: str | Path) -> None:
         _obs_override["streamflow"]  = obs_block["streamflow_obs_path"]
         _obs_override["routing"]     = obs_block["streamflow_obs_path"]
 
+    # Optional per-stage warm-start paths injected from the optimization config.
+    # Lets each physics config point its stage 1/2/3 at a different lumped
+    # final_best_params.json without forking the stage YAML files.
+    _warm_start_overrides: Dict[str, str] = {}
+    for k, v in (cfg.get("warm_start_paths") or {}).items():
+        _warm_start_overrides[str(k)] = str(v)
+
     for stage_cfg, stage_file in zip(stage_cfgs, stage_files):
 
         # Inject basin-level obs paths from run config (overrides stage yaml).
@@ -761,6 +947,10 @@ def run_all_stages(config_path: str | Path) -> None:
             # Fall back: resolve relative path against config file location
             stage_cfg.anchor_obs_path = str(config_path.parent / stage_cfg.anchor_obs_path)
 
+        # Apply per-stage warm-start path override from optimization config.
+        if stage_cfg.name in _warm_start_overrides:
+            stage_cfg.warm_start_from = _warm_start_overrides[stage_cfg.name]
+
         best_mults = run_stage(stage_cfg, pm, run_cfg, results_dir)
 
         # Build spatial weight arrays for the freeze step so that the baked-in
@@ -769,8 +959,65 @@ def run_all_stages(config_path: str | Path) -> None:
         if stage_cfg.spatial_weights:
             stage_sw = _build_spatial_weight_arrays(stage_cfg.spatial_weights, hru_lc, n_hru)
 
-        # Freeze this stage's parameters into the base before the next stage
-        pm.freeze_params(best_mults, stage_cfg.params, spatial_weights=stage_sw)
+        # Split forcing-side multipliers from trialParams ones.  Forcing
+        # multipliers don't live in trialParams.nc — they're baked into a
+        # frozen forcing directory and reused by downstream stages.
+        forcing_set = set(stage_cfg.forcing_params)
+        trial_param_names    = [p for p in stage_cfg.params if p not in forcing_set]
+        forcing_param_names  = [p for p in stage_cfg.params if p in forcing_set]
+        forcing_best = {p: best_mults[p] for p in forcing_param_names if p in best_mults}
+
+        # Freeze trialParams-side params into the base
+        if trial_param_names:
+            trial_best = {p: best_mults[p] for p in trial_param_names if p in best_mults}
+            pm.freeze_params(trial_best, trial_param_names, spatial_weights=stage_sw)
+
+        # Materialise a frozen forcing dir so subsequent stages start from the
+        # adjusted forcing instead of the unmodified base.
+        if forcing_best:
+            base_forcing_dir = Path(run_cfg.get("base_forcing_dir") or "")
+            frozen_forcing_dir = results_dir / f"{stage_cfg.name}_frozen_forcing"
+
+            # Same perturbation semantics as TrialEvaluator (see comments there).
+            def _freeze_perturbation(name: str) -> Optional[Dict[int, float]]:
+                if name not in forcing_best:
+                    return None
+                M = float(forcing_best[name])
+                w = (stage_sw or {}).get(name)
+                if w is not None:
+                    return {i: 1.0 + float(w[i]) * (M - 1.0) for i in range(len(w))}
+                return {i: M for i in range(n_hru)}
+
+            hru_precip_mults = _freeze_perturbation("precip_mult")
+            hru_lw_mults     = _freeze_perturbation("lw_mult")
+
+            hru_temp_deltas: Optional[Dict[int, float]] = None
+            if "temp_delta_lowelev" in forcing_best:
+                M = float(forcing_best["temp_delta_lowelev"])
+                w = (stage_sw or {}).get("temp_delta_lowelev")
+                if w is not None:
+                    hru_temp_deltas = {i: float(w[i]) * M for i in range(len(w))}
+                else:
+                    hru_temp_deltas = {i: M for i in range(n_hru)}
+
+            write_adjusted_forcing(
+                base_forcing_dir=base_forcing_dir,
+                trial_forcing_dir=frozen_forcing_dir,
+                sim_start=str(run_cfg.get("sim_start", "")),
+                sim_end=str(run_cfg.get("sim_end", "")),
+                n_hru=n_hru,
+                hru_precip_multipliers=hru_precip_mults,
+                hru_lw_multipliers=hru_lw_mults,
+                hru_temp_deltas_K=hru_temp_deltas,
+            )
+            run_cfg["base_forcing_dir"] = str(frozen_forcing_dir)
+            logger.info(
+                "Frozen forcing → %s  precip=%s  lw=%s  temp_dK=%s",
+                frozen_forcing_dir,
+                hru_precip_mults if hru_precip_mults else "1.0×",
+                hru_lw_mults if hru_lw_mults else "1.0×",
+                hru_temp_deltas if hru_temp_deltas else "0.0",
+            )
 
         # Persist updated base params to disk so a restart can resume from here
         frozen_path = results_dir / f"{stage_cfg.name}_frozen_params.nc"

@@ -3,6 +3,7 @@ import numpy as np # type: ignore
 from typing import List, Dict, Any, Optional, Tuple
 import rasterio # type: ignore
 from rasterio.mask import mask # type: ignore
+from rasterio.warp import reproject, Resampling # type: ignore
 from shapely.geometry import Polygon, MultiPolygon, shape # type: ignore
 from shapely.ops import unary_union # type: ignore
 import matplotlib.pyplot as plt # type: ignore
@@ -319,6 +320,38 @@ class DomainDiscretizer:
                     'class_name': 'aspectClass'
                 }
 
+            elif attr_lower == 'tpi':
+                # Resolve TPI class raster with optional explicit override.
+                # Priority:
+                # 1) TPI_CLASS_RASTER (full file path)
+                # 2) TPI_CLASS_PATH/TPI_PATH + TPI_CLASS_NAME
+                # 3) domain default path: <project>/attributes/tpi/tpi1000_class.tif
+                tpi_raster_override = self.config.get('TPI_CLASS_RASTER')
+                tpi_class_name = self.config.get('TPI_CLASS_NAME', 'tpi1000_class.tif')
+                if tpi_class_name == 'default' or not tpi_class_name:
+                    tpi_class_name = 'tpi1000_class.tif'
+
+                if tpi_raster_override and tpi_raster_override != 'default':
+                    tpi_raster = Path(tpi_raster_override)
+                else:
+                    tpi_base = self.config.get('TPI_CLASS_PATH', self.config.get('TPI_PATH', 'default'))
+                    if tpi_base == 'default' or not tpi_base:
+                        tpi_raster = self.project_dir / 'attributes' / 'tpi' / tpi_class_name
+                    else:
+                        tpi_raster = Path(tpi_base) / tpi_class_name
+
+                if not tpi_raster.exists():
+                    raise ValueError(
+                        f"TPI class raster not found at {tpi_raster}. "
+                        "Set TPI_CLASS_RASTER or place tpi1000_class.tif under attributes/tpi/."
+                    )
+
+                raster_info[attr] = {
+                    'path': tpi_raster,
+                    'type': 'discrete',
+                    'class_name': 'tpiClass'
+                }
+
             else:
                 raise ValueError(f"Unsupported attribute for discretization: {attr}")
         
@@ -354,6 +387,7 @@ class DomainDiscretizer:
             raster_data = {}
             common_transform = None
             common_shape = None
+            common_crs = None
             
             for attr in attributes:
                 attr_info = raster_info[attr]
@@ -361,10 +395,80 @@ class DomainDiscretizer:
                 
                 try:
                     with rasterio.open(raster_path) as src:
-                        out_image, out_transform = mask(src, [gru_geometry], crop=True, 
+                        # Determine the effective raster CRS.  When it is not embedded (common
+                        # for TPI/aspect rasters saved without CRS metadata), infer the UTM zone
+                        # from the GRU centroid so that geometry reprojection and alignment work.
+                        effective_src_crs = src.crs
+                        if effective_src_crs is None and gru_gdf.crs is not None:
+                            try:
+                                centroid = gru_gdf.geometry.union_all().centroid
+                                if gru_gdf.crs.is_geographic:
+                                    lon, lat = centroid.x, centroid.y
+                                else:
+                                    _pt = gpd.GeoSeries([centroid], crs=gru_gdf.crs).to_crs("EPSG:4326").iloc[0]
+                                    lon, lat = _pt.x, _pt.y
+                                utm_zone = int((lon + 180) / 6) + 1
+                                epsg = 32600 + utm_zone if lat >= 0 else 32700 + utm_zone
+                                from rasterio.crs import CRS as RioCRS
+                                effective_src_crs = RioCRS.from_epsg(epsg)
+                                self.logger.warning(
+                                    f"Raster {raster_path.name} has no embedded CRS. "
+                                    f"Inferred EPSG:{epsg} (UTM zone {utm_zone}) from GRU centroid."
+                                )
+                            except Exception:
+                                pass  # leave effective_src_crs as None; masking may still succeed
+
+                        # Reproject GRU geometry to raster CRS when needed before masking.
+                        geometry_for_mask = gru_geometry
+                        if gru_gdf.crs is not None and effective_src_crs is not None and gru_gdf.crs != effective_src_crs:
+                            geometry_for_mask = (
+                                gpd.GeoSeries([gru_geometry], crs=gru_gdf.crs)
+                                .to_crs(effective_src_crs)
+                                .iloc[0]
+                            )
+
+                        out_image, out_transform = mask(src, [geometry_for_mask], crop=True,
                                                        all_touched=True, filled=False)
                         out_image = out_image[0]
                         nodata_value = src.nodata
+
+                        if nodata_value is None:
+                            # Preserve missing values when source has no explicit nodata.
+                            nodata_value = np.nan
+                            out_image = out_image.astype(np.float32)
+
+                        # Convert masked arrays to plain ndarrays so downstream numpy ops
+                        # (comparisons, broadcasting with other rasters) behave predictably.
+                        if isinstance(out_image, np.ma.MaskedArray):
+                            _fill = nodata_value if not (isinstance(nodata_value, float) and np.isnan(nodata_value)) else out_image.fill_value
+                            out_image = out_image.filled(_fill)
+
+                        # Set reference grid from first raster and align subsequent rasters to it.
+                        if common_transform is None:
+                            common_transform = out_transform
+                            common_shape = out_image.shape
+                            common_crs = effective_src_crs if effective_src_crs is not None else gru_gdf.crs
+                        else:
+                            needs_alignment = (
+                                out_image.shape != common_shape
+                                or out_transform != common_transform
+                                or (common_crs is not None and effective_src_crs is not None and effective_src_crs != common_crs)
+                            )
+
+                            if needs_alignment:
+                                aligned_image = np.full(common_shape, nodata_value, dtype=out_image.dtype)
+                                reproject(
+                                    source=out_image,
+                                    destination=aligned_image,
+                                    src_transform=out_transform,
+                                    src_crs=effective_src_crs if effective_src_crs is not None else common_crs,
+                                    src_nodata=nodata_value,
+                                    dst_transform=common_transform,
+                                    dst_crs=common_crs,
+                                    dst_nodata=nodata_value,
+                                    resampling=Resampling.nearest,
+                                )
+                                out_image = aligned_image
                         
                         # Store raster data and metadata
                         raster_data[attr] = {
@@ -373,14 +477,16 @@ class DomainDiscretizer:
                             'info': attr_info
                         }
                         
-                        # Set common transform and shape from first raster
-                        if common_transform is None:
-                            common_transform = out_transform
-                            common_shape = out_image.shape
-                        
                 except Exception as e:
                     self.logger.warning(f"Could not extract {attr} raster data for GRU {gru_id}: {str(e)}")
                     continue
+
+            missing_attrs = [attr for attr in attributes if attr not in raster_data]
+            if missing_attrs:
+                self.logger.warning(
+                    f"Skipping GRU {gru_id}: missing raster extracts for attributes {missing_attrs}"
+                )
+                continue
             
             if not raster_data:
                 self.logger.warning(f"No valid raster data found for GRU {gru_id}")
@@ -436,6 +542,9 @@ class DomainDiscretizer:
             hru_id_counter += len(gru_hrus)
         
         self.logger.info(f"Created {len(all_hrus)} combined attribute HRUs across all GRUs")
+        if not all_hrus:
+            self.logger.warning("No HRUs created during combined discretization")
+            return gpd.GeoDataFrame({'geometry': []}, geometry='geometry', crs=gru_gdf.crs)
         return gpd.GeoDataFrame(all_hrus, crs=gru_gdf.crs)
 
     def _classify_continuous_data(self, raster_array: np.ndarray, valid_mask: np.ndarray, 
@@ -640,6 +749,8 @@ class DomainDiscretizer:
                     hru_data['elevClass'] = combination[i]
                 elif attr_name == 'aspect':
                     hru_data['aspectClass'] = combination[i]
+                elif attr_name == 'tpi':
+                    hru_data['tpiClass'] = combination[i]
                 elif attr_name == 'soilclass':
                     hru_data['soilClass'] = combination[i]
                 elif attr_name == 'landclass':
@@ -1767,6 +1878,63 @@ class DomainDiscretizer:
             self.logger.error(f"Error calculating mean slope: {str(e)}")
             hru_gdf['slope_mean_deg'] = 15.0
 
+        # Merge HRUs below MIN_HRU_SIZE into their nearest-elevation neighbour.
+        min_area_km2 = float(self.config.get('MIN_HRU_SIZE', 0))
+        min_area_m2 = min_area_km2 * 1e6
+        if min_area_m2 > 0:
+            small_mask = hru_gdf['HRU_area'] < min_area_m2
+            n_small = int(small_mask.sum())
+            if n_small > 0:
+                self.logger.info(
+                    f"Merging {n_small} HRU(s) smaller than {min_area_km2} km² "
+                    f"into nearest-elevation neighbour"
+                )
+                small_idxs = hru_gdf.index[small_mask].tolist()
+                large_gdf = hru_gdf[~small_mask].copy()
+
+                for sidx in small_idxs:
+                    row = hru_gdf.loc[sidx]
+                    small_elev = row['elev_mean'] if row['elev_mean'] != -9999 else large_gdf['elev_mean'].median()
+                    small_area = row['HRU_area']
+
+                    nearest = (large_gdf['elev_mean'] - small_elev).abs().idxmin()
+                    large_area = large_gdf.at[nearest, 'HRU_area']
+                    large_elev = large_gdf.at[nearest, 'elev_mean']
+                    total_area = large_area + small_area
+
+                    merged_geometry = large_gdf.at[nearest, 'geometry'].union(row['geometry'])
+                    merged_geometry = self._clean_geometries(merged_geometry)
+                    if merged_geometry is None:
+                        # Keep the small HRU if union produced a non-polygon geometry.
+                        self.logger.warning(
+                            f"Could not safely merge small HRU {sidx}; retaining as standalone HRU"
+                        )
+                        large_gdf = pd.concat([large_gdf, hru_gdf.loc[[sidx]]])
+                        continue
+
+                    large_gdf.at[nearest, 'geometry'] = merged_geometry
+                    large_gdf.at[nearest, 'HRU_area'] = total_area
+                    if large_elev != -9999:
+                        large_gdf.at[nearest, 'elev_mean'] = (
+                            (large_elev * large_area + small_elev * small_area) / total_area
+                        )
+
+                hru_gdf = large_gdf.reset_index(drop=True)
+                self.logger.info(f"After merging small HRUs: {len(hru_gdf)} HRUs remain")
+
+        # Merges can produce GeometryCollections with non-polygon parts.
+        # Enforce polygon-only geometries again before sorting and export.
+        hru_gdf['geometry'] = hru_gdf['geometry'].apply(self._clean_geometries)
+        dropped_after_merge = int(hru_gdf['geometry'].isna().sum())
+        if dropped_after_merge > 0:
+            self.logger.warning(
+                f"Dropped {dropped_after_merge} HRU(s) after post-merge geometry cleanup"
+            )
+        hru_gdf = hru_gdf[hru_gdf['geometry'].notnull()].copy()
+        if hru_gdf.empty:
+            self.logger.error("No valid HRUs remain after post-merge geometry cleanup")
+            return hru_gdf
+
         # Re-assign sequential HRU IDs using configurable ordering.
         # Default behavior is elevation-descending so HRU_ID=1 is the highest HRU.
         if 'HRU_ID' in hru_gdf.columns:
@@ -1863,6 +2031,84 @@ class DomainDiscretizer:
             sort_columns.append('_original_hru_id')
             ascending.append(True)
             hru_gdf = hru_gdf.sort_values(sort_columns, ascending=ascending).reset_index(drop=True)
+        elif order_strategy in ['elevation_tpi', 'elev_tpi', 'elevation_then_tpi']:
+            sort_columns = []
+            ascending = []
+
+            # Elevation-first ordering for combined HRUs:
+            # highest elevation bands first, then TPI class within each band.
+            if 'elevClass' in hru_gdf.columns:
+                hru_gdf['elevClass'] = pd.to_numeric(hru_gdf['elevClass'], errors='coerce')
+                sort_columns.append('elevClass')
+                ascending.append(False)
+            elif 'elev_mean' in hru_gdf.columns:
+                sort_columns.append('elev_mean')
+                ascending.append(False)
+
+            tpi_sort_col = 'tpiClass' if 'tpiClass' in hru_gdf.columns else None
+            if tpi_sort_col is not None:
+                hru_gdf[tpi_sort_col] = pd.to_numeric(hru_gdf[tpi_sort_col], errors='coerce')
+
+                # Default hydrologic ordering within an elevation band:
+                # ridge -> upper_slope -> middle_slope -> flats -> lower_slope -> valley.
+                # Valley is expected to drain toward the stream outlet.
+                tpi_order_cfg = self.config.get('HRU_TPI_CLASS_ORDER', [1, 2, 3, 4, 5, 6])
+                tpi_label_map = {
+                    'ridge': 1,
+                    'upper_slope': 2,
+                    'middle_slope': 3,
+                    'flats': 4,
+                    'lower_slope': 5,
+                    'valley': 6,
+                }
+
+                def _parse_tpi_order(order_cfg):
+                    if isinstance(order_cfg, str):
+                        tokens = [item.strip().lower() for item in order_cfg.split(',') if item.strip()]
+                    elif isinstance(order_cfg, (list, tuple)):
+                        tokens = [str(item).strip().lower() for item in order_cfg]
+                    else:
+                        tokens = []
+
+                    parsed = []
+                    for token in tokens:
+                        if token in tpi_label_map:
+                            parsed.append(tpi_label_map[token])
+                            continue
+                        try:
+                            parsed.append(int(token))
+                        except ValueError:
+                            return [1, 2, 3, 4, 5, 6]
+
+                    # Keep unique values while preserving order.
+                    deduped = []
+                    for cls in parsed:
+                        if cls not in deduped:
+                            deduped.append(cls)
+
+                    # Enforce presence of all expected classes.
+                    for cls in [1, 2, 3, 4, 5, 6]:
+                        if cls not in deduped:
+                            deduped.append(cls)
+                    return deduped
+
+                tpi_order = _parse_tpi_order(tpi_order_cfg)
+                tpi_rank_map = {cls: rank for rank, cls in enumerate(tpi_order, start=1)}
+                hru_gdf['_tpi_rank'] = hru_gdf[tpi_sort_col].map(tpi_rank_map).fillna(999).astype(int)
+
+                sort_columns.append('_tpi_rank')
+                ascending.append(True)
+                # Keep deterministic numeric ordering as tie-breaker.
+                sort_columns.append(tpi_sort_col)
+                ascending.append(True)
+
+            if 'GRU_ID' in hru_gdf.columns:
+                sort_columns.append('GRU_ID')
+                ascending.append(True)
+
+            sort_columns.append('_original_hru_id')
+            ascending.append(True)
+            hru_gdf = hru_gdf.sort_values(sort_columns, ascending=ascending).reset_index(drop=True)
         elif order_strategy in ['original', 'input']:
             sort_columns = []
             ascending = []
@@ -1893,7 +2139,7 @@ class DomainDiscretizer:
         self.logger.info(
             f"Assigned HRU_ID using '{order_strategy}' ordering; old->new preview: {mapping_preview}"
         )
-        hru_gdf = hru_gdf.drop(columns=['_original_hru_id', '_aspect_rank'], errors='ignore')
+        hru_gdf = hru_gdf.drop(columns=['_original_hru_id', '_aspect_rank', '_tpi_rank'], errors='ignore')
         
         return hru_gdf
 
@@ -1984,6 +2230,35 @@ class DomainDiscretizer:
         Returns:
             gpd.GeoDataFrame: The shapefile content as a GeoDataFrame.
         """
+        shapefile_path = Path(shapefile_path)
+
+        if not shapefile_path.exists():
+            # The configured path doesn't exist — try the project's own river_basins dir.
+            # This handles the common case where RIVER_BASINS_PATH points to a base domain
+            # that hasn't been delineated yet, but the elevXxx project already has a copy.
+            local_rb_dir = self.project_dir / "shapefiles" / "river_basins"
+            fallback = None
+            if local_rb_dir.exists():
+                candidates = sorted(local_rb_dir.glob("*.shp"))
+                if candidates:
+                    # Prefer files that contain 'lumped' or 'riverBasins' in the name.
+                    preferred = [p for p in candidates
+                                 if "lumped" in p.name.lower() or "riverbasins" in p.name.lower()]
+                    fallback = preferred[0] if preferred else candidates[0]
+
+            if fallback is not None:
+                self.logger.warning(
+                    f"Configured shapefile not found: {shapefile_path}\n"
+                    f"  Falling back to: {fallback}"
+                )
+                shapefile_path = fallback
+            else:
+                self.logger.error(f"Error reading shapefile {shapefile_path}: No such file or directory")
+                raise FileNotFoundError(
+                    f"{shapefile_path}: No such file or directory\n"
+                    f"  Also checked: {local_rb_dir}"
+                )
+
         try:
             gdf = gpd.read_file(shapefile_path)
             if gdf.crs is None:

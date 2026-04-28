@@ -50,6 +50,12 @@ DOMAIN_CONFIGS = {
         "output_filename": "openet_et_ensemble_East_elevAspect_monthly.csv",
         "label": "East River elevation × aspect",
     },
+    "distributed_elevTPI": {
+        "shapefile": "/scratch/dlhogan/ess-project-data/domain_East_River_distributed_elevTPI/shapefiles/catchment/East_River_distributed_elevTPI_HRUs_elevation_tpi.shp",
+        "output_dir": "/scratch/dlhogan/ess-project-data/domain_East_River_distributed_elevTPI/observations/et",
+        "output_filename": "openet_et_ensemble_East_elevTPI_monthly.csv",
+        "label": "East River elevation × TPI",
+    },
 }
 
 DEFAULT_START_DATE = "2007-10-01"

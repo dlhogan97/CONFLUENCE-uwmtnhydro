@@ -65,16 +65,16 @@ run:
   # Use a period where all observations (SWE, ET, streamflow) overlap.
   # The first spinup_days of output are discarded before computing metrics.
   # Start 1 year before calib_start so spinup is covered (2012-10-01 + 365d → 2013-10-01).
-  sim_start: "2012-10-01 00:00"
-  sim_end:   "2018-09-30 23:00"
+  sim_start: "204-10-01 00:00"
+  sim_end:   "2008-09-30 23:00"
 
   # SUMMA output time step in hours.
   time_step_hours: 1.0
 
   # Basin area in m² — used to convert SUMMA's averageRoutedRunoff (m/s, depth per
   # unit area) to volumetric discharge (m³/s) for comparison with streamflow obs.
-  # Value from attributes.nc HRUarea sum: 678,519,154.4 m² ≈ 678 km².
-  basin_area_m2: 678519154.4
+  # Value from attributes.nc HRUarea sum: 774,508,622.74 m² ≈ 774 km².
+  basin_area_m2: 774508622.74
 
   # ---------------------------------------------------------------------------
   # HRU spatial metadata — elevation-only discretization (5 HRUs)

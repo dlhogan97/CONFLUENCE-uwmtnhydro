@@ -1,0 +1,30 @@
+{
+  "k_fast": 2.003214169813551,
+  "k_slow": 0.0038122573520338577,
+  "f_fast": 0.7000000000000001,
+  "residence_fast_days": 0.4991977468355642,
+  "residence_slow_days": 262.31177689682863,
+  "calibration_metric": "balanced",
+  "calibration_score": -0.26400575411262794,
+  "scores": {
+    "nse": -0.19081404685897163,
+    "kge": 0.0650058996917029,
+    "log_nse": -1.065555596788867,
+    "log_kge": 0.13534072750562398,
+    "balanced": -0.26400575411262794
+  },
+  "calibration_window": [
+    "2014-10-01 00:00:00",
+    "2017-09-30 00:00:00"
+  ],
+  "n_aligned_days": 1096,
+  "baseline_run": {
+    "config": "optimization_config_bigBuckt.yaml",
+    "settings_src": "/scratch/dlhogan/ess-project-data/domain_Tuolumne_River_distributed_elev/settings/SUMMA",
+    "physics": "bigBuckt + drainage (a-priori parameters)",
+    "sim_start": "2013-10-01 00:00",
+    "sim_end": "2017-09-30 23:00",
+    "spinup_days": 365,
+    "elapsed_summa_seconds": 109.3
+  }
+}

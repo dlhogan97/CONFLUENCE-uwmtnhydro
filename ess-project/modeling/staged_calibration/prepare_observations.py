@@ -45,8 +45,9 @@ ET_LUMPED_RAW = next((LUMPED_OBS_DIR / "et").glob("*.csv"), None)
 # Domain-specific output observation directories (formatted files written here)
 DOMAIN_OBS_DIRS = {
     "lumped":                 SCRATCH_ROOT / f"domain_{BASIN}_lumped"                 / "observations" / "formatted",
-    "distributed":            SCRATCH_ROOT / f"domain_{BASIN}_distributed"            / "observations" / "formatted",
+    "distributed_elev":            SCRATCH_ROOT / f"domain_{BASIN}_distributed_elev"            / "observations" / "formatted",
     "distributed_elevAspect": SCRATCH_ROOT / f"domain_{BASIN}_distributed_elevAspect" / "observations" / "formatted",
+    "distributed_elevTPI":    SCRATCH_ROOT / f"domain_{BASIN}_distributed_elevTPI"    / "observations" / "formatted",
 }
 
 # Raw OpenET downloads (written by download_distributed_et.py)
@@ -54,6 +55,7 @@ ET_RAW = {
     "lumped":                 ET_LUMPED_RAW,
     "distributed":            SCRATCH_ROOT / f"domain_{BASIN}_distributed"            / "observations" / "et" / "openet_et_ensemble_East_distributed_monthly.csv",
     "distributed_elevAspect": SCRATCH_ROOT / f"domain_{BASIN}_distributed_elevAspect" / "observations" / "et" / "openet_et_ensemble_East_elevAspect_monthly.csv",
+    "distributed_elevTPI":    SCRATCH_ROOT / f"domain_{BASIN}_distributed_elevTPI"    / "observations" / "et" / "openet_et_ensemble_East_elevTPI_monthly.csv",
 }
 
 INCHES_TO_MM = 25.4
@@ -142,6 +144,7 @@ OPENET_START_DATE = "2016-01-01"  # OpenET ensemble reliable coverage begins ~20
 ET_PER_HRU_RAW = {
     "distributed":            SCRATCH_ROOT / f"domain_{BASIN}_distributed"            / "observations" / "et" / "openet_et_per_hru_distributed_monthly.csv",
     "distributed_elevAspect": SCRATCH_ROOT / f"domain_{BASIN}_distributed_elevAspect" / "observations" / "et" / "openet_et_per_hru_distributed_elevAspect_monthly.csv",
+    "distributed_elevTPI":    SCRATCH_ROOT / f"domain_{BASIN}_distributed_elevTPI"    / "observations" / "et" / "openet_et_per_hru_distributed_elevTPI_monthly.csv",
 }
 
 

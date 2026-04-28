@@ -307,30 +307,35 @@ def update_cold_state(catchment_gdf: gpd.GeoDataFrame, settings_dir: Path, dry_r
     hru_ids = catchment_gdf["HRU_ID"].values.astype(np.int32)
     n_hru = len(hru_ids)
 
-    with xr.open_dataset(cs_path) as src:
-        dims_src = dict(src.sizes)
+    # Use nc4 directly so orphan dimensions (e.g. midSoil, which has no variables
+    # pointing to it but is queried by name in SUMMA's read_icond) are preserved.
+    with nc4.Dataset(cs_path) as _nc:
+        dims_src = {k: len(v) for k, v in _nc.dimensions.items()}
     print(f"  hru: 1 → {n_hru}   other dims: { {k: v for k, v in dims_src.items() if k != 'hru'} }")
 
     if dry_run:
         print("  [dry-run] no files written"); return
 
     _backup(cs_path)
-    with xr.open_dataset(cs_path) as src, nc4.Dataset(cs_path, "w", format="NETCDF4") as dst:
+    with xr.open_dataset(cs_path) as src:
+        src_loaded = {name: (da.dims, da.values.copy(), dict(da.attrs))
+                      for name, da in src.data_vars.items()}
+
+    with nc4.Dataset(cs_path, "w", format="NETCDF4") as dst:
         dst.setncattr("Author", "update_settings_for_hrus.py")
         dst.setncattr("History", datetime.now().strftime("%Y/%m/%d %H:%M:%S"))
         for dim, size in dims_src.items():
             dst.createDimension(dim, n_hru if dim == "hru" else size)
-        for name, da in src.data_vars.items():
-            arr = da.values
+        for name, (dims, arr, attrs) in src_loaded.items():
             new_arr = hru_ids if name == "hruId" else arr
             if name != "hruId":
-                for axis, dim in enumerate(da.dims):
+                for axis, dim in enumerate(dims):
                     if dim == "hru" and arr.shape[axis] == 1:
                         new_arr = np.repeat(new_arr, n_hru, axis=axis)
             dtype = "i4" if np.issubdtype(arr.dtype, np.integer) else "f8"
-            v = dst.createVariable(name, dtype, da.dims, fill_value=False)
-            for attr in da.attrs:
-                v.setncattr(attr, da.attrs[attr])
+            v = dst.createVariable(name, dtype, dims, fill_value=False)
+            for attr, val in attrs.items():
+                v.setncattr(attr, val)
             v[:] = new_arr
     print(f"  wrote → {cs_path}")
 
@@ -351,29 +356,32 @@ def update_trial_params(catchment_gdf: gpd.GeoDataFrame, settings_dir: Path, dry
         print("  [dry-run] no files written"); return
 
     _backup(tp_path)
-    with xr.open_dataset(tp_path) as src, nc4.Dataset(tp_path, "w", format="NETCDF4") as dst:
+    with xr.open_dataset(tp_path) as src:
+        dims_src = dict(src.sizes)
+        src_loaded = {name: (da.dims, da.values.copy(), dict(da.attrs))
+                      for name, da in src.data_vars.items()}
+
+    with nc4.Dataset(tp_path, "w", format="NETCDF4") as dst:
         dst.setncattr("Author", "update_settings_for_hrus.py")
         dst.setncattr("History", datetime.now().strftime("%Y/%m/%d %H:%M:%S"))
-        dims_src = dict(src.sizes)
         for dim in dims_src:
             dst.createDimension(dim, n_hru if dim == "hru" else n_gru if dim == "gru" else dims_src[dim])
-        for name, da in src.data_vars.items():
-            arr = da.values
+        for name, (dims, arr, attrs) in src_loaded.items():
             if name == "hruId":
                 new_arr = hru_ids
             elif name == "gruId":
                 new_arr = gru_unique
             else:
                 new_arr = arr
-                for axis, dim in enumerate(da.dims):
+                for axis, dim in enumerate(dims):
                     if dim == "hru" and arr.shape[axis] == 1:
                         new_arr = np.repeat(new_arr, n_hru, axis=axis)
                     elif dim == "gru" and arr.shape[axis] == 1:
                         new_arr = np.repeat(new_arr, n_gru, axis=axis)
             dtype = "i4" if np.issubdtype(arr.dtype, np.integer) else "f8"
-            v = dst.createVariable(name, dtype, da.dims, fill_value=False)
-            for attr in da.attrs:
-                v.setncattr(attr, da.attrs[attr])
+            v = dst.createVariable(name, dtype, dims, fill_value=False)
+            for attr, val in attrs.items():
+                v.setncattr(attr, val)
             v[:] = new_arr
     print(f"  wrote → {tp_path}")
 

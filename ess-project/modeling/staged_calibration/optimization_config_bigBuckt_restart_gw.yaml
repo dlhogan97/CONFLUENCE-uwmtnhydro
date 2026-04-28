@@ -1,0 +1,97 @@
+# ============================================================================
+# optimization_config_bigBuckt_restart_gw.yaml
+# Restart from stage3_soil frozen params — re-runs only the GW stage with:
+#   - MONTHLY_TOTAL_COM anchor metric (replaces Eckhardt baseflow)
+#   - coherence_type: runoff (total streamflow, not baseflow filter)
+#   - w_anchor: 0.7
+#   - 30 max iterations, tol=0.01
+# ============================================================================
+
+log_level: INFO
+
+results_dir: /scratch/dlhogan/ess-project-data/domain_Tuolumne_River_distributed_elev/optimization/staged_results_bigBuckt_gw_restart
+
+stage_configs_dir: /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs
+
+stages:
+  - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs/stage4_groundwater_bigBuckt.yaml
+
+run:
+  summa_exe: summa
+
+  summa_settings_dir: /scratch/dlhogan/ess-project-data/domain_Tuolumne_River_distributed_elev/settings/SUMMA
+
+  # Start from stage3_soil frozen params — snow + ET + soil already optimized.
+  base_trial_params_nc: /scratch/dlhogan/ess-project-data/domain_Tuolumne_River_distributed_elev/optimization/staged_results_bigBuckt/stage3_soil_frozen_params.nc
+
+  param_nc_filename: trialParams.nc
+
+  output_prefix: bigBuckt_elevation
+
+  model_decisions_override:
+    groundwatr: bigBuckt
+    bcLowrSoiH: drainage
+
+  timeout_sec: 1800
+  parallel_workers: 8
+  random_seed: 42
+  spinup_days: 365
+
+  sim_start: "2013-10-01 00:00"
+  sim_end:   "2017-09-30 23:00"
+
+  time_step_hours: 1.0
+  basin_area_m2: 774515414.59
+  n_hru: 8
+
+  # Use stage3_soil frozen forcing (LW + temp_delta already applied).
+  base_forcing_dir: /scratch/dlhogan/ess-project-data/domain_Tuolumne_River_distributed_elev/optimization/staged_results_bigBuckt/stage3_soil_frozen_forcing
+
+  routing_params_json: /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/routing_params_shared.json
+
+  aso_swe_weights:
+    0: 1.333
+    1: 1.704
+    2: 1.833
+    3: 1.501
+    4: 1.052
+    5: 0.404
+    6: 0.25
+    7: 0.25
+  aso_anchor_weight: 0.5
+
+  hru_elevations:
+    0: 3681.40773653947
+    1: 3388.73623228869
+    2: 3060.45401723102
+    3: 2747.47577744648
+    4: 2414.93972506168
+    5: 2061.12491574927
+    6: 1697.64594875346
+    7: 1396.12108886108
+
+  hru_aspects: {}
+
+  hru_landcover:
+    0: 16
+    1: 16
+    2: 7
+    3: 1
+    4: 7
+    5: 7
+    6: 7
+    7: 1
+
+  snotel_sites:
+    - elevation: 2930.0
+      obs_path: /scratch/dlhogan/ess-project-data/domain_Tuolumne_River_distributed_elev/observations/formatted/snotel_swe.csv
+
+  streamflow_obs_path: /scratch/dlhogan/ess-project-data/domain_Tuolumne_River_distributed_elev/observations/formatted/streamflow_obs.csv
+
+observations:
+  swe_obs_path: /scratch/dlhogan/ess-project-data/domain_Tuolumne_River_distributed_elev/observations/formatted/snotel_swe.csv
+  et_obs_path: /scratch/dlhogan/ess-project-data/domain_Tuolumne_River_distributed_elev/observations/formatted/et_obs.csv
+  streamflow_obs_path: /scratch/dlhogan/ess-project-data/domain_Tuolumne_River_distributed_elev/observations/formatted/streamflow_obs.csv
+
+warm_start_paths:
+  stage3_groundwater: /scratch/dlhogan/ess-project-data/domain_Tuolumne_River_distributed_elev/optimization/staged_results_bigBuckt/stage3_groundwater_best_params.json

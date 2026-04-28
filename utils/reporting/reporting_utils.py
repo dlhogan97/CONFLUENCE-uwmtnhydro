@@ -1165,6 +1165,8 @@ class VisualizationReporter:
             # Get the column name and setup legend title
             class_mappings = {
                 'elevation': {'col': 'elevClass', 'title': 'Elevation Classes', 'cm': 'terrain'},
+                'tpi': {'col': 'tpiClass', 'title': 'TPI Classes', 'cm': 'tab20'},
+                'elevation,tpi': {'col': 'tpiClass', 'title': 'TPI Classes', 'cm': 'tab20'},
                 'soilclass': {'col': 'soilClass', 'title': 'Soil Classes', 'cm': 'Set3'},
                 'landclass': {'col': 'landClass', 'title': 'Land Use Classes', 'cm': 'Set2'},
                 'radiation': {'col': 'radiationClass', 'title': 'Radiation Classes', 'cm': 'YlOrRd'},

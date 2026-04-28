@@ -242,7 +242,7 @@ def calibrate_reservoirs(q_in, obs, metric='nse',
     best_score  = np.inf
 
     # parameter bounds: [k_fast, k_slow, f]
-    bounds = [(0.05, 3),   # k_fast: 1–20 day residence time
+    bounds = [(0.005, 3),   # k_fast: 1–20 day residence time
               (1e-6, 0.5),  # k_slow: 10–200 day residence time
               (0.4,  1.0)]    # f: fast fraction
 
