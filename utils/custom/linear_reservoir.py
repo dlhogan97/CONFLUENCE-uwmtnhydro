@@ -103,6 +103,100 @@ def balanced(obs, sim, w_kge=0.25, w_nse=0.25, w_kge_log=0.25, w_nse_log=0.25):
             total_w += w
     return total_score / total_w if total_w > 0 else np.nan
 
+def pbias(obs, sim):
+    """Percent bias: positive = overestimate, negative = underestimate."""
+    mask = np.isfinite(obs) & np.isfinite(sim)
+    o, s = obs[mask], sim[mask]
+    total_obs = np.sum(o)
+    if total_obs == 0:
+        return np.nan
+    return 100.0 * (np.sum(s) - total_obs) / total_obs
+
+def com_timing_error(obs, sim):
+    """Center-of-mass timing error in days (COM_sim − COM_obs).
+
+    Uses flow-weighted mean index position over the full timeseries.
+    Positive = simulated mass centre arrives later than observed.
+    """
+    mask = np.isfinite(obs) & np.isfinite(sim) & (obs >= 0) & (sim >= 0)
+    o, s = obs[mask], sim[mask]
+    idx = np.arange(len(o), dtype=np.float64)
+    sum_o, sum_s = np.sum(o), np.sum(s)
+    if sum_o == 0 or sum_s == 0:
+        return np.nan
+    com_obs = np.sum(idx * o) / sum_o
+    com_sim = np.sum(idx * s) / sum_s
+    return float(com_sim - com_obs)
+
+def volume_timing(obs, sim, w_volume=0.5, w_timing=0.5, timing_scale_days=30.0):
+    """Composite metric explicitly targeting volume and timing.
+
+    Volume component : 1 − |pbias| / 100, clamped to [0, 1].
+    Timing component : exp(−|COM_error_days| / timing_scale_days).
+
+    Parameters
+    ----------
+    w_volume, w_timing  : relative weights (normalized internally so they need not sum to 1)
+    timing_scale_days   : e-folding scale for the COM timing penalty (default 30 days)
+    """
+    pb = pbias(obs, sim)
+    ct = com_timing_error(obs, sim)
+
+    components, weights = [], []
+    if np.isfinite(pb):
+        components.append(max(0.0, 1.0 - abs(pb) / 100.0))
+        weights.append(w_volume)
+    if np.isfinite(ct):
+        components.append(float(np.exp(-abs(ct) / timing_scale_days)))
+        weights.append(w_timing)
+
+    if not components:
+        return np.nan
+    total_w = sum(weights)
+    return sum(c * w for c, w in zip(components, weights)) / total_w
+
+def balanced_vt(obs, sim,
+                w_kge=0.2, w_log_nse=0.2, w_log_kge=0.2,
+                w_volume=0.2, w_timing=0.2,
+                timing_scale_days=30.0):
+    """Composite metric balancing KGE, recession skill, volume, and timing.
+
+    Five components (all in [0, 1], higher = better):
+      kge      — overall fit (correlation + variability + bias)
+      log_nse  — low-flow / recession fit
+      log_kge  — low-flow / recession fit (KGE variant)
+      volume   — 1 − |pbias| / 100  (total-volume accuracy)
+      timing   — exp(−|COM_error| / timing_scale_days)  (flow timing accuracy)
+
+    Default weights are equal (0.2 each). NaN components are excluded and
+    remaining weights renormalized, so partial data still yields a valid score.
+
+    Parameters
+    ----------
+    w_kge, w_log_nse, w_log_kge, w_volume, w_timing : relative component weights
+    timing_scale_days : e-folding scale for COM timing penalty (default 30 days)
+    """
+    pb = pbias(obs, sim)
+    ct = com_timing_error(obs, sim)
+
+    vol_score = max(0.0, 1.0 - abs(pb) / 100.0) if np.isfinite(pb) else np.nan
+    tim_score = float(np.exp(-abs(ct) / timing_scale_days)) if np.isfinite(ct) else np.nan
+
+    candidates = [
+        (kge(obs, sim),     w_kge),
+        (log_nse(obs, sim), w_log_nse),
+        (log_kge(obs, sim), w_log_kge),
+        (vol_score,         w_volume),
+        (tim_score,         w_timing),
+    ]
+
+    total_w, total_score = 0.0, 0.0
+    for v, w in candidates:
+        if np.isfinite(v):
+            total_score += w * v
+            total_w += w
+    return total_score / total_w if total_w > 0 else np.nan
+
 # ── objective ────────────────────────────────────────────────────────
 
 def objective(params, q_in, obs, metric='nse', bounds=None, metric_weights=None):
@@ -121,9 +215,15 @@ def objective(params, q_in, obs, metric='nse', bounds=None, metric_weights=None)
     if metric == 'balanced':
         w = metric_weights or {}
         score = balanced(obs, sim, **w)
+    elif metric == 'volume_timing':
+        w = metric_weights or {}
+        score = volume_timing(obs, sim, **w)
+    elif metric == 'balanced_vt':
+        w = metric_weights or {}
+        score = balanced_vt(obs, sim, **w)
     else:
-        metrics = {'nse': nse, 'kge': kge, 'log_nse': log_nse, 'log_kge': log_kge}
-        score = metrics[metric](obs, sim)
+        _metrics = {'nse': nse, 'kge': kge, 'log_nse': log_nse, 'log_kge': log_kge}
+        score = _metrics[metric](obs, sim)
 
     if not np.isfinite(score):
         return 1e6
@@ -213,12 +313,21 @@ def calibrate_reservoirs(q_in, obs, metric='nse',
     ----------
     q_in   : SUMMA simulated daily runoff array
     obs    : observed daily streamflow (same units, same length)
-    metric : 'nse' | 'kge' | 'log_nse' | 'log_kge' | 'balanced'
-        'balanced' is a composite of KGE + NSE + log-KGE + log-NSE.
+    metric : 'nse' | 'kge' | 'log_nse' | 'log_kge' | 'balanced' | 'volume_timing' | 'balanced_vt'
+        'balanced'      — composite of KGE + NSE + log-KGE + log-NSE.
+        'volume_timing' — explicitly targets total-volume bias and center-of-mass timing.
+        'balanced_vt'   — KGE + log-NSE + log-KGE + volume + timing (recommended for
+                          snowmelt basins where seasonal volume and peak timing matter).
     metric_weights : dict, optional
-        Only used when metric='balanced'. Keys: w_kge, w_nse, w_kge_log, w_nse_log.
-        Defaults to equal weights (0.25 each).
-        Example: {'w_kge': 0.2, 'w_nse': 0.2, 'w_kge_log': 0.3, 'w_nse_log': 0.3}
+        For metric='balanced': keys w_kge, w_nse, w_kge_log, w_nse_log (default 0.25 each).
+          Example: {'w_kge': 0.2, 'w_nse': 0.2, 'w_kge_log': 0.3, 'w_nse_log': 0.3}
+        For metric='volume_timing': keys w_volume, w_timing, timing_scale_days.
+          w_volume/w_timing default 0.5/0.5; timing_scale_days default 30 (e-folding days).
+          Example: {'w_volume': 0.4, 'w_timing': 0.6, 'timing_scale_days': 45}
+        For metric='balanced_vt': keys w_kge, w_log_nse, w_log_kge, w_volume, w_timing,
+          timing_scale_days. All weights default 0.2 (equal).
+          Example: {'w_kge': 0.3, 'w_log_nse': 0.1, 'w_log_kge': 0.1,
+                    'w_volume': 0.3, 'w_timing': 0.2, 'timing_scale_days': 20}
     n_starts : number of local optimization starts
     strategy : 'adaptive' (learns from elite starts) or 'multistart' (uniform random)
     start_points : optional initial guess(es) for [k_fast, k_slow, f_fast]
@@ -347,23 +456,33 @@ def calibrate_reservoirs(q_in, obs, metric='nse',
 
     sim = two_reservoir_daily(q_in, k_fast, k_slow, f)
 
+    mw = metric_weights or {}
+    bal_w  = {k: mw[k] for k in ('w_kge', 'w_nse', 'w_kge_log', 'w_nse_log') if k in mw}
+    vt_w   = {k: mw[k] for k in ('w_volume', 'w_timing', 'timing_scale_days') if k in mw}
+    bvt_w  = {k: mw[k] for k in ('w_kge', 'w_log_nse', 'w_log_kge',
+                                   'w_volume', 'w_timing', 'timing_scale_days') if k in mw}
+
     return {
-        'k_fast':            k_fast,
-        'k_slow':            k_slow,
-        'f_fast':            f,
+        'k_fast':              k_fast,
+        'k_slow':              k_slow,
+        'f_fast':              f,
         'residence_fast_days': 1 / k_fast,
         'residence_slow_days': 1 / k_slow,
-        'nse':               nse(obs, sim),
-        'kge':               kge(obs, sim),
-        'log_nse':           log_nse(obs, sim),
-        'log_kge':           log_kge(obs, sim),
-        'balanced':          balanced(obs, sim, **(metric_weights or {})),
-        'sim':               sim,
-        'optimizer_success': best_result.success,
-        'n_starts_used':     local_runs,
-        'seeded_starts_used': len(seeded_starts),
-        'strategy':          strategy,
-        'objective':         best_score,
+        'nse':                 nse(obs, sim),
+        'kge':                 kge(obs, sim),
+        'log_nse':             log_nse(obs, sim),
+        'log_kge':             log_kge(obs, sim),
+        'balanced':            balanced(obs, sim, **bal_w),
+        'pbias':               pbias(obs, sim),
+        'com_timing_error_days': com_timing_error(obs, sim),
+        'volume_timing':       volume_timing(obs, sim, **vt_w),
+        'balanced_vt':         balanced_vt(obs, sim, **bvt_w),
+        'sim':                 sim,
+        'optimizer_success':   best_result.success,
+        'n_starts_used':       local_runs,
+        'seeded_starts_used':  len(seeded_starts),
+        'strategy':            strategy,
+        'objective':           best_score,
         'selected_from_seed_raw': any(np.allclose(best_result.x, s, atol=1e-12, rtol=0.0) for s in seeded_starts),
     }
 
