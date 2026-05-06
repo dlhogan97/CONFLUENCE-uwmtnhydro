@@ -33,7 +33,7 @@ import pandas as pd
 # ---------------------------------------------------------------------------
 # Defaults — edit here or pass as CLI args
 # ---------------------------------------------------------------------------
-BASIN = "Tuolumne_River"
+BASIN = "East_River"  # "East_River" or "East_River"
 SETTINGS_DIR = Path(
     f"/scratch/dlhogan/ess-project-data/domain_{BASIN}_distributed_elevTPI/settings/SUMMA"
 )
@@ -52,9 +52,6 @@ GROUNDWATER_OPTION = None   # None = keep whatever is in modelDecisions.txt
 
 # Per-HRU forcing adjustments.
 aspects_per_band = [1, 5, 5, 5, 5, 3, 1, 1]  # bands 0→7 (3681m → 1396m), 26 total
-TPI_MULTIPLIERS_CSV = Path(f'/scratch/dlhogan/ess-project-data/domain_{BASIN}_distributed_elevTPI/settings/SUMMA/tpi_swe_multipliers.csv')
-TRIAL_PARAM_FILE_PATH = Path(f'/scratch/dlhogan/ess-project-data/domain_{BASIN}_distributed_elevTPI/settings/SUMMA/trialParams.nc')
-_tpi_df = pd.read_csv(TPI_MULTIPLIERS_CSV).sort_values('HRU_ID').reset_index(drop=True)
 # Base frozenPrecipMultip per elevation band (elev_class 1-5, low to high).
 # Set to scalar 1.0 to use TPI multipliers directly, or override with calibrated
 # per-band values from a prior elevation-only run.
@@ -63,21 +60,32 @@ _tpi_df = pd.read_csv(TPI_MULTIPLIERS_CSV).sort_values('HRU_ID').reset_index(dro
 def expand_per_band(per_band, n_per_band):
     return np.array(sum([[v] * n for v, n in zip(per_band, n_per_band)], []))
 
-tpi_per_band = _tpi_df.groupby(['elevClass'])['tpiClass'].count().values[::-1]   # shape (5,), ordered by elev_class 1-5
+if BASIN == "Tuolumne_River":
+    PRECIP_MULTIPLIER_ELEV = np.array([1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5])  # shape (5,), ordered by elev_class 1-5
+    LW_MULTIPLIER_ELEV = np.array([1.3, 1.3, 1.15, 1.1, 1., 1.0, 1.0, 1.0])
+    # PRECIP_MULTIPLIER_ELEV = np.array([1.5, 1.5, 1.9, 1.9, 2.3, 2.3, 1.7, 1.7])
+    # LW_MULTIPLIER_ELEV = np.array([1.3, 1.3, 1.3, 1.3, 1.15, 1.0, 1.0, 1.0])
+    elev_class = "elevClass"
+    tpi_class = "tpiClass"
+else:
+    PRECIP_MULTIPLIER_ELEV = np.array([1.2, 1.2, 1.2, 1.0, 1.0]) #BB
+    LW_MULTIPLIER_ELEV     =np.array([1.0, 1.0, 1.0, 1.0, 1.0]) #BB
+    # PRECIP_MULTIPLIER_ELEV = np.array([1.25,1.4,1.4,1.0,1.0])
+    # LW_MULTIPLIER_ELEV     =np.array([1.25,1.20,1.20,1.,1.0]) #BB
+    elev_class = "elev_class"
+    tpi_class = "tpi_class" 
 
 def expand_per_band(per_band, n_per_band):
     return np.array(sum([[v] * n for v, n in zip(per_band, n_per_band)], []))
-if BASIN == "Tuolumne_River":
-    PRECIP_MULTIPLIER_ELEV = np.array([1.51, 1.51, 1.51, 1.51, 1.51, 1.51, 1.51, 1.51])
-    LW_MULTIPLIER_ELEV     = np.array([1.2, 1.2, 1.2, 1.0, 1.0, 1.0, 1.0, 1.0])*1.1
-    # PRECIP_MULTIPLIER_ELEV = np.array([1.5, 1.5, 1.9, 1.9, 2.3, 2.3, 1.7, 1.7])
-    # LW_MULTIPLIER_ELEV = np.array([1.3, 1.3, 1.3, 1.3, 1.15, 1.0, 1.0, 1.0])
-else:
-    PRECIP_MULTIPLIER_ELEV = np.array([1.25,1.4,1.4,1.0,1.0])
-    LW_MULTIPLIER_ELEV     =np.array([1.25,1.20,1.20,1.,1.0]) #BB
 
-PRECIP_MULTIPLIER_HRU = expand_per_band(PRECIP_MULTIPLIER_ELEV, tpi_per_band)
-LW_MULTIPLIER_HRU     = expand_per_band(LW_MULTIPLIER_ELEV, tpi_per_band)
+tpi=True
+if tpi == True:
+    TPI_MULTIPLIERS_CSV = Path(f'/scratch/dlhogan/ess-project-data/domain_{BASIN}_distributed_elevTPI/settings/SUMMA/tpi_swe_multipliers.csv')
+    TRIAL_PARAM_FILE_PATH = Path(f'/scratch/dlhogan/ess-project-data/domain_{BASIN}_distributed_elevTPI/settings/SUMMA/trialParams.nc')
+    _tpi_df = pd.read_csv(TPI_MULTIPLIERS_CSV).sort_values('HRU_ID').reset_index(drop=True)
+    tpi_per_band = _tpi_df.groupby([elev_class])[tpi_class].count().values[::-1]   # shape (5,), ordered by elev_class 1-5
+    PRECIP_MULTIPLIER_HRU = expand_per_band(PRECIP_MULTIPLIER_ELEV, tpi_per_band)
+    LW_MULTIPLIER_HRU     = expand_per_band(LW_MULTIPLIER_ELEV, tpi_per_band)
 # Set to None for no adjustment, or provide a list with one value per HRU.
 # These can also be overridden at runtime with --precip-mult / --lw-mult / --temp-offset.
 PRECIP_MULTIPLIER: list[float] | None = PRECIP_MULTIPLIER_HRU
@@ -191,11 +199,11 @@ def main() -> None:
     p.add_argument("--out-prefix",     default=OUT_PREFIX)
     p.add_argument("--summa-exe",      default=SUMMA_EXE)
     p.add_argument("--groundwater",    default=GROUNDWATER_OPTION,
-                   help="Override groundwater decision (e.g. noXplict, noXplict). "
+                   help="Override groundwater decision (e.g. bigBuckt, bigBuckt). "
                         "Shorthand for --decision groundwatr=<value>.")
     p.add_argument("--decision",       metavar="KEY=VALUE", action="append", default=[],
                    help="Override any modelDecisions.txt entry. May be repeated: "
-                        "--decision stomResist=Jarvis --decision groundwatr=noXplict")
+                        "--decision stomResist=Jarvis --decision groundwatr=bigBuckt")
     p.add_argument("--forcing-path",   type=Path, default=None,
                    help="Override forcingPath in fileManager.txt (use for full-period runs "
                         "when the source settings only cover a subset)")

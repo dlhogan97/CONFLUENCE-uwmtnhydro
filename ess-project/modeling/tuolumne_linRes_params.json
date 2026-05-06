@@ -1,0 +1,18 @@
+{
+"lumped":
+{"noXplict_zeroFlux":{"k_fast": 0.05339455254356054, "k_slow": 0.0011313501543318504, "f_fast": 0.9406795893979962},
+    "noXplict_drainage": {"k_fast": 0.8687016017181736, "k_slow": 0.055645827820746896, "f_fast": 0.4},
+    "bigBuckt": {"k_fast": 0.08, "k_slow": 0.005, "f_fast": 0.9}},
+"distributed_elev":
+{"noXplict_drainage":{"k_fast": 1.0737371656520727, "k_slow": 0.0929718299676938, "f_fast": 0.5746352115660045},
+    "bigBuckt": {"k_fast": 0.05616083430852999, "k_slow": 5.7090024597122005e-05, "f_fast": 0.814308315278213},
+    "qTopmodl":{"k_fast": 0.08393718960186913, "k_slow": 0.0011137470582215858, "f_fast": 0.9318745592477723}},
+"distributed_elevAspect":
+{"noXplict_drainage": {"k_fast": 0.8228642051910329, "k_slow": 0.10418545404186864, "f_fast": 0.4},
+    "bigBuckt": {"k_fast": 0.04557547783790381, "k_slow": 1.00000000000205e-06, "f_fast": 0.8712820436724987},
+    "qTopmodl": {"k_fast": 0.08076457498900569, "k_slow": 0.001367956884545731, "f_fast": 0.9674343729584393}},
+    "distributed_elevTPI":
+{"noXplict_drainage": {"k_fast": 0.6412147455995483, "k_slow": 0.0292199045462676, "f_fast": 0.6175264099663827},
+    "bigBuckt": {"k_fast": 0.597377781416399, "k_slow": 0.4908265215554964, "f_fast": 1.0},
+    "qTopmodl": {"k_fast": 0.8641534245539414, "k_slow": 0.47518306157180934, "f_fast": 1.0}}
+    }   
