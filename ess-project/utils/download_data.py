@@ -64,7 +64,7 @@ def download_spires_data(
     host_name = "dtn.rc.colorado.edu"
     ftp_user = "anonymous"
     ftp_pwd = "pwd"
-    base_path = "/shares/snow-today/spires"
+    base_path = "/shares/snow-today/gridded_data"
     sub_path = f"SPIRES_{product}_V01/{tile}"
     remote_path = f"{base_path}/{sub_path}/{year}"
 

@@ -42,8 +42,8 @@ OUTPUT_DIR = "/scratch/dlhogan/ess-project-data/domain_Tuolumne_River_lumped/obs
 ENV_FILE = repo_root / ".env"
 
 # Default date range
-DEFAULT_START_DATE = "2018-10-01"
-DEFAULT_END_DATE = "2020-09-30"
+DEFAULT_START_DATE = "2013-10-01"
+DEFAULT_END_DATE = "2021-09-30"
 
 # Available options
 AVAILABLE_VARIABLES = ['et', 'eto', 'etof', 'ndvi', 'pr', 'etr']

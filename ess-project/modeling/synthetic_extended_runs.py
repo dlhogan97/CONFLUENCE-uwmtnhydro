@@ -116,6 +116,20 @@ DOMAIN_REGISTRY: Dict[str, dict] = {
             "noXplict": "noXplict_best",
         },
     },
+    "East_River_distributed_elevAspect": {
+        "data_dir": "domain_East_River_distributed_elevAspect",
+        "models": {
+            "noXplict": "noXplict_elevAspect_best_20260421_154832",
+            "bigBuckt": "bigBuckt_elevationAspect_best_20260422_144322",
+        },
+    },
+    "Tuolumne_River_distributed_elevAspect": {
+        "data_dir": "domain_Tuolumne_River_distributed_elevAspect",
+        "models": {
+            "noXplict": "noXplict_best",
+            "qTopmodl": "bigBuckt_best/qTopmodl_best",
+        },
+    },
 }
 
 
