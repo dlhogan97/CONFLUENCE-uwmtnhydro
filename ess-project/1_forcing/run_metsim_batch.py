@@ -256,6 +256,8 @@ def _build_prism_monthly_to_nc(var: str, month: str, selected_df, out_path: Path
                 "tmax": "prism_tmax",
                 "ppt": "prism_precip",
                 "soltotal": "prism_soltotal",
+                "vpdmin": "prism_vpdmin",
+                "vpdmax": "prism_vpdmax",
             }[var]
             ds_day = xr.Dataset(
                 {out_name: (("time", "latitude", "longitude"), grid[np.newaxis, :, :])},
@@ -279,6 +281,8 @@ def _build_prism_monthly_to_nc(var: str, month: str, selected_df, out_path: Path
         "tmax": "degC",
         "ppt": "mm",
         "soltotal": "MJ m-2 day-1",
+        "vpdmin": "hPa",
+        "vpdmax": "hPa",
     }[var]
     out_name = list(ds_out.data_vars)[0]
     ds_out[out_name].attrs["units"] = units
@@ -291,8 +295,7 @@ def _download_era5_if_missing(month: str, bounds, out_path: Path):
             with xr.open_dataset(out_path, engine="netcdf4") as ds_exist:
                 has_u = "u10" in ds_exist.data_vars or "10m_u_component_of_wind" in ds_exist.data_vars
                 has_v = "v10" in ds_exist.data_vars or "10m_v_component_of_wind" in ds_exist.data_vars
-                has_td = "d2m" in ds_exist.data_vars or "2m_dewpoint_temperature" in ds_exist.data_vars
-            if has_u and has_v and has_td:
+            if has_u and has_v:
                 return out_path
         except Exception:
             pass
@@ -308,7 +311,7 @@ def _download_era5_if_missing(month: str, bounds, out_path: Path):
     mm = f"{period.start_time.month:02d}"
     n_days = calendar.monthrange(period.start_time.year, period.start_time.month)[1]
     request = {
-        "variable": ["10m_u_component_of_wind", "10m_v_component_of_wind", "2m_dewpoint_temperature"],
+        "variable": ["10m_u_component_of_wind", "10m_v_component_of_wind"],
         "year": year,
         "month": mm,
         "day": [f"{d:02d}" for d in range(1, n_days + 1)],
@@ -434,7 +437,8 @@ def _build_missing_daily_input(month: str, cfg: BatchConfig, force_rebuild: bool
     prism_tmax = raw_dir / f"prism_tmax_{month}.nc"
     prism_ppt = raw_dir / f"prism_precip_{month}.nc"
     prism_swrad = raw_dir / f"prism_soltotal_{month}.nc"
-    daymet_vp = raw_dir / f"daymet_vp_{month}.nc"
+    prism_vpdmin = raw_dir / f"prism_vpdmin_{month}.nc"
+    prism_vpdmax = raw_dir / f"prism_vpdmax_{month}.nc"
     era5_uv = raw_dir / f"era5land_u_v_{month}.nc"
 
     if cfg.allow_download:
@@ -442,25 +446,20 @@ def _build_missing_daily_input(month: str, cfg: BatchConfig, force_rebuild: bool
         _build_prism_monthly_to_nc("tmax", month, selected, prism_tmax, raw_dir / "prism_zips", cfg.prism_ftp_host)
         _build_prism_monthly_to_nc("ppt", month, selected, prism_ppt, raw_dir / "prism_zips", cfg.prism_ftp_host)
         _build_prism_monthly_to_nc("soltotal", month, selected, prism_swrad, raw_dir / "prism_zips", cfg.prism_ftp_host)
-        try:
-            _build_daymet_if_missing(month, catchment, selected, daymet_vp)
-        except Exception as exc:
-            logging.getLogger("metsim_batch").warning(
-                "[%s] Daymet unavailable (%s); falling back to ERA5 dewpoint for vapor pressure",
-                month,
-                exc,
-            )
+        _build_prism_monthly_to_nc("vpdmin", month, selected, prism_vpdmin, raw_dir / "prism_zips", cfg.prism_ftp_host)
+        _build_prism_monthly_to_nc("vpdmax", month, selected, prism_vpdmax, raw_dir / "prism_zips", cfg.prism_ftp_host)
         era5_uv = _download_era5_if_missing(month, bounds, era5_uv)
 
-    for p in [prism_tmin, prism_tmax, prism_ppt, prism_swrad, era5_uv]:
+    for p in [prism_tmin, prism_tmax, prism_ppt, prism_swrad, prism_vpdmin, prism_vpdmax, era5_uv]:
         if not p.exists():
             raise FileNotFoundError(f"Missing required source for {month}: {p}")
 
-    ds_daymet = xr.open_dataset(daymet_vp, engine="netcdf4") if daymet_vp.exists() else None
     try:
         with xr.open_dataset(prism_tmin, engine="netcdf4") as ds_tmin, xr.open_dataset(prism_tmax, engine="netcdf4") as ds_tmax, xr.open_dataset(
             prism_ppt, engine="netcdf4"
-        ) as ds_ppt, xr.open_dataset(prism_swrad, engine="netcdf4") as ds_swrad, xr.open_dataset(era5_uv, engine="netcdf4") as ds_era5:
+        ) as ds_ppt, xr.open_dataset(prism_swrad, engine="netcdf4") as ds_swrad, xr.open_dataset(
+            prism_vpdmin, engine="netcdf4"
+        ) as ds_vpdmin, xr.open_dataset(prism_vpdmax, engine="netcdf4") as ds_vpdmax, xr.open_dataset(era5_uv, engine="netcdf4") as ds_era5:
             target_lat = np.sort(selected["lat"].unique())
             target_lon = np.sort(selected["lon"].unique())
 
@@ -474,19 +473,14 @@ def _build_missing_daily_input(month: str, cfg: BatchConfig, force_rebuild: bool
 
             u_name = "u10" if "u10" in ds_era5.data_vars else "10m_u_component_of_wind"
             v_name = "v10" if "v10" in ds_era5.data_vars else "10m_v_component_of_wind"
-            td_name = "d2m" if "d2m" in ds_era5.data_vars else "2m_dewpoint_temperature"
             da_ws = np.hypot(ds_era5[u_name], ds_era5[v_name])
-            da_td = ds_era5[td_name]
 
             ws_parts = []
-            vp_parts = []
             for t in da_ws["time"].values:
                 da2d = da_ws.sel(time=t)
-                td2d = da_td.sel(time=t)
                 src_lat = da2d[era5_lat].values
                 src_lon = da2d[era5_lon].values
                 src_vals = da2d.values
-                td_vals = td2d.values
                 src_lon_2d, src_lat_2d = np.meshgrid(src_lon, src_lat)
                 x_obs = src_lon_2d.ravel()
                 y_obs = src_lat_2d.ravel()
@@ -509,40 +503,22 @@ def _build_missing_daily_input(month: str, cfg: BatchConfig, force_rebuild: bool
                     ).expand_dims(time=[pd.Timestamp(t)])
                 )
 
-                td_obs = td_vals.ravel()
-                td_valid = np.isfinite(td_obs)
-                td_tgt, _ = _interpolate_to_target(
-                    x_obs[td_valid],
-                    y_obs[td_valid],
-                    td_obs[td_valid],
-                    x_tgt_2d.ravel(),
-                    y_tgt_2d.ravel(),
-                )
-                td_grid = np.asarray(td_tgt).reshape(len(target_lat), len(target_lon))
-                # Convert dewpoint temperature (K) to vapor pressure (Pa).
-                td_c = td_grid - 273.15
-                vp_pa = 611.2 * np.exp((17.67 * td_c) / (td_c + 243.5))
-                vp_parts.append(
-                    xr.DataArray(
-                        vp_pa,
-                        dims=("latitude", "longitude"),
-                        coords={"latitude": target_lat, "longitude": target_lon},
-                    ).expand_dims(time=[pd.Timestamp(t)])
-                )
-
             da_ws_daily = xr.concat(ws_parts, dim="time").sortby("time").resample(time="1D").mean()
-            da_vp_daily_era5 = xr.concat(vp_parts, dim="time").sortby("time").resample(time="1D").mean()
 
             month_slice = slice(pd.Timestamp(start).normalize(), pd.Timestamp(end).normalize())
             tmin = ds_tmin["prism_tmin"].sel(time=month_slice)
             tmax = ds_tmax["prism_tmax"].sel(time=month_slice)
             precip = ds_ppt["prism_precip"].sel(time=month_slice)
             shortwave = ds_swrad["prism_soltotal"].sel(time=month_slice) * (1.0e6 / 86400.0)
-            if ds_daymet is not None:
-                vp_name = "vp" if "vp" in ds_daymet.data_vars else list(ds_daymet.data_vars)[0]
-                vapor_pressure = ds_daymet[vp_name].sel(time=month_slice)
-            else:
-                vapor_pressure = da_vp_daily_era5.sel(time=month_slice)
+            # Vapor pressure from PRISM VPD via Magnus formula: ea = es(Tmean) - VPD_mean
+            # PRISM vpdmin/vpdmax are in hPa; multiply by 100 to get Pa.
+            tmean = (tmin + tmax) / 2.0
+            es_hpa = 6.112 * np.exp(17.67 * tmean / (tmean + 243.5))
+            vpdmean_hpa = (
+                ds_vpdmin["prism_vpdmin"].sel(time=month_slice)
+                + ds_vpdmax["prism_vpdmax"].sel(time=month_slice)
+            ) / 2.0
+            vapor_pressure = (es_hpa - vpdmean_hpa).clip(min=0.01) * 100.0
             da_ws_daily = da_ws_daily.sel(time=month_slice)
 
             tmin, tmax, precip, shortwave, vapor_pressure, da_ws_daily = xr.align(
@@ -590,8 +566,7 @@ def _build_missing_daily_input(month: str, cfg: BatchConfig, force_rebuild: bool
         ds_daily["wind"].attrs["units"] = "m s-1"
         ds_daily.to_netcdf(daily_out)
     finally:
-        if ds_daymet is not None:
-            ds_daymet.close()
+        pass
 
     return daily_out
 
@@ -812,8 +787,6 @@ def _convert_hourly_to_summa(hourly_path: Path, out_path: Path, reference_path: 
 
     out["SWRadAtm"] = ds[sw]
     out["SWRadAtm"].attrs["units"] = "W m**-2"
-    out["LWRadAtm"] = ds[lw]
-    out["LWRadAtm"].attrs["units"] = "W m**-2"
 
     a = ds[ap]
     if "kpa" in str(a.attrs.get("units", "")).lower():
@@ -826,6 +799,14 @@ def _convert_hourly_to_summa(hourly_path: Path, out_path: Path, reference_path: 
         q = q / 1000.0
     q.attrs["units"] = "kg kg**-1"
     out["spechum"] = q
+
+    # Dilley and O'Brien (1998) empirical downwelling LW from T, P, q.
+    # Replaces MetSim's internal prata estimate for consistency with the
+    # forcing pipeline used elsewhere in this project.
+    _p_kpa = a / 1000.0
+    _e0 = (q * _p_kpa) / (0.622 + q * 0.378)  # actual VP (kPa)
+    out["LWRadAtm"] = 59.38 + 113.7 * (t / 273.16) ** 6 + 96.96 * np.sqrt(4650.0 * _e0 / (2.5 * t))
+    out["LWRadAtm"].attrs["units"] = "W m**-2"
 
     w = ds[ws]
     w.attrs["units"] = "((m s**-1)**2 + (m s**-1)**2)**0.5"
