@@ -94,9 +94,9 @@ TEMP_OFFSET_K:     list[float] | None = None
 APPLY_LW_DILLEY_OBRIEN: bool = True  # replace LWRadAtm with Dilley-O'Brien before applying LW_MULTIPLIER
  
 # ---------------------------------------------------------------------------
-# Resolve forcing_adjuster from the staged_calibration sibling directory
+# Resolve forcing_adjuster from the calibration sibling directory
 # ---------------------------------------------------------------------------
-_STAGED_CAL_DIR = Path(__file__).resolve().parent.parent / "staged_calibration"
+_STAGED_CAL_DIR = Path(__file__).resolve().parent.parent / "calibration"
 if str(_STAGED_CAL_DIR) not in sys.path:
     sys.path.insert(0, str(_STAGED_CAL_DIR))
 

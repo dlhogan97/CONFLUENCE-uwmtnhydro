@@ -19,14 +19,14 @@ log_level: INFO
 
 results_dir: /scratch/dlhogan/ess-project-data/domain_Tuolumne_River_distributed_elev/optimization/staged_results_qTopmodel
 
-stage_configs_dir: /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs
+stage_configs_dir: /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/calibration/stage_configs
 
 # Stages 2 is skipped. rootingDepth calibrated has calibrated rootingDepth.
 stages:
-  - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs/stage1_snow.yaml
-  - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs/stage2_et.yaml
-  - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs/stage4_groundwater_qTopmodel.yaml
-  # - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/stage_configs/stage5_routing.yaml
+  - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/calibration/stage_configs/stage1_snow.yaml
+  - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/calibration/stage_configs/stage2_et.yaml
+  - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/calibration/stage_configs/stage4_groundwater_qTopmodel.yaml
+  # - /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/calibration/stage_configs/stage5_routing.yaml
 
 # ---- Run configuration -----------------------------------------------------
 run:
@@ -91,7 +91,7 @@ run:
   base_forcing_dir: /scratch/dlhogan/ess-project-data/domain_Tuolumne_River_distributed_elev/forcing/SUMMA_input
 
   # Shared two-reservoir routing — generated once via pre_calibrate_routing.py.
-  routing_params_json: /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/staged_calibration/routing_params_shared.json
+  routing_params_json: /home/dlhogan/projects/forked-repos/CONFLUENCE-uwmtnhydro/ess-project/modeling/calibration/routing_params_shared.json
 
   # ASO median April-1 SWE normalized to basin mean — hypsometric coherence ref.
   aso_swe_weights:
