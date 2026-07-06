@@ -46,20 +46,20 @@ Optional:
 
 Examples:
   bash run_ensemble.sh \
-      --config ../0_config_files/config_East_River_lumped_seasonal_noxPlicit.yaml
+      --config ../../0_config_files/config_East_River_lumped_seasonal_noxPlicit.yaml
 
   bash run_ensemble.sh \
-      --config ../0_config_files/config_East_River_lumped_seasonal_bigBuckt.yaml \
+      --config ../../0_config_files/config_East_River_lumped_seasonal_bigBuckt.yaml \
       --seed-params-csv /scratch/.../best_parameters.csv
 
   bash run_ensemble.sh \
-      --config ../0_config_files/config_East_River_lumped_seasonal_bigBuckt.yaml \
+      --config ../../0_config_files/config_East_River_lumped_seasonal_bigBuckt.yaml \
       --experiment-id bigBuckt_rerun \
       --skip-optimization \
       --best-params-csv /scratch/.../best_parameters.csv
 
   bash run_ensemble.sh \
-      --config ../0_config_files/config_East_River_lumped_seasonal_bigBuckt.yaml \
+      --config ../../0_config_files/config_East_River_lumped_seasonal_bigBuckt.yaml \
       --existing-experiment 20260316_bigBuckt \
       --allow-existing-overwrite
 EOF

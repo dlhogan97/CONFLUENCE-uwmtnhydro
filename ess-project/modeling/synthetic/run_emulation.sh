@@ -11,7 +11,7 @@
 set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-DEFAULT_CONFIG="$SCRIPT_DIR/../0_config_files/config_East_River_lumped_bigBuckt.yaml"
+DEFAULT_CONFIG="$SCRIPT_DIR/../../0_config_files/config_East_River_lumped_bigBuckt.yaml"
 
 usage() {
     cat <<'EOF'
@@ -20,7 +20,7 @@ Usage:
 
 Optional:
   -c, --config PATH          CONFLUENCE config YAML
-                             (default: ../0_config_files/config_East_River_lumped_bigBuckt.yaml)
+                             (default: ../../0_config_files/config_East_River_lumped_bigBuckt.yaml)
 
 Optional:
   --n-train N                Training samples (default: 500)
@@ -35,14 +35,14 @@ Optional:
 
 Examples:
   bash run_emulation.sh \
-      --config ../0_config_files/config_East_River_lumped_bigBuckt.yaml
+      --config ../../0_config_files/config_East_River_lumped_bigBuckt.yaml
 
   bash run_emulation.sh \
-      --config ../0_config_files/config_East_River_lumped_bigBuckt.yaml \
+      --config ../../0_config_files/config_East_River_lumped_bigBuckt.yaml \
       --n-train 800 --epochs 500
 
   bash run_emulation.sh \
-      --config ../0_config_files/config_East_River_lumped_bigBuckt.yaml \
+      --config ../../0_config_files/config_East_River_lumped_bigBuckt.yaml \
       --report-only
 EOF
 }

@@ -61,7 +61,7 @@ import pandas as pd
 import xarray as xr
 
 # ── Repo root on path ─────────────────────────────────────────────────────────
-_REPO_ROOT = Path(__file__).resolve().parents[2]
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(_REPO_ROOT))
 sys.path.insert(0, str(Path(__file__).parent))
 
