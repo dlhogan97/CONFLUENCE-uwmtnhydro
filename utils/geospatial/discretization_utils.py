@@ -1175,14 +1175,15 @@ class DomainDiscretizer:
             ) / (8.0 * dy_m)
 
             # ------------------------------------------------------------------
-            # Aspect: degrees clockwise from North (0–360).
-            # The gradient vector points uphill, so add 180° by default to convert
-            # to downslope-facing aspect (the common hydrologic convention).
-            # ASPECT_AZIMUTH_OFFSET_DEG can be overridden in config if needed.
+            # Aspect: degrees clockwise from North (0–360), downslope-facing convention.
+            # arctan2(-dz_dy, dz_dx) gives the upslope azimuth in math coordinates;
+            # (90 - ...) rotates to CW-from-North; + 180° converts upslope → downslope-facing.
+            # Example: terrain rising to the North → downslope faces South → aspect = 180°.
+            # ASPECT_AZIMUTH_OFFSET_DEG defaults to 180° and can be overridden in config.
             # ------------------------------------------------------------------
-            upslope_azimuth_deg = (90.0 - np.degrees(np.arctan2(-dz_dy, dz_dx))) % 360.0
+            upslope_azimuth_cw_from_north = (90.0 - np.degrees(np.arctan2(-dz_dy, dz_dx))) % 360.0
             aspect_offset_deg = float(self.config.get('ASPECT_AZIMUTH_OFFSET_DEG', 180.0))
-            aspect_deg = (upslope_azimuth_deg + aspect_offset_deg) % 360.0
+            aspect_deg = (upslope_azimuth_cw_from_north + aspect_offset_deg) % 360.0
 
             # Flat pixels: slope < threshold → class 0 (no aspect-based SW adjustment).
             # Valley bottoms and other low-gradient terrain are still valid HRU pixels;
@@ -1229,18 +1230,19 @@ class DomainDiscretizer:
         """
         Classify aspect degrees (0–360, CW from North) into cardinal direction classes.
 
-        All bins are 90°-wide and **centred** on their cardinal direction so that, for
-        example, North covers 315°–45° (wrapping through 0°).  The wrap-around is
-        handled by splitting the North bin into two segments: [0°, 45°) and [315°, 360°],
-        both mapped to label 1.
-
         4-class mapping (default):
-            1 = NE (  0° –  90°)
-            2 = SE ( 90° – 180°)
-            3 = SW (180° – 270°)
-            4 = NW (270° – 360°)
+            Bins are bounded by the cardinal directions (N=0°, E=90°, S=180°, W=270°),
+            producing four NE/SE/SW/NW quadrants.
+
+            0 = flat (slope < ASPECT_FLAT_SLOPE_THRESHOLD)
+            1 = NE (  0° –  90°)   N-to-E quadrant
+            2 = SE ( 90° – 180°)   E-to-S quadrant
+            3 = SW (180° – 270°)   S-to-W quadrant
+            4 = NW (270° – 360°)   W-to-N quadrant
 
         8-class mapping:
+            Bins are centred on each cardinal/intercardinal direction (N centred at 0°
+            covers 337.5°–22.5°, wrapping through 0°).
             1 = N   (337.5° – 22.5°)
             2 = NE  ( 22.5° – 67.5°)
             3 = E   ( 67.5° – 112.5°)
@@ -1992,9 +1994,9 @@ class DomainDiscretizer:
             if aspect_sort_col is not None:
                 hru_gdf[aspect_sort_col] = pd.to_numeric(hru_gdf[aspect_sort_col], errors='coerce')
 
-                # Default 4-class directional order requested for East River workflow:
-                # 1=N, 2=E, 4=W, 3=S (class 0 flat is sorted last unless excluded).
-                aspect_order_cfg = self.config.get('HRU_ASPECT_CLASS_ORDER', [1, 2, 4, 3, 0])
+                # Default 4-class ordering: NE, SE, NW, SW, flat.
+                # 4-class bins: 0=flat, 1=NE (0–90°), 2=SE (90–180°), 3=SW (180–270°), 4=NW (270–360°).
+                aspect_order_cfg = self.config.get('HRU_ASPECT_CLASS_ORDER', [0, 1, 2, 3, 4])
                 if isinstance(aspect_order_cfg, str):
                     parsed_order = [item.strip() for item in aspect_order_cfg.split(',') if item.strip()]
                     try:

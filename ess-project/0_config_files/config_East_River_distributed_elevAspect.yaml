@@ -42,7 +42,9 @@ FORCING_SHAPE_LON_NAME: lon
 # ============================================================================
 # 03. Domain and Runtime
 # ============================================================================
-MPI_PROCESSES: 1
+MPI_PROCESSES: 12
+EASYMORE_MAX_CORES: 12
+EASYMORE_BATCH_SIZE: 12
 FORCE_RUN_ALL_STEPS: false
 POUR_POINT_COORDS: 38.66443715/-106.848095
 BOUNDING_BOX_COORDS: 39.1/-107.2/38.5/-106.6
@@ -57,13 +59,12 @@ MIN_GRU_SIZE: 0
 DOMAIN_DISCRETIZATION: elevation,aspect
 ELEVATION_BAND_SIZE: 372
 ASPECT_CLASS_NUMBER: 4
-ASPECT_FLAT_SLOPE_THRESHOLD: 8.0
+ASPECT_FLAT_SLOPE_THRESHOLD: 4.5
 # Convert gradient-derived upslope azimuth to downslope-facing aspect.
 ASPECT_AZIMUTH_OFFSET_DEG: 180.0
 HRU_ID_ORDER: elevation_aspect
-# Enforce directional sequencing within each elevation band:
-# 1=N, 2=E, 4=W, 3=S, 0=flat.
-HRU_ASPECT_CLASS_ORDER: [1, 2, 4, 3, 0]
+# 4-class bins: 0=flat, 1=NE (0-90°), 2=SE (90-180°), 3=SW (180-270°), 4=NW (270-360°).
+HRU_ASPECT_CLASS_ORDER: [0, 1, 2, 3, 4]
 # Keep flat-aspect class (0) HRUs in discretization and ID assignment.
 ASPECT_EXCLUDE_FLAT_HRUS: false
 # Optional: set to aspect or elevation,aspect for combined slicing in future runs.

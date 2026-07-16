@@ -146,3 +146,8 @@ ess-project/observed_data/tuolumne/ASO_50M_SWE_USCATB_20170816.tif
 ess-project/observed_data/tuolumne/ASO_50M_SWE_USCATB_20180423.tif
 ess-project/observed_data/tuolumne/ASO_50M_SWE_USCATB_20180528.tif
 ess-project/observed_data/tuolumne/ASO_50M_SWE_USCATE_20190324.tif
+
+# calibration run data lives on /scratch, never in the repo
+ess-project/modeling/calibration/runs/
+ess-project/modeling/calibration/seeds/
+ess-project/modeling/calibration/logs/

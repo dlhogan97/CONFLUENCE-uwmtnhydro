@@ -32,12 +32,17 @@ logger = logging.getLogger(__name__)
 
 
 def _empirical_lw_dilley_obrien(Tair, p, q):
-    """Dilley & O'Brien (1998) empirical downwelling LW from T, p, q."""
+    """Dilley & O'Brien (1998) empirical clear-sky downwelling LW from T, p, q.
+
+    The vapour term is 96.96*sqrt(w/25) with precipitable water
+    w [kg m-2] = 4650*e0/Tair (e0 in kPa).  Dividing by 2.5 instead of 25
+    inflates it by sqrt(10) and pushes effective emissivity above 1.0.
+    """
     MV_CST = 0.622
     e_0 = (q * (p / 1000)) / (MV_CST + q * (1 - MV_CST))  # vapour pressure (kPa)
     return (59.38
             + 113.7 * (Tair / 273.16) ** 6
-            + 96.96 * np.sqrt((4650 * e_0) / (2.5 * Tair)))
+            + 96.96 * np.sqrt((4650 * e_0) / (25.0 * Tair)))
 
 # Match METSIM-style monthly filenames ending in _YYYYMM.nc
 _MONTH_RE = re.compile(r"_(\d{4})(\d{2})\.nc$")

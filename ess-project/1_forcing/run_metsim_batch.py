@@ -348,6 +348,113 @@ def _download_era5_if_missing(month: str, bounds, out_path: Path):
     return out_path
 
 
+def _prebuild_era5_bulk(months: list[str], cfg: BatchConfig, years_per_chunk: int = 1) -> None:
+    """Download ERA5-Land wind for multiple years in bulk CDS requests.
+
+    Saves per-month slices into the same locations _build_missing_daily_input
+    expects (raw_dir / era5land_u_v_{month}.nc), so the existing pipeline
+    picks them up without any changes.
+
+    The new CDS API (CADS) rejects requests that span too many years at once
+    (403 "cost limits exceeded").  The default of 1 year per request is always
+    safe.  Larger values like 5 or 10 may work for small bounding boxes —
+    if a request is rejected as too large the function raises so the user can
+    reduce the chunk size.  Setting years_per_chunk=0 requests all missing
+    years in a single job (only use if you know your bounding box is tiny).
+
+    Args:
+        months: full list of months the batch will process.
+        cfg: batch configuration.
+        years_per_chunk: years per CDS request (default 1 = one request/year).
+    """
+    if not cfg.allow_download or not HAS_CDSAPI:
+        return
+
+    logger = logging.getLogger("metsim_batch")
+    _, _, bounds = _get_target_grid(cfg)
+
+    # Collect years that have at least one month that still needs ERA5 wind data.
+    # Skip months where either (a) the ERA5 monthly file already exists, or
+    # (b) the final MetSim output already exists (no processing needed at all).
+    missing_by_year: dict[str, list[str]] = {}
+    for month in months:
+        year = month[:4]
+        raw_dir = cfg.basin_root / "forcing" / "monthly_workflow" / "daily_sources" / month
+        era5_uv = raw_dir / f"era5land_u_v_{month}.nc"
+        final_out = cfg.out_dir / f"metsim_{month.replace('-', '')}.nc"
+        if not era5_uv.exists() and not final_out.exists():
+            missing_by_year.setdefault(year, []).append(month)
+
+    if not missing_by_year:
+        logger.info("ERA5 bulk prebuild: all monthly wind files already present, skipping")
+        return
+
+    all_years = sorted(missing_by_year)
+    logger.info(
+        "ERA5 bulk prebuild: %d years with missing wind data (%s–%s)",
+        len(all_years), all_years[0], all_years[-1],
+    )
+
+    chunks = [all_years] if years_per_chunk <= 0 else [
+        all_years[i: i + years_per_chunk] for i in range(0, len(all_years), years_per_chunk)
+    ]
+
+    bulk_dir = cfg.basin_root / "forcing" / "monthly_workflow" / "era5_bulk"
+    bulk_dir.mkdir(parents=True, exist_ok=True)
+    timeout_s = int(os.environ.get("ERA5_TIMEOUT_SECONDS", "7200"))
+
+    for chunk in chunks:
+        yr_start, yr_end = chunk[0], chunk[-1]
+        label = yr_start if yr_start == yr_end else f"{yr_start}_{yr_end}"
+        bulk_nc = bulk_dir / f"era5land_uv_{label}.nc"
+
+        if not bulk_nc.exists():
+            logger.info("ERA5 CDS request: years %s–%s (%d years)", yr_start, yr_end, len(chunk))
+            request = {
+                "variable": ["10m_u_component_of_wind", "10m_v_component_of_wind"],
+                "year": chunk,
+                "month": [f"{m:02d}" for m in range(1, 13)],
+                "day": [f"{d:02d}" for d in range(1, 32)],
+                "time": ["00:00", "06:00", "12:00", "18:00"],
+                "format": "netcdf",
+                "area": [float(bounds[3]), float(bounds[0]), float(bounds[1]), float(bounds[2])],
+            }
+            c = cdsapi.Client(timeout=timeout_s, quiet=True)
+            c.retrieve("reanalysis-era5-land", request, str(bulk_nc))
+            if bulk_nc.exists() and zipfile.is_zipfile(bulk_nc):
+                unzip_target = bulk_nc.with_name(bulk_nc.stem + "_unzipped.nc")
+                with zipfile.ZipFile(bulk_nc, "r") as zf:
+                    nc_members = [m for m in zf.namelist() if m.lower().endswith(".nc")]
+                    if not nc_members:
+                        raise RuntimeError(f"No .nc inside ERA5 bulk zip: {bulk_nc}")
+                    with zf.open(nc_members[0]) as src, open(unzip_target, "wb") as dst:
+                        dst.write(src.read())
+                bulk_nc.unlink()
+                bulk_nc = unzip_target
+            logger.info("ERA5 bulk file ready: %s (%.1f MB)", bulk_nc, bulk_nc.stat().st_size / 1e6)
+
+        # Slice the bulk file into individual per-month files
+        with xr.open_dataset(bulk_nc, engine="netcdf4") as ds_bulk:
+            t_coord = "valid_time" if "valid_time" in ds_bulk.coords else "time"
+            if t_coord != "time":
+                ds_bulk = ds_bulk.rename({t_coord: "time"})
+            for year in chunk:
+                for month_str in missing_by_year.get(year, []):
+                    period = pd.Period(month_str, freq="M")
+                    raw_dir = cfg.basin_root / "forcing" / "monthly_workflow" / "daily_sources" / month_str
+                    raw_dir.mkdir(parents=True, exist_ok=True)
+                    era5_uv = raw_dir / f"era5land_u_v_{month_str}.nc"
+                    if era5_uv.exists():
+                        continue
+                    ds_month = ds_bulk.sel(
+                        time=slice(str(period.start_time.date()), str(period.end_time.date()))
+                    ).load()
+                    tmp = era5_uv.with_suffix(".tmp.nc")
+                    ds_month.to_netcdf(tmp)
+                    os.replace(tmp, era5_uv)
+                    logger.info("ERA5 slice saved: %s", era5_uv.name)
+
+
 def _build_daymet_if_missing(month: str, catchment_gdf, selected_df, out_path: Path):
     if out_path.exists():
         return
@@ -800,12 +907,18 @@ def _convert_hourly_to_summa(hourly_path: Path, out_path: Path, reference_path: 
     q.attrs["units"] = "kg kg**-1"
     out["spechum"] = q
 
-    # Dilley and O'Brien (1998) empirical downwelling LW from T, P, q.
+    # Dilley and O'Brien (1998) empirical CLEAR-SKY downwelling LW from T, P, q.
     # Replaces MetSim's internal prata estimate for consistency with the
     # forcing pipeline used elsewhere in this project.
+    # Vapour term is 96.96*sqrt(w/25) with precipitable water
+    # w [kg m-2] = 4650*e0/T (e0 in kPa).  Dividing by 2.5 rather than 25
+    # inflates it by sqrt(10) and drives effective emissivity above 1.0.
+    # NOTE: this is clear-sky only — it carries no cloud term, so it yields
+    # LESS longwave than MetSim's estimate. Verify the snow mass balance
+    # before adopting it basin-wide.
     _p_kpa = a / 1000.0
     _e0 = (q * _p_kpa) / (0.622 + q * 0.378)  # actual VP (kPa)
-    out["LWRadAtm"] = 59.38 + 113.7 * (t / 273.16) ** 6 + 96.96 * np.sqrt(4650.0 * _e0 / (2.5 * t))
+    out["LWRadAtm"] = 59.38 + 113.7 * (t / 273.16) ** 6 + 96.96 * np.sqrt(4650.0 * _e0 / (25.0 * t))
     out["LWRadAtm"].attrs["units"] = "W m**-2"
 
     w = ds[ws]
@@ -936,19 +1049,69 @@ def _month_worker(month: str, cfg: BatchConfig) -> str:
             logger.info("[%s] Cleaned temp workspace: %s", month, work_dir)
 
 
-def _prepare_daily_inputs(months: list[str], cfg: BatchConfig) -> None:
+def _prebuild_domain_files(months: list[str], cfg: BatchConfig) -> None:
+    """Pre-build MetSim domain files serially so parallel workers never call rasterio concurrently.
+
+    All months share the same lat/lon grid (same bounding box), so the domain file is
+    identical for every month.  We build it once from the first available daily input and
+    copy it to every other month that needs one, eliminating concurrent rasterio/GDAL
+    access during the parallel phase (which causes worker crashes on network filesystems).
+    """
+    logger = logging.getLogger("metsim_batch")
+    cached_domain: Path | None = None
+
+    for month in months:
+        final_out = cfg.out_dir / f"metsim_{month.replace('-', '')}.nc"
+        if final_out.exists():
+            continue
+        month_dir = cfg.basin_root / "forcing" / "monthly_workflow" / "metsim" / month
+        domain_src = month_dir / f"metsim_domain_{month}.nc"
+        if domain_src.exists():
+            if cached_domain is None:
+                cached_domain = domain_src
+            continue
+        daily_src = month_dir / f"metsim_daily_input_{month}.nc"
+        if not daily_src.exists():
+            continue
+        month_dir.mkdir(parents=True, exist_ok=True)
+        if cached_domain is not None:
+            import shutil as _shutil
+            _shutil.copy2(cached_domain, domain_src)
+            logger.debug("[%s] Copied cached domain file", month)
+        else:
+            logger.info("[%s] Pre-building domain file from DEM", month)
+            with xr.open_dataset(daily_src, engine="netcdf4", cache=False) as ds_in:
+                ds_daily = _normalize_daily_for_metsim(ds_in.load(), month)
+            _build_domain_from_daily(ds_daily, cfg.dem_path, domain_src)
+            cached_domain = domain_src
+            logger.info("Domain file cached for reuse: %s", domain_src)
+
+
+def _prepare_daily_inputs(months: list[str], cfg: BatchConfig, era5_years_per_chunk: int = 1) -> None:
     """Build month-level daily inputs serially before parallel MetSim execution."""
     if not cfg.build_missing_daily:
         return
 
     logger = logging.getLogger("metsim_batch")
+
+    # Bulk ERA5 wind download first — one CDS request per year-chunk instead of
+    # one per month, which reduces CDS queue wait from days to hours.
+    if cfg.allow_download:
+        _prebuild_era5_bulk(months, cfg, years_per_chunk=era5_years_per_chunk)
+
     for month in months:
+        final_out = cfg.out_dir / f"metsim_{month.replace('-', '')}.nc"
+        if final_out.exists():
+            continue
         month_dir = cfg.basin_root / "forcing" / "monthly_workflow" / "metsim" / month
         daily_src = month_dir / f"metsim_daily_input_{month}.nc"
         if daily_src.exists():
             continue
         logger.info("[%s] Prebuilding daily input serially", month)
         _build_missing_daily_input(month, cfg)
+
+    # Pre-build domain files so parallel workers never call rasterio concurrently.
+    _prebuild_domain_files(months, cfg)
 
 
 def parse_args() -> argparse.Namespace:
@@ -957,7 +1120,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--end-month", required=True, help="End month YYYY-MM")
     parser.add_argument("--basin-root", default="/scratch/dlhogan/ess-project-data/domain_East_River_lumped")
     parser.add_argument("--output-dir", default="/scratch/dlhogan/ess-project-data/domain_East_River_lumped/forcing/metsim_outputs")
-    parser.add_argument("--tmp-root", default="/scratch/dlhogan/ess-project-data/domain_East_River_lumped/forcing/metsim_batch_tmp")
+    parser.add_argument("--tmp-root", default=None, help="Temp directory for MetSim work; defaults to <basin-root>/forcing/metsim_batch_tmp")
     parser.add_argument("--reference", default="/scratch/dlhogan/ess-project-data/domain_East_River_lumped/forcing/merged_data/ERA5_merged_201512.nc")
     parser.add_argument("--dem", default="/scratch/dlhogan/ess-project-data/domain_East_River_lumped/attributes/elevation/dem/domain_East_River_lumped_elv.tif")
     parser.add_argument("--metsim-exe", default="/home/dlhogan/miniforge3/envs/metsim-run/bin/ms")
@@ -977,6 +1140,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--day-start-hour", type=int, default=8)
     parser.add_argument("--prism-ftp-host", default="prism.oregonstate.edu")
+    parser.add_argument(
+        "--era5-years-per-request",
+        type=int,
+        default=1,
+        help=(
+            "Years per ERA5 CDS request during bulk prebuild. "
+            "Default 1 (one request per year) is always safe with the new CADS API. "
+            "Larger values (e.g. 5) may work for small bounding boxes. "
+            "0 = all missing years in one request (may hit cost limits)."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -984,10 +1158,11 @@ def main() -> int:
     args = parse_args()
     months = _month_range(args.start_month, args.end_month)
 
+    tmp_root = Path(args.tmp_root) if args.tmp_root else Path(args.basin_root) / "forcing" / "metsim_batch_tmp"
     cfg = BatchConfig(
         basin_root=Path(args.basin_root),
         out_dir=Path(args.output_dir),
-        tmp_root=Path(args.tmp_root),
+        tmp_root=tmp_root,
         reference_path=Path(args.reference),
         dem_path=Path(args.dem),
         metsim_exe=Path(args.metsim_exe),
@@ -1017,7 +1192,7 @@ def main() -> int:
     logger.info("Allow downloads: %s", cfg.allow_download)
 
     if args.serial_prebuild:
-        _prepare_daily_inputs(months, cfg)
+        _prepare_daily_inputs(months, cfg, era5_years_per_chunk=args.era5_years_per_request)
 
     successes = []
     failures = []

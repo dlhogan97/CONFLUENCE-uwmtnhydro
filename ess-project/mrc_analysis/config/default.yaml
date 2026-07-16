@@ -1,0 +1,239 @@
+# =============================================================================
+# Master Recession Curve (MRC) analysis — default configuration
+#
+# Every threshold in the pipeline is exposed here. Copy this file, edit, and
+# pass with `mrc run --config my_config.yaml`. Values below are documented
+# inline; units are noted where they matter.
+# =============================================================================
+
+run:
+  seed: 12345                 # RNG seed for reproducibility (synthetic data, jitter)
+  output_dir: "outputs"       # where tables/figures/log are written (relative to CWD)
+  label: "default"            # tag prepended to output artifacts
+  log_level: "INFO"           # DEBUG | INFO | WARNING | ERROR
+
+# -----------------------------------------------------------------------------
+# INPUT DATA
+# -----------------------------------------------------------------------------
+io:
+  streamflow:
+    path: null                # path to streamflow CSV. If null, a synthetic
+                              # 50-year record is generated (demo / testing).
+    format: "generic"         # "usgs_rdb" | "generic"
+    date_col: "time"          # column holding the date (generic format)
+    flow_col: "discharge"             # column holding discharge (generic format)
+    flag_col: null            # optional qualification-flag column (generic)
+    date_format: null         # optional explicit strptime format; else inferred
+    comment: "#"              # comment character to skip header lines
+    na_values: ["", "NA", "NaN", "Ice", "Eqp", "Ssn", "---", "-999", "-9999"]
+    # USGS RDB reader options (used when format == "usgs_rdb")
+    usgs:
+      value_col_hint: "00060" # parameter code substring identifying discharge
+      # RDB flag columns end in "_cd"; the reader pairs each value col with its _cd
+
+  units:
+    flow_units: "m3s"         # informational only; "cfs" | "m3s" | "mm/d" | ...
+    flow_scale: 1.0           # multiply raw flow by this to reach analysis units
+    timestep_days: 1.0        # nominal sample spacing (daily = 1.0)
+
+  forcing:
+    path: null                # optional daily forcing CSV; null -> streamflow-only screen
+    date_col: "date"
+    precip_col: "precip"      # daily precipitation (same day as flow)
+    swe_col: "swe"            # optional snow water equivalent
+    temp_col: "tair"          # optional mean daily air temperature
+    date_format: null
+    comment: "#"
+
+# -----------------------------------------------------------------------------
+# QUALIFICATION FLAGS (USGS data-value qualifiers)
+# -----------------------------------------------------------------------------
+flags:
+  # Days whose flag matches any of these are considered suspect.
+  ice_affected: ["Ice", "I"]
+  estimated: ["Eqp", "E", "Est"]
+  provisional: ["P", "A:e"]
+  drop_ice_affected: true     # exclude ice-affected days from recession eligibility
+  drop_estimated: false       # exclude estimated days as well
+  report_affected: true       # tally how many recession-eligible days are flagged
+
+# -----------------------------------------------------------------------------
+# PREPROCESSING
+# -----------------------------------------------------------------------------
+preprocess:
+  gap_report: true            # log a table of detected gaps
+  max_internal_gap_days: 0    # gaps > this many missing days always break segments
+  min_flow: 0.1               # GLOBAL low-flow screen, in analysis units (m3/s, i.e.
+                              # after io.units.flow_scale). Days with Q <= this are
+                              # masked to NaN at load, so they are excluded EVERYWHERE:
+                              # recession segments break on them and detect_gaps()
+                              # reports them. Applied once, visibly, instead of being
+                              # filtered silently downstream. Also guards the log
+                              # transform against zeros. Set very small (1e-6) to
+                              # effectively disable and keep only the zero guard.
+  drop_negative: true         # treat negative flows as missing
+  date_start: null            # MANUAL START OVERRIDE (YYYY-MM-DD), applied at load. Always
+                              # wins over align_start_to_swe -- set it to force several
+                              # gauges onto an identical window when comparing them.
+  align_start_to_swe: true    # when date_start is null and season.mode == swe_meltout,
+                              # begin the analysis at the first day of the SWE record, so
+                              # every analysis year has a real meltout instead of a
+                              # fallback. A later streamflow start wins automatically
+                              # (the alignment is a lower bound, not a fixed date).
+  date_end: null              # e.g. "2023-09-30" to end at the close of WY2023, so an
+                              # incomplete trailing water year is excluded rather than
+                              # appearing as a giant gap and polluting per-year stats.
+
+# -----------------------------------------------------------------------------
+# BASEFLOW SEPARATION (Lyne–Hollick) — screening only
+# -----------------------------------------------------------------------------
+baseflow:
+  alpha: 0.95                # recession/filter parameter
+  passes: 3                   # forward-backward-forward = 3 (reported separation/BFI)
+  screen_passes: 1            # passes used for the recession GATE's quickflow fraction.
+                              # A single forward pass gives ~0 quickflow on a clean
+                              # recession, so the quickflow_frac_max gate (which assumes
+                              # a near-zero baseline) is meaningful; the multi-pass
+                              # backward filter carves substantial quickflow even from a
+                              # pure recession, which would defeat the gate. The full
+                              # `passes` separation is still reported for BFI.
+  reflect: 30                 # samples reflected at each end to reduce edge effects
+  sensitivity_alphas: [0.9, 0.925, 0.95]   # for the alpha-sensitivity utility
+
+# -----------------------------------------------------------------------------
+# RECESSION IDENTIFICATION
+# -----------------------------------------------------------------------------
+recession:
+  dqdt_tolerance: 0.05         # allow dQ/dt up to +tol*Q (noise); 0 = strictly decreasing
+  drop_days_after_peak: 3     # discard first N days of each falling limb (quickflow)
+  quickflow_frac_max: 0.10    # require quickflow fraction f/Q <= this for clean baseflow
+  min_segment_length: 10      # minimum days for a usable recession segment
+  season:
+    enabled: true             # restrict candidates to a recession-season window
+    mode: "fixed"             # "fixed" | "swe_meltout"
+                              #   fixed       -> static doy_start below
+                              #   swe_meltout -> per-water-year start = meltout + buffer
+    doy_start: 182            # ~Jul 1  (fixed-mode post-peak recession season start)
+    doy_end: 335              # ~Dec 1  (recession season end, both modes)
+    hemisphere: "north"       # informational
+    meltout:                  # used only when mode == "swe_meltout"
+      swe_path: null          # SNOTEL-style daily SWE CSV; e.g. the Butte station file
+      date_col: "datetime"    # date column in the SWE file
+      swe_col: "SWE"          # SWE column name (any name; renamed internally)
+      swe_units: "auto"       # "auto" | mm | cm | m | in. auto reads "<swe_col>_units" when
+                              # present (SNOTEL exports carry SWE_units='in'); else assumes
+                              # mm. SWE is ALWAYS converted to mm, so the thresholds below
+                              # mean the same thing at every station.
+      swe_units_col: null     # override the units column name (default "<swe_col>_units")
+      swe_threshold: 25.0     # SWE <= this (MM) counts as snow-free. 25 mm is the common
+                              # literature snow-disappearance threshold and clears pillow
+                              # jitter / nonzero summer baselines.
+      buffer_days: 28         # 4 weeks added after meltout -> season start
+      search_start_month: 3   # confine peak+meltout search to Mar 1 .. Sep 30 of the WY's
+                              # calendar year. Guards an Oct-Dec storm setting the annual
+                              # peak (Tuolumne WY2015 -> a 2014-11-30 "meltout") and a
+                              # mid-winter Feb disappearance that is not a spring signal.
+      min_peak_swe: 100.0     # require in-window peak SWE above this (MM) to trust a meltout
+      fallback: "mean_meltout"  # how to set the season start for water years with no
+                              # reliable meltout (no SWE record, or in-window peak below
+                              # min_peak_swe):
+                              #   mean_meltout -> mean meltout day-of-year across the
+                              #                   resolved years, + buffer_days
+                              #   fixed        -> the static fallback_doy_start below
+      fallback_doy_start: 182 # used only when fallback == "fixed"
+  forcing_screen:
+    precip_threshold: 2.0     # mm/day; days above this break/exclude segments
+    melt_swe_drop: 1.0        # mm/day SWE decrease flagged as melt input
+    melt_temp_index: 0.0      # deg C; Tair above this with snow present -> melt risk
+    use_temp_index: true      # use temperature-index melt proxy when SWE absent
+
+# -----------------------------------------------------------------------------
+# MRC CONSTRUCTION (tail fit + automated matching strip)
+# -----------------------------------------------------------------------------
+mrc:
+  tail_method: "flow_threshold"  # how the late-time tail is selected for the k fit:
+                              #   flow_threshold -> keep days with Q < tail_flow_frac * Q_ref,
+                              #                     Q_ref = mean daily flow over the recession
+                              #   fraction       -> keep the last tail_fraction of points
+  tail_flow_frac: 0.667       # (flow_threshold) keep Q below 2/3 of the recession-mean flow
+  tail_fraction: 0.5          # (fraction) late fraction of each segment used for the k fit
+  tail_min_points: 5          # minimum tail points; also the fallback size if the flow
+                              # threshold selects too few (uses the lowest-flow points)
+  min_tail_r2: 0.80           # per-recession fit must meet this r^2 to "conform"
+  master_poly_order: 2        # 1 = single-exponential master; 2 = curved master
+  max_recessions_per_window: null  # null = use all conforming (no hard cap)
+  matching:
+    max_offset_days: 400      # bound on per-recession time offset in the strip
+    huber_delta: null         # if set, robust (Huber) loss with this delta in ln-space
+
+# -----------------------------------------------------------------------------
+# TEMPORAL / STATIONARITY ANALYSIS
+# -----------------------------------------------------------------------------
+temporal:
+  window:
+    length_years: 5           # sliding-window length
+    step_years: 1             # step between windows
+    min_recessions: 5         # skip windows with fewer conforming recessions
+    align: "water_year"       # "water_year" | "calendar"
+    water_year_start_month: 10
+  per_year:
+    enabled: true             # also fit one MRC per calendar/water year
+    min_recessions: 5
+  trend:
+    method: "mann_kendall"    # Mann–Kendall + Sen slope
+    autocorr_caveat: true     # emit autocorrelation / unequal-n caveat in report
+
+# -----------------------------------------------------------------------------
+# BRUTSAERT-NIEBER RECESSION ANALYSIS (-dQ/dt vs Q)
+# -----------------------------------------------------------------------------
+# Independent linearity diagnostic. Plots the recession rate -dQ/dt against Q on
+# log-log axes for every screened recession day and fits -dQ/dt = a * Q^b. The
+# exponent b is the diagnostic: b~1 is a linear reservoir (constant tau, single
+# exponential -- the MRC assumption); b>1 is nonlinear storage-discharge. The
+# physical signal is the LOWER ENVELOPE of the cloud (points above it are
+# input-contaminated by ongoing rain/melt). Splitting by wetness state tests
+# whether the effective tau shifts between wet and drought periods.
+bn:
+  enabled: true
+  dqdt:
+    q_reference: "mean_pair"  # Q on the x-axis per day-pair: mean_pair | q_start | q_end
+    min_q: 0.0                # DISABLED -- superseded by the GLOBAL preprocess.min_flow
+                              # screen, which masks low flows at load so they never reach
+                              # any stage. Set >0 only to restrict the B-N cloud to a
+                              # narrower flow range than the rest of the analysis. 
+    min_rate: 1.0e-9          # positivity guard only, in FLOW UNITS PER DAY. Days with
+                              # -dQ/dt <= 0 (a rise or a flat step, admitted by
+                              # recession.dqdt_tolerance) have no logarithm and cannot be
+                              # placed on log-log axes, so they are necessarily excluded.
+                              # This is a requirement of the transform, not a filter.
+                              # Do NOT raise this to suppress low-flow noise.
+    min_rate_steps: 0.0       # DISABLED. Optional resolution-aware floor on -dQ/dt (see
+                              # bn.infer_quantization). Left off: prefer censoring on Q.
+  envelope:
+    method: "lower_quantile"  # "lower_quantile" (B-N lower envelope) | "ols_cloud" (Kirchner-style central fit)
+    n_bins: 20                # log-spaced Q bins for the envelope
+    quantile: 0.05            # low quantile of -dQ/dt within each bin = lower envelope
+    min_bin_count: 5          # skip bins with fewer points
+  reference_flow: "median"    # flow at which effective tau is reported: "median" | "value"
+  reference_flow_value: null  # used when reference_flow == "value"
+  wetness:
+    enabled: true             # split the cloud by wetness state (drought test)
+    metric: "water_year_mean_flow"  # water_year_mean_flow (= annual flow volume) | water_year_min_flow | recession_q_start
+    split: "median"           # "median" (wet/dry) | "terciles" (wet/mid/dry)
+                              # | "extremes" (driest/wettest n_extreme years; middle dropped)
+                              # | "era" (pre/post split_year; metric ignored)
+    n_extreme: 10             # (extremes) number of driest and wettest years per group
+    split_year: 2000          # (era) water year dividing pre<year> from post<year>
+
+# -----------------------------------------------------------------------------
+# OUTPUTS
+# -----------------------------------------------------------------------------
+output:
+  write_tables: true
+  write_figures: true
+  figure_format: "png"
+  figure_dpi: 150
+  qc_viewer:
+    enabled: false            # OFF by default; interactive time-shift QC tool
+    backend: "matplotlib"     # "matplotlib" | "plotly"
+    window: null              # which window label to inspect (null = first)

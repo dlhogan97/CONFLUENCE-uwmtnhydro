@@ -63,9 +63,7 @@ def _find_file(directory: Path, pattern: str) -> Optional[Path]:
 
 def _load_catchment(domain_dir: Path) -> gpd.GeoDataFrame:
     shp_dir = domain_dir / "shapefiles" / "catchment"
-    shp = (_find_file(shp_dir, "*_HRUs_elevation_aspect.shp")
-           or _find_file(shp_dir, "*_HRUs_elevation*.shp")
-           or _find_file(shp_dir, "*.shp"))
+    shp = _find_file(shp_dir, "*_HRUs_elevation*.shp") or _find_file(shp_dir, "*.shp")
     if shp is None:
         raise FileNotFoundError(f"No catchment shapefile in {shp_dir}")
     gdf = gpd.read_file(shp).sort_values("HRU_ID").reset_index(drop=True)
@@ -303,8 +301,7 @@ def update_attributes(
 # coldState.nc — broadcast 1-HRU values to N HRUs
 # ---------------------------------------------------------------------------
 
-def update_cold_state(catchment_gdf: gpd.GeoDataFrame, settings_dir: Path, dry_run: bool,
-                      elev_old: Optional[np.ndarray] = None) -> None:
+def update_cold_state(catchment_gdf: gpd.GeoDataFrame, settings_dir: Path, dry_run: bool) -> None:
     cs_path = settings_dir / "coldState.nc"
     print(f"\n--- coldState.nc ---")
     hru_ids = catchment_gdf["HRU_ID"].values.astype(np.int32)
@@ -314,40 +311,7 @@ def update_cold_state(catchment_gdf: gpd.GeoDataFrame, settings_dir: Path, dry_r
     # pointing to it but is queried by name in SUMMA's read_icond) are preserved.
     with nc4.Dataset(cs_path) as _nc:
         dims_src = {k: len(v) for k, v in _nc.dimensions.items()}
-    n_src = dims_src.get("hru", 1)
-    print(f"  hru: {n_src} → {n_hru}   other dims: "
-          f"{ {k: v for k, v in dims_src.items() if k != 'hru'} }")
-    # The existing coldState encodes a deterministic elevation -> soil-depth ramp
-    # (corr(elev, total depth) = -1.0 exactly, layers split 15/30/55).  Re-fit that
-    # same linear relationship onto the NEW HRU elevations rather than dropping it.
-    soil_depth = None
-    if n_src != n_hru:
-        with xr.open_dataset(cs_path) as _s:
-            if "mLayerDepth" not in _s:
-                raise ValueError("coldState.nc has no mLayerDepth")
-            md_old = _s["mLayerDepth"].values           # (layer, hru_old)
-        if elev_old is None or len(elev_old) != md_old.shape[1]:
-            raise ValueError(
-                f"Need the OLD per-HRU elevations ({md_old.shape[1]} values) to re-fit "
-                f"the soil-depth ramp; got "
-                f"{None if elev_old is None else len(elev_old)}."
-            )
-        tot_old = md_old.sum(axis=0)
-        if len(np.unique(np.round(tot_old, 4))) > 1:
-            slope, intercept = np.polyfit(elev_old, tot_old, 1)
-            r = np.corrcoef(elev_old, tot_old)[0, 1]
-            frac = md_old[:, 0] / tot_old[0]
-            elev_new = catchment_gdf["elev_mean"].values.astype(float)
-            tot_new = np.clip(slope * elev_new + intercept,
-                              tot_old.min(), tot_old.max())
-            soil_depth = np.outer(frac, tot_new)        # (layer, hru_new)
-            print(f"  soil depth: re-fitting existing elevation ramp "
-                  f"(slope={slope:.3e} m/m, r={r:.3f}, layer split="
-                  f"{np.round(frac, 3)})")
-            print(f"    old total depth {tot_old.min():.2f}-{tot_old.max():.2f} m "
-                  f"-> new {tot_new.min():.2f}-{tot_new.max():.2f} m")
-        else:
-            print(f"  soil depth uniform in source — broadcasting")
+    print(f"  hru: 1 → {n_hru}   other dims: { {k: v for k, v in dims_src.items() if k != 'hru'} }")
 
     if dry_run:
         print("  [dry-run] no files written"); return
@@ -363,18 +327,11 @@ def update_cold_state(catchment_gdf: gpd.GeoDataFrame, settings_dir: Path, dry_r
         for dim, size in dims_src.items():
             dst.createDimension(dim, n_hru if dim == "hru" else size)
         for name, (dims, arr, attrs) in src_loaded.items():
-            if name == "hruId":
-                new_arr = hru_ids
-            elif name == "mLayerDepth" and soil_depth is not None:
-                new_arr = soil_depth
-            elif name == "iLayerHeight" and soil_depth is not None:
-                new_arr = np.vstack([np.zeros((1, n_hru)), np.cumsum(soil_depth, axis=0)])
-            else:
-                new_arr = arr
+            new_arr = hru_ids if name == "hruId" else arr
+            if name != "hruId":
                 for axis, dim in enumerate(dims):
-                    if dim == "hru" and arr.shape[axis] != n_hru:
-                        first = np.take(new_arr, [0], axis=axis)
-                        new_arr = np.repeat(first, n_hru, axis=axis)
+                    if dim == "hru" and arr.shape[axis] == 1:
+                        new_arr = np.repeat(new_arr, n_hru, axis=axis)
             dtype = "i4" if np.issubdtype(arr.dtype, np.integer) else "f8"
             v = dst.createVariable(name, dtype, dims, fill_value=False)
             for attr, val in attrs.items():
@@ -387,105 +344,15 @@ def update_cold_state(catchment_gdf: gpd.GeoDataFrame, settings_dir: Path, dry_r
 # trialParams.nc — broadcast 1-HRU values to N HRUs
 # ---------------------------------------------------------------------------
 
-def update_trial_params(catchment_gdf: gpd.GeoDataFrame, settings_dir: Path,
-                        dry_run: bool, reset_to_defaults: bool = True) -> None:
-    """Rebuild trialParams.nc at the new HRU count.
-
-    With `reset_to_defaults` (the default), every HRU/GRU-dimension parameter is
-    re-initialised to its localParamInfo/basinParamInfo default.  This is
-    deliberate: the existing trialParams.nc is NOT a-priori data — it holds the
-    frozen output of the previous staged calibration (freeze_params() bakes
-    base x spatial_weight x multiplier into the base file).  Carrying those
-    values across would silently seed the new run with the old calibration's
-    spatial weights and confound the hypothesis dials.
-    """
+def update_trial_params(catchment_gdf: gpd.GeoDataFrame, settings_dir: Path, dry_run: bool) -> None:
     tp_path = settings_dir / "trialParams.nc"
     print(f"\n--- trialParams.nc ---")
     hru_ids = catchment_gdf["HRU_ID"].values.astype(np.int32)
     gru_unique = np.unique(catchment_gdf["GRU_ID"].values.astype(np.int32))
     n_hru, n_gru = len(hru_ids), len(gru_unique)
-
-    with xr.open_dataset(tp_path) as _s:
-        n_src = _s.sizes.get("hru", 1)
-    print(f"  hru: {n_src} → {n_hru}   gru: {n_gru}")
-
-    # Only parameters that the previous STAGED CALIBRATION optimised are
-    # contaminated by freeze_params(); everything else in trialParams.nc is
-    # genuine a-priori and must be preserved.  Resetting structural parameters
-    # to their localParamInfo defaults is actively harmful: zScale_TOPMODEL's
-    # default of 15.4 makes satHydCond's depth exponent 14.4, amplifying
-    # near-surface conductivity ~7000x (0.7 m/s) and stalling the solver.
-    CALIBRATED = {
-        "frozenPrecipMultip", "tempCritRain", "albedoDecayRate",
-        "rootingDepth", "minStomatalResistance",
-        "k_soil", "vGn_alpha", "vGn_n", "qSurfScale",
-        "aquiferScaleFactor", "aquiferBaseflowExp", "aquiferBaseflowRate",
-        "routingGammaShape", "routingGammaScale",
-    }
-
-    preserved = {}
-    with xr.open_dataset(tp_path) as _s:
-        for nm, da in _s.data_vars.items():
-            if nm in ("hruId", "gruId") or nm in CALIBRATED:
-                continue
-            preserved[nm] = float(np.median(da.values))
-
-    defaults = {}
-    if reset_to_defaults:
-        for tbl in ("localParamInfo.txt", "basinParamInfo.txt"):
-            f = settings_dir / tbl
-            if not f.exists():
-                continue
-            for line in f.read_text().splitlines():
-                if line.strip().startswith("!") or "|" not in line:
-                    continue
-                parts = [x.strip() for x in line.split("|")]
-                if len(parts) >= 4:
-                    try:
-                        dflt = float(parts[1].replace("d", "e"))
-                        lo = float(parts[2].replace("d", "e"))
-                        hi = float(parts[3].replace("d", "e"))
-                    except ValueError:
-                        continue
-                    # Several localParamInfo defaults sit OUTSIDE their own bounds
-                    # (aquiferBaseflowRate default 2.0 vs upper bound 1e-5;
-                    #  qSurfScale default 50 vs upper bound 10).  SUMMA does not
-                    # enforce the bounds, so taking the default verbatim would set
-                    # a physically absurd value.  Fall back to the geometric
-                    # midpoint of the bounds, which is what the existing file uses.
-                    b_lo, b_hi = min(lo, hi), max(lo, hi)
-                    if b_lo <= dflt <= b_hi:
-                        defaults[parts[0]] = dflt
-                    else:
-                        # CLAMP, do not midpoint.  Several bounds in these tables are
-                        # junk (Tuolumne's vGn_alpha lower bound is -70 m-1), and the
-                        # midpoint of [-70, -1] is -35.5, which makes the van Genuchten
-                        # retention curve singular and stalls the solver.  Clamping
-                        # keeps the value adjacent to the table's intended default.
-                        val = min(max(dflt, b_lo), b_hi)
-                        defaults[parts[0]] = val
-                        print(f"    WARNING: {parts[0]} default {dflt:g} outside bounds "
-                              f"[{b_lo:g}, {b_hi:g}] — clamping to {val:g}")
-                elif len(parts) >= 2:
-                    try:
-                        defaults[parts[0]] = float(parts[1].replace("d", "e"))
-                    except ValueError:
-                        pass
-        defaults = {k: v for k, v in defaults.items() if k in CALIBRATED}
-        print(f"  resetting {len(CALIBRATED)} CALIBRATED params to localParamInfo defaults "
-              f"(they hold frozen calibration values, not a-priori)")
-        print(f"  preserving {len(preserved)} structural params at their existing median: "
-              f"{sorted(preserved)}")
+    print(f"  hru: 1 → {n_hru}   gru: 1 → {n_gru}")
 
     if dry_run:
-        with xr.open_dataset(tp_path) as src:
-            for nm, da in src.data_vars.items():
-                if nm in ("hruId", "gruId"):
-                    continue
-                old = np.unique(da.values)
-                new = defaults.get(nm, None)
-                flag = "" if new is None else f"  ->  {new:.6g}"
-                print(f"    {nm:24s} current={np.array2string(old[:3], precision=5)}{flag}")
         print("  [dry-run] no files written"); return
 
     _backup(tp_path)
@@ -504,21 +371,13 @@ def update_trial_params(catchment_gdf: gpd.GeoDataFrame, settings_dir: Path,
                 new_arr = hru_ids
             elif name == "gruId":
                 new_arr = gru_unique
-            elif reset_to_defaults and name in defaults:
-                shape = tuple(n_hru if d == "hru" else n_gru if d == "gru"
-                              else dims_src[d] for d in dims)
-                new_arr = np.full(shape, defaults[name], dtype=float)
-            elif name in preserved:
-                shape = tuple(n_hru if d == "hru" else n_gru if d == "gru"
-                              else dims_src[d] for d in dims)
-                new_arr = np.full(shape, preserved[name], dtype=float)
             else:
                 new_arr = arr
                 for axis, dim in enumerate(dims):
-                    target = n_hru if dim == "hru" else n_gru if dim == "gru" else None
-                    if target is not None and arr.shape[axis] != target:
-                        first = np.take(new_arr, [0], axis=axis)
-                        new_arr = np.repeat(first, target, axis=axis)
+                    if dim == "hru" and arr.shape[axis] == 1:
+                        new_arr = np.repeat(new_arr, n_hru, axis=axis)
+                    elif dim == "gru" and arr.shape[axis] == 1:
+                        new_arr = np.repeat(new_arr, n_gru, axis=axis)
             dtype = "i4" if np.issubdtype(arr.dtype, np.integer) else "f8"
             v = dst.createVariable(name, dtype, dims, fill_value=False)
             for attr, val in attrs.items():
@@ -565,30 +424,8 @@ def main() -> None:
     soil_gdf = _load_soil_intersection(domain_dir)
     land_gdf = _load_land_intersection(domain_dir)
 
-    # Snapshot the old elevations first: update_attributes() rewrites
-    # attributes.nc at the NEW HRU count, and update_cold_state() needs the OLD
-    # elevations (matching the OLD coldState) to re-fit the soil-depth ramp.
-    # Find elevations matching the CURRENT coldState HRU count.  attributes.nc may
-    # already have been rewritten at the new count by a previous (partial) run, so
-    # fall back to the timestamped backups.
-    elev_old = None
-    cs = settings_dir / "coldState.nc"
-    if cs.exists():
-        with xr.open_dataset(cs) as _c:
-            n_cs = _c.sizes.get("hru", 0)
-        candidates = [settings_dir / "attributes.nc"] + sorted(
-            settings_dir.glob("attributes_backup_*.nc"), reverse=True)
-        for cand in candidates:
-            if not cand.exists():
-                continue
-            with xr.open_dataset(cand) as _a:
-                if _a.sizes.get("hru") == n_cs and "elevation" in _a:
-                    elev_old = _a["elevation"].values.copy()
-                    print(f"Old elevations ({n_cs} HRUs) from: {cand.name}")
-                    break
-
     update_attributes(catchment_gdf, soil_gdf, land_gdf, dem_path, settings_dir, args.dry_run)
-    update_cold_state(catchment_gdf, settings_dir, args.dry_run, elev_old=elev_old)
+    update_cold_state(catchment_gdf, settings_dir, args.dry_run)
     update_trial_params(catchment_gdf, settings_dir, args.dry_run)
     print("\nDone.")
 

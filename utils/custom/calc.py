@@ -26,7 +26,10 @@ def empirical_lw_dilley_obrien(Tair, p, q):
     KELVIN_OFFSET = 273.16
     CONSTANT_3 = 96.96
     CONSTANT_4 = 4650
-    CONSTANT_5 = 2.5
+    # Dilley & O'Brien (1998) is 96.96*sqrt(w/25) with precipitable water
+    # w [kg m-2] = 4650*e0/Tair (e0 in kPa).  A divisor of 2.5 inflates the
+    # vapour term by sqrt(10) and drives effective emissivity above 1.0.
+    CONSTANT_5 = 25.0
 
     e_0 = q_to_e0(q, p/1000)  # Calculate actual vapor pressure
 
