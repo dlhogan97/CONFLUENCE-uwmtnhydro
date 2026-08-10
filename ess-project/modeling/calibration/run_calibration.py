@@ -27,7 +27,48 @@ from pathlib import Path
 import numpy as np
 from scipy.optimize import differential_evolution
 
-from calibration_runner import CalibrationRunner, PARAM_SPECS
+from calibration_runner import CalibrationRunner, PARAM_SPECS, SUMMA_EXE
+
+# Rich outputControl for the per-generation snapshot runs (variable names + flags copied from
+# the domain's own outputControl.txt, so they are known to run). Enough to reproduce every
+# diagnostic -- hydrograph, ET, storage, soil moisture, runoff partition -- as the fit evolves.
+GEN_OUTPUT_CONTROL = (
+    "hruId                     | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0\n"
+    "pptrate                   | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0\n"
+    "scalarSWE                 | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0\n"
+    "scalarTotalET             | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0\n"
+    "scalarSnowSublimation     | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0\n"
+    "scalarSurfaceRunoff       | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0\n"
+    "scalarAquiferStorage      | 1 | 0 | 0 | 1 | 0 | 0 | 0 | 0\n"
+    "scalarAquiferBaseflow     | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0\n"
+    "scalarTotalSoilLiq        | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0\n"
+    "averageRoutedRunoff       | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0\n")
+
+
+def save_generation_output(runner, x, gen, outdir):
+    """Snapshot the generation's best member: stage it, then launch SUMMA DETACHED and nice'd
+    so it writes full output while the calibration keeps running. Non-blocking; failures here
+    must never touch the optimisation, so the caller wraps this in try/except.
+
+    Returns immediately -- the netCDF appears in gen_NN/run/out/ when SUMMA finishes (~20 min).
+    """
+    dest = Path(outdir) / "generations" / f"gen_{gen:02d}"
+    work = dest / "run"
+    runner._stage(work)
+    _pv = runner._vector_to_params(np.asarray(x))
+    runner._apply_params(work, _pv)
+    runner._wet_soil(work)
+    # snapshots must use the SAME per-trial bias-corrected forcing the trial was scored with,
+    # or the saved output will not reproduce the objective it is meant to illustrate
+    _fdir = runner._apply_forcing(work, _pv)
+    runner._write_filemanager(work, "gen", forcing=_fdir)
+    (work / "outputControl.txt").write_text(GEN_OUTPUT_CONTROL)   # override the minimal one
+    (dest / "params.json").write_text(json.dumps(
+        {k: v[1] for k, v in runner._vector_to_params(np.asarray(x)).items()}, indent=2))
+    logf = open(dest / "summa.log", "w")
+    subprocess.Popen(["nice", "-n", "19", SUMMA_EXE, "-m", str(work / "fileManager.txt")],
+                     stdout=logf, stderr=subprocess.STDOUT, start_new_session=True,
+                     env={**os.environ, "OMP_NUM_THREADS": "1"})
 
 # All calibration OUTPUT (run dirs, worker scratch, trial logs, seeds) lives on /scratch --
 # never in the repo. Only code + spec live in git. Override with $CALIB_OUT if needed.
@@ -97,14 +138,18 @@ def load_seed(domain):
     return SEEDS.get(domain, {})
 
 
-def migrate_seed(seed_physical, specs):
+def migrate_seed(seed_physical, specs, apriori=None):
     """Carry an older seed forward onto the current parameter spec.
 
     Params keep their meaning across spec changes, so a seed from a previous objective is
-    still a good STARTING POINT -- only the names/parameterisation move. Currently handles:
-      uniform `frozenPrecipMultip` -> elevation ramp (`_low`, `_delta`)
-        The ramp is fpm = low + delta*znorm with mean(znorm) ~ 0.5, so low = V - delta/2
-        preserves the area-weighted mean (i.e. the same total water) while engaging the ramp.
+    still a good STARTING POINT -- only the names/parameterisation move. Handles:
+      * uniform `frozenPrecipMultip` -> elevation ramp (`_low`, `_delta`)
+          The ramp is fpm = low + delta*znorm with mean(znorm) ~ 0.5, so low = V - delta/2
+          preserves the area-weighted mean (i.e. the same total water) while engaging the ramp.
+      * params ADDED to the spec since the seed was written (e.g. kAnisotropic) -> seed them at
+          their a-priori value ('mult' params at 1.0, i.e. the unscaled a-priori field). Without
+          this a single added param makes the whole seed unusable and the run starts cold.
+      * params DROPPED from the spec (e.g. aquiferBaseflowExp under qTopmodl) -> discarded.
     """
     names = {s.name for s in specs}
     s = dict(seed_physical)
@@ -116,7 +161,19 @@ def migrate_seed(seed_physical, specs):
         print(f"  seed migrated: frozenPrecipMultip {v:.3f} (uniform) -> "
               f"low={s['frozenPrecipMultip_low']:.3f} + delta={delta:.2f} "
               f"(same area-weighted mean)", flush=True)
-    s.pop("frozenPrecipMultip", None)          # drop anything the spec no longer uses
+    for spec in specs:                          # fill params added since the seed was written
+        if spec.name in s:
+            continue
+        fill = 1.0 if spec.kind == "mult" else (apriori or {}).get(spec.name)
+        if fill is None:
+            continue                            # nothing sensible to fill -> seed_vector warns
+        s[spec.name] = fill
+        print(f"  seed migrated: {spec.name} not in seed -> a-priori {fill:g}", flush=True)
+    dropped = [k for k in s if k not in names]
+    for k in dropped:
+        s.pop(k)
+    if dropped:
+        print(f"  seed migrated: dropped {dropped} (no longer in spec)", flush=True)
     return s
 
 
@@ -126,7 +183,7 @@ def seed_vector(runner, seed_physical):
     start without anyone noticing)."""
     if not seed_physical:
         return None
-    seed_physical = migrate_seed(seed_physical, runner.specs)
+    seed_physical = migrate_seed(seed_physical, runner.specs, getattr(runner, "apriori", None))
     missing = [s.name for s in runner.specs if s.name not in seed_physical]
     if missing:
         print(f"  [seed WARNING] unusable — missing {missing}; starting COLD (no warm start)",
@@ -137,7 +194,12 @@ def seed_vector(runner, seed_physical):
         v = seed_physical[s.name]
         xi = np.log10(v) if s.log else v
         lo, hi = s.bounds
-        xc = float(np.clip(xi, lo, hi))
+        # Clip just INSIDE the bounds, not onto them. scipy's differential_evolution rescales
+        # x0 to [0,1] as (x - mid)/range + 0.5; a value sitting exactly on a bound can land at
+        # -4e-16 through floating point and trip its "entries in x0 lay outside the specified
+        # bounds" check. A 1e-6 inset of the range is physically negligible and removes it.
+        pad = 1e-6 * (hi - lo)
+        xc = float(np.clip(xi, lo + pad, hi - pad))
         if abs(xc - xi) > 1e-9:
             print(f"  [seed] {s.name} clipped to bounds", flush=True)
         x.append(xc)
@@ -200,6 +262,12 @@ def main():
             msg = f"  gen {len(hist):2d}:"
             msg += f" best objective={fun:.4f}" if fun is not None else " (best x recorded)"
             print(msg, flush=True)
+            # snapshot this generation's best with full output (detached, non-blocking)
+            try:
+                save_generation_output(runner, x, len(hist), outdir)
+                print(f"       -> gen_{len(hist):02d} full-output run launched (detached)", flush=True)
+            except Exception as e:
+                print(f"       [gen-output warning] {type(e).__name__}: {e}", flush=True)
         except Exception as e:                      # never abort the run over logging
             print(f"  [callback warning] {type(e).__name__}: {e}", flush=True)
 

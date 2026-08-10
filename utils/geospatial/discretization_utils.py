@@ -1168,7 +1168,9 @@ class DomainDiscretizer:
                 (p[0:-2, 0:-2] + 2 * p[1:-1, 0:-2] + p[2:, 0:-2])
             ) / (8.0 * dx_m)
 
-            # dz/dy: north–south slope (positive = uphill to the north)
+            # dz/dy: north–south slope. p[2:] is the SOUTHERN neighbour row (row index
+            # increases southward in a north-up raster), so positive = uphill to the SOUTH.
+            # The -dz_dy in the arctan2 below is what makes the azimuth genuinely upslope.
             dz_dy = (
                 (p[2:, 0:-2] + 2 * p[2:, 1:-1] + p[2:, 2:]) -
                 (p[0:-2, 0:-2] + 2 * p[0:-2, 1:-1] + p[0:-2, 2:])

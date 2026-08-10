@@ -71,7 +71,7 @@ Icon
 *.pkl
 temp/
 logs/
-
+*/figures/draft
 # Distribution
 *.manifest
 *.spec

@@ -1,0 +1,87 @@
+# =============================================================================
+# East River, CO  (USGS 09112500, East River at Almont)
+#
+# Deep-merged over config/default.yaml -- only basin-specific values and the
+# analysis knobs we settled on are listed here.
+#
+#   python -m mrc.cli run --config config/east_river.yaml
+# =============================================================================
+
+run:
+  label: "east_river"
+  output_dir: "outputs"
+
+io:
+  streamflow:
+    path: "/scratch/dlhogan/ess-project-data/streamflow-data/EastRiver/EastRiver_SUMMA_baseline_dailyDischarge_1981_2025.csv"
+    format: "generic"
+    date_col: "time"
+    flow_col: "discharge"
+  units:
+    flow_units: "m3s"       # values are cms (0.1-cfs quantization, step 0.00283 m3/s)
+    flow_scale: 1.0
+  forcing:
+    path: null              # forcing screen OFF -- see note at bottom
+
+preprocess:
+  min_flow: 0.1             # m3/s; record min is 0.82, so this is a guard (masks 0 days)
+  drop_negative: true
+  date_start: null          # manual override; set to force gauges onto one window
+  align_start_to_swe: true  # Butte SWE begins 1980-10-01, Q begins 1970-10-01, so the
+                            # analysis starts 1980-10-01 -> WY1981-2025, every year
+                            # meltout-driven (no fallback). Set false for the full Q record.
+  date_end: null
+
+baseflow:
+  alpha: 0.975
+  passes: 3
+  screen_passes: 1
+
+recession:
+  dqdt_tolerance: 0.05
+  quickflow_frac_max: 0.10
+  min_segment_length: 10
+  drop_days_after_peak: 5
+  season:
+    mode: "swe_meltout"
+    doy_end: 335
+    meltout:
+      swe_path: "/scratch/dlhogan/ess-project-data/meteorological-data/SNOTEL/380_Butte_sntl_obs.csv"
+      date_col: "datetime"
+      swe_col: "SWE"
+      swe_units: "auto"     # file carries SWE_units='in' -> auto-converted to mm
+      swe_threshold: 25.0   # mm
+      min_peak_swe: 100.0   # mm
+      buffer_days: 14
+      search_start_month: 3
+      fallback: "mean_meltout"
+    # Butte resolves 45/45 water years; mean meltout doy 139.7 (May 19), std 11.6 d.
+
+mrc:
+  tail_method: "flow_threshold"
+  tail_flow_frac: 0.67
+  min_tail_r2: 0.30
+  master_poly_order: 1      # poly-2's tau is read off an edge derivative; keep 1
+
+temporal:
+  window:
+    length_years: 5
+    step_years: 5           # NON-overlapping: avoids the autocorrelation caveat
+    min_recessions: 3
+
+bn:
+  enabled: true
+  dqdt:
+    min_q: 0.0              # superseded by the global preprocess.min_flow screen
+  wetness:
+    enabled: true
+    metric: "water_year_mean_flow"
+    split: "extremes"
+    n_extreme: 10
+
+# -----------------------------------------------------------------------------
+# NOTE: io.forcing.path is intentionally null. load_forcing() does NOT convert SWE
+# units, so pointing it at this station (inches) would make recession.forcing_screen
+# .melt_swe_drop (documented mm/day) silently mean inches/day. The swe_meltout season
+# already handles the snow signal; only the meltout reader converts units.
+# -----------------------------------------------------------------------------

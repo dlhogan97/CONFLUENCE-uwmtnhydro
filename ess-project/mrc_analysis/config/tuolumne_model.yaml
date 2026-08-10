@@ -1,0 +1,90 @@
+# =============================================================================
+# Tuolumne River, CA  (lumped domain, Hetch Hetchy unimpaired)
+#
+# Deep-merged over config/default.yaml. Matched to config/east_river.yaml so the
+# cross-basin comparison is like-for-like: identical screens, tail method, window
+# scheme, and SWE thresholds (both in mm).
+#
+#   python -m mrc.cli run --config config/tuolumne.yaml
+# =============================================================================
+
+run:
+  label: "tuolumne"
+  output_dir: "outputs"
+
+io:
+  streamflow:
+    path: "/scratch/dlhogan/ess-project-data/streamflow-data/TuolumneRiver/TuolumneRiver_SUMMA_baseline_dailyDischarge_1981_2025.csv"
+    format: "generic"
+    date_col: "time"
+    flow_col: "discharge"
+  units:
+    flow_units: "m3s"       # already cms (1-cfs quantization, step 0.0283 m3/s)
+    flow_scale: 1.0
+  forcing:
+    path: null              # forcing screen OFF -- see note at bottom
+
+preprocess:
+  min_flow: 0.1             # m3/s; masks 6 sub-threshold days incl. one exact zero
+  drop_negative: true
+  date_start: null          # manual override; set to force gauges onto one window
+  align_start_to_swe: true  # SWE begins 1980-12-02, Q begins 1970-01-01, so the analysis
+                            # starts 1980-12-02 -> WY1982-2023. Drops the pre-1981 years
+                            # that had no meltout and were on the mean-meltout fallback.
+  date_end: "2023-09-30"    # end at close of WY2023: WY2024 is 274 days missing
+                            # (Jan-Sep 2024) and would pollute per-year/window stats
+
+baseflow:
+  alpha: 0.975
+  passes: 3
+  screen_passes: 1
+  sensitivity_alphas: [0.9, 0.925, 0.95, 0.99]   # for the alpha-sensitivity utility
+
+recession:
+  dqdt_tolerance: 0.05
+  quickflow_frac_max: 0.10
+  min_segment_length: 10
+  drop_days_after_peak: 5
+  season:
+    mode: "swe_meltout"
+    doy_end: 335
+    meltout:
+      swe_path: "/scratch/dlhogan/ess-project-data/domain_Tuolumne_River_lumped/observations/formatted/snotel_swe.csv"
+      date_col: "date"
+      swe_col: "value"
+      swe_units: "auto"     # no units column -> assumed mm (correct for this file)
+      swe_threshold: 25.0   # mm
+      min_peak_swe: 100.0   # mm
+      buffer_days: 14
+      search_start_month: 3 # rejects WY2015's Feb disappearance (extreme dry year)
+      fallback: "mean_meltout"
+    # Resolves 42/45 SWE water years; within the aligned window (WY1982-2023) only
+    # WY2015 and WY2016 fall back (mean meltout doy 137.5 + buffer = doy 151).
+
+mrc:
+  tail_method: "flow_threshold"
+  tail_flow_frac: 0.67
+  min_tail_r2: 0.30
+  master_poly_order: 1
+
+temporal:
+  window:
+    length_years: 5
+    step_years: 5
+    min_recessions: 3
+
+bn:
+  enabled: true
+  dqdt:
+    min_q: 0.0
+  wetness:
+    enabled: true
+    metric: "water_year_mean_flow"
+    split: "extremes"
+    n_extreme: 10
+
+# -----------------------------------------------------------------------------
+# NOTE: io.forcing.path is intentionally null (see east_river.yaml). Also note the
+# SWE record begins 1980-12-02, so streamflow years WY1971-1981 have no meltout and
+# use the mean-meltout fallback -- ~11 of 53 analysis years are not meltout-driven.
+# -----------------------------------------------------------------------------

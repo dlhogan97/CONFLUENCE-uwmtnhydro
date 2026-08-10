@@ -151,16 +151,17 @@ def plot_mrc_overlay(entries, *, normalize: bool = True, title: str = "",
 
         mx = result.master_t - (t0 if normalize else 0.0)
         ax.semilogy(mx, result.master_Q / q0, ls, color=col, lw=2.4, zorder=3,
-                    label=(f"{label}:  k={result.k:.4f}/d   "
-                           f"$\\tau$={result.tau:.1f} d   "
-                           f"n={result.n_used}   RMSE={result.rmse:.2f} d"))
+                    label=(f"{label}:  $\\tau$={int(result.tau)} d   "))
+
+                    # label=(f"{label}:  $\\tau$={result.tau:.1f} d   "
+                    #        f"n={result.n_used}   RMSE={result.rmse:.2f} d"))
 
     ax.set_xlabel("days since master-curve start" if normalize else "shifted time (days)")
     ax.set_ylabel("Q / Q$_0$" if normalize else "Q")
     ax.set_title(title or "Master recession curves")
     ax.grid(True, which="both", color="white", alpha=0.7, lw=0.8)
     ax.set_axisbelow(True)
-    ax.legend(loc="upper right", fontsize=8, framealpha=0.9)
+    ax.legend(loc="upper right", framealpha=0.9)
     fig.tight_layout()
     return fig
 

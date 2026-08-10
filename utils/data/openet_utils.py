@@ -21,8 +21,10 @@ API Documentation: https://open-et.github.io/docs/
 """
 
 import os
+import io
 import json
 import time
+import zipfile
 import logging
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Union
@@ -38,6 +40,13 @@ try:
     HAS_DOTENV = True
 except ImportError:
     HAS_DOTENV = False
+
+
+class AreaLimitError(Exception):
+    """Raised when an OpenET request exceeds the per-request area (acre) cap.
+
+    Callers can catch this to subdivide the geometry into smaller tiles.
+    """
 
 
 class OpenETClient:
@@ -67,6 +76,14 @@ class OpenETClient:
     BASE_URL = "https://openet-api.org"
     TIMESERIES_POLYGON_ENDPOINT = "/raster/timeseries/polygon"
     TIMESERIES_MULTIPOLYGON_ENDPOINT = "/raster/timeseries/multipolygon"
+    RASTER_GEOTIFF_STACK_ENDPOINT = "/raster/geotiff/stack"
+
+    # Gridded (geotiff/stack) request limits — see
+    # https://openet.gitbook.io/docs/additional-resources/quota
+    #   * 31 timesteps per request
+    #   * per-request area cap: 50,000 acres (Tier 1 free) / 200,000 acres (Tier 2)
+    MAX_STEPS_PER_STACK = 31
+    SAFE_MAX_ACRES = 45000  # stay under the 50k free-tier cap when tiling
     
     # Available models
     AVAILABLE_MODELS = [
@@ -752,6 +769,189 @@ class OpenETClient:
 
         return df
     
+    # ------------------------------------------------------------------
+    # Gridded (raster) download — /raster/geotiff/stack
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _flatten_polygon(geometry: Dict[str, Any]) -> List[float]:
+        """Flatten a GeoJSON Polygon/MultiPolygon to [lon1, lat1, lon2, lat2, ...].
+
+        Mirrors the coordinate handling in ``get_timeseries`` so the same
+        geometries can be used for both polygon-reduce and gridded requests.
+        """
+        geom_type = geometry.get('type', '')
+        coordinates = geometry.get('coordinates', [])
+        if geom_type == 'Polygon':
+            coord_pairs = coordinates[0]
+        elif geom_type == 'MultiPolygon':
+            coord_pairs = []
+            for polygon in coordinates:
+                coord_pairs.extend(polygon[0])
+        else:
+            coord_pairs = coordinates
+        flat: List[float] = []
+        for coord in coord_pairs:
+            flat.extend(coord)
+        return flat
+
+    @staticmethod
+    def bbox_from_bounds(minx: float, miny: float, maxx: float, maxy: float) -> List[float]:
+        """Return a closed rectangular polygon as a flat [lon, lat, ...] list."""
+        return [minx, miny, maxx, miny, maxx, maxy, minx, maxy, minx, miny]
+
+    @staticmethod
+    def tile_bounds(
+        minx: float, miny: float, maxx: float, maxy: float,
+        max_acres: float = SAFE_MAX_ACRES,
+    ) -> List[tuple]:
+        """Split a lon/lat bounding box into a grid of tiles each <= max_acres.
+
+        Returns a list of (minx, miny, maxx, maxy) tuples. The number of tiles
+        along each axis is chosen so the (approximate) tile area stays under the
+        per-request acre cap. Area is estimated with a local cos(lat) correction.
+        """
+        import math
+        mean_lat = math.radians((miny + maxy) / 2.0)
+        # metres per degree (approx)
+        m_per_deg_lat = 111_320.0
+        m_per_deg_lon = 111_320.0 * math.cos(mean_lat)
+        width_m = abs(maxx - minx) * m_per_deg_lon
+        height_m = abs(maxy - miny) * m_per_deg_lat
+        total_acres = (width_m * height_m) / 4046.8564224
+        if total_acres <= max_acres:
+            return [(minx, miny, maxx, maxy)]
+        # choose an ~square tile grid with enough tiles to get under the cap
+        n_tiles = math.ceil(total_acres / max_acres)
+        # bias the split toward the longer side
+        aspect = width_m / height_m if height_m else 1.0
+        ncols = max(1, round(math.sqrt(n_tiles * aspect)))
+        nrows = max(1, math.ceil(n_tiles / ncols))
+        # ensure product covers requirement
+        while ncols * nrows < n_tiles:
+            ncols += 1
+        dx = (maxx - minx) / ncols
+        dy = (maxy - miny) / nrows
+        tiles = []
+        for j in range(nrows):
+            for i in range(ncols):
+                tiles.append((
+                    minx + i * dx, miny + j * dy,
+                    minx + (i + 1) * dx, miny + (j + 1) * dy,
+                ))
+        return tiles
+
+    def get_geotiff_stack_links(
+        self,
+        geometry_coords: List[float],
+        start_date: str,
+        end_date: str,
+        variable: str = 'et',
+        model: str = 'ensemble',
+        units: str = 'mm',
+        interval: str = 'monthly',
+        ref_et_source: str = 'gridmet',
+        resample: int = 0,
+        retry_count: int = 3,
+        retry_delay: float = 5.0,
+    ) -> Dict[str, str]:
+        """Request a gridded GeoTIFF stack; return {date_str: download_url}.
+
+        The OpenET ``/raster/geotiff/stack`` endpoint returns one download link
+        per timestep. Each link yields a ZIP archive containing a single-band
+        GeoTIFF. Limited to ``MAX_STEPS_PER_STACK`` (31) timesteps per request;
+        the caller is responsible for chunking longer periods.
+
+        Raises:
+            requests.RequestException: on repeated failure. Area-limit errors
+                (HTTP 4xx mentioning acres) are re-raised immediately so the
+                caller can subdivide the geometry.
+        """
+        payload = {
+            'date_range': [start_date, end_date],
+            'interval': interval.lower(),
+            'geometry': geometry_coords,
+            'model': model.lower(),
+            'variable': variable.lower(),
+            'reference_et': ref_et_source.lower(),
+            'units': units.lower(),
+            'overpass': False,
+            'resample': resample,
+        }
+        url = f"{self.base_url}{self.RASTER_GEOTIFF_STACK_ENDPOINT}"
+        for attempt in range(retry_count):
+            try:
+                self.logger.info(
+                    f"geotiff/stack request {start_date}..{end_date} "
+                    f"(attempt {attempt + 1}/{retry_count})"
+                )
+                response = requests.post(
+                    url, headers=self._get_headers(), json=payload, timeout=300
+                )
+                if response.status_code == 200:
+                    links = response.json()
+                    self.logger.info(f"  received {len(links)} timestep link(s)")
+                    return links
+                if response.status_code == 429:
+                    self.logger.warning("Rate limited; backing off...")
+                    time.sleep(retry_delay * (attempt + 1))
+                    continue
+                # Area-cap violations should not be retried — surface immediately.
+                body = response.text or ''
+                if response.status_code in (400, 413, 422) and 'acre' in body.lower():
+                    raise AreaLimitError(
+                        f"OpenET area limit exceeded ({response.status_code}): {body[:200]}"
+                    )
+                self.logger.error(f"stack request failed {response.status_code}: {body[:300]}")
+                if attempt == retry_count - 1:
+                    raise requests.RequestException(
+                        f"stack request failed {response.status_code}: {body[:300]}"
+                    )
+                time.sleep(retry_delay)
+            except requests.Timeout:
+                self.logger.warning(f"stack request timed out (attempt {attempt + 1})")
+                if attempt == retry_count - 1:
+                    raise
+                time.sleep(retry_delay)
+        raise requests.RequestException("stack request failed after all retries")
+
+    def download_geotiff_stack(
+        self,
+        geometry_coords: List[float],
+        start_date: str,
+        end_date: str,
+        output_dir: Union[str, Path],
+        variable: str = 'et',
+        model: str = 'ensemble',
+        units: str = 'mm',
+        interval: str = 'monthly',
+        ref_et_source: str = 'gridmet',
+        resample: int = 0,
+        prefix: str = '',
+        link_delay: float = 0.5,
+    ) -> Dict[str, Path]:
+        """Download a GeoTIFF stack to ``output_dir``; return {date_str: tif_path}.
+
+        Each link returns a ZIP containing one GeoTIFF, which is extracted to
+        ``output_dir`` as ``{prefix}{variable}_{model}_{date}.tif``.
+        """
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        links = self.get_geotiff_stack_links(
+            geometry_coords, start_date, end_date, variable=variable, model=model,
+            units=units, interval=interval, ref_et_source=ref_et_source, resample=resample,
+        )
+        out: Dict[str, Path] = {}
+        for date_str, link in sorted(links.items()):
+            tif_path = output_dir / f"{prefix}{variable}_{model}_{date_str}.tif"
+            zb = requests.get(link, timeout=300).content
+            with zipfile.ZipFile(io.BytesIO(zb)) as zf:
+                tif_name = next(n for n in zf.namelist() if n.lower().endswith('.tif'))
+                tif_path.write_bytes(zf.read(tif_name))
+            out[date_str] = tif_path
+            if link_delay:
+                time.sleep(link_delay)
+        return out
+
     def save_timeseries(
         self,
         df: pd.DataFrame,
