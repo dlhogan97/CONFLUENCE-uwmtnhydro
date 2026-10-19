@@ -1,0 +1,17 @@
+name: rxr-env
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - rasterio=1.3.11      # bundles GDAL 3.9.2 on conda-forge
+  - libgdal-netcdf       # GDAL netCDF driver (needed to read prism_4km_ucrb.nc)
+  - rioxarray=0.18.2
+  - xarray=2025.6.1
+  - netcdf4=1.7.2
+  - numpy
+  - pyproj
+  - pandas
+  - matplotlib
+  - geopandas
+  - jupyterlab
+  - ipykernel

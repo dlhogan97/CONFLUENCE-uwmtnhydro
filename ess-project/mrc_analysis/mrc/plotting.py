@@ -67,7 +67,8 @@ def _start_label(r: Recession, fmt: str) -> str:
 def plot_matched_mrc(recessions: List[Recession], tails: List[TailFit],
                      result: MRCResult, *, title: str = "",
                      label_starts: bool = False, label_fmt: str = "doy_year",
-                     label_fontsize: int = 7) -> plt.Figure:
+                     label_fontsize: int = 7,
+                     show_text: bool = False) -> plt.Figure:
     """Figure 2: matched master recession curve for one window.
 
     Each used recession's tail is drawn at its optimized time offset; the fitted
@@ -86,12 +87,12 @@ def plot_matched_mrc(recessions: List[Recession], tails: List[TailFit],
     Labels are dense by construction -- these traces overlap -- so shrink
     ``label_fontsize`` or use ``"seg"`` when it gets unreadable.
     """
-    fig, ax = plt.subplots(figsize=(9, 6))
+    fig, ax = plt.subplots(figsize=(8, 4))
     seg_by_id = {r.seg_id: (r, tf) for r, tf in zip(recessions, tails)}
     for offset, seg_id in zip(result.offsets, result.used_seg_ids):
         r, _ = seg_by_id[seg_id]
         # Redraw the tail portion consistent with the matching (last tail pts).
-        ax.semilogy(r.t + offset, r.Q, "-", ms=3, alpha=0.5, color="0.4")
+        ax.semilogy(r.t + offset, r.Q, "-", ms=3, alpha=0.3, color="0.4")
         if label_starts and r.t.size:
             ax.annotate(_start_label(r, label_fmt),
                         (r.t[0] + offset, r.Q[0]),
@@ -105,8 +106,9 @@ def plot_matched_mrc(recessions: List[Recession], tails: List[TailFit],
            f"tau = {result.tau:.1f} days\n"
            f"RMSE(days) = {result.rmse:.3f}\n"
            f"n used = {result.n_used} / conforming {result.n_conforming}")
-    ax.text(0.98, 0.95, txt, transform=ax.transAxes, ha="right", va="top",
-            fontsize=9, bbox=dict(boxstyle="round", fc="white", alpha=0.8))
+    if show_text:
+        ax.text(0.98, 0.95, txt, transform=ax.transAxes, ha="right", va="top",
+                fontsize=9, bbox=dict(boxstyle="round", fc="white", alpha=0.8))
     ax.set_xlabel("shifted time (days)")
     ax.set_ylabel("Q (log scale)")
     ax.set_title(title or "Matched master recession curve")
@@ -350,3 +352,156 @@ def _qc_viewer_plotly(recessions, tails, result) -> None:  # pragma: no cover
     out = Path("mrc_qc_viewer.html")
     fig.write_html(str(out))
     print(f"Wrote interactive QC viewer to {out.resolve()}")
+
+
+def _shade(hex_color: str, amount: float) -> tuple:
+    """Blend a hex colour toward white (amount>0) or black (amount<0). |amount| in [0,1]."""
+    import matplotlib.colors as mcolors
+    r, g, b = mcolors.to_rgb(hex_color)
+    if amount >= 0:
+        return tuple(c + (1.0 - c) * amount for c in (r, g, b))
+    return tuple(c * (1.0 + amount) for c in (r, g, b))
+
+
+def plot_mrc_facet(groups, *, normalize: bool = True, trace_alpha: float = 0.07,
+                   markers=("o", "s", "^"), shades=(-0.35, 0.05, 0.38),
+                   figsize=(9.0, 8.4), golden: float = 1.618,
+                   clip_to_reference: bool = True, ylim=(0.01, 3.0),
+                   tau_panel: bool = True, tau_shared: bool = False,
+                   basin_labels: bool = True, marker_every: int = 14,
+                   ms: float = 6.0, marker_scale=None, tau_width: float = 0.20
+                   ) -> plt.Figure:
+    """Master recession curves, one ROW per basin, with a narrow tau panel beside each.
+
+    Layout: groups are stacked vertically (first group on top), each row being a
+    recession panel plus a slim tau strip on its right. The strip's y axis is tau in
+    days and all of a row's markers sit at the SAME x, so near-identical timescales
+    stack instead of being nudged apart -- the overlap is the message.
+
+    The master curve is drawn as POINTS, not a line: it is a fitted curve through
+    assembled recession tails, so discrete markers state what it is without implying a
+    continuously observed trajectory. Faint background lines are the individual
+    recessions that were assembled into it.
+
+    ``groups`` is a sequence of ``(group_label, base_colour, entries)`` where ``entries``
+    is the ``(label, recessions, tails, result)`` sequence ``plot_mrc_overlay`` takes; the
+    FIRST entry is treated as the reference (observed). ``shades`` blends the base colour
+    toward black (negative) or white (positive), one step per entry, so each row keeps
+    its basin hue while the variant reads off lightness plus marker shape.
+
+    ``clip_to_reference`` truncates every curve in a group at the reference curve's
+    lowest normalised flow, so model curves are not drawn past the range the observations
+    cover. ``tau_shared`` puts every row's tau on one scale (comparable across basins);
+    the default gives each row its own tight range, which separates near-equal values.
+
+    Legends, titles and value annotations are intentionally omitted -- add them at figure
+    level so they can be positioned freely.
+    """
+    n = len(groups)
+    # A filled triangle of a given `ms` reads smaller than a circle or square: markersize
+    # is the bounding-box edge and the triangle covers about half of it.
+    scale = {"^": 1.35, "v": 1.35, "o": 1.0, "s": 0.95}
+    if marker_scale:
+        scale.update(marker_scale)
+
+    fig = plt.figure(figsize=figsize)
+    gs = fig.add_gridspec(n, 2 if tau_panel else 1,
+                          width_ratios=[1.0, tau_width] if tau_panel else [1.0],
+                          hspace=0.14, wspace=0.05)
+    axes, strips, curve_end = [], [], []
+
+    for gi, (glabel, base_col, entries) in enumerate(groups):
+        ax = fig.add_subplot(gs[gi, 0])
+        ax.set_facecolor("#f2f2f2")
+        ax.set_box_aspect(1.0 / golden)
+
+        floor = -np.inf
+        if clip_to_reference and entries:
+            _l, _rs, _tl, r0 = entries[0]
+            if r0.master_Q.size:
+                q0r = float(r0.master_Q[0]) if normalize else 1.0
+                floor = float(np.min(r0.master_Q / q0r))
+
+        ends = []
+        for i, (label, recessions, tails, result) in enumerate(entries):
+            if not result.master_t.size:
+                ends.append(np.nan)
+                continue
+            col = _shade(base_col, shades[i % len(shades)])
+            t0 = float(result.master_t[0])
+            q0 = float(result.master_Q[0]) if normalize else 1.0
+
+            seg_by_id = {r.seg_id: r for r in recessions}
+            for offset, seg_id in zip(result.offsets, result.used_seg_ids):
+                r = seg_by_id[seg_id]
+                x = r.t + offset - (t0 if normalize else 0.0)
+                y = r.Q / q0
+                keep = y >= floor
+                ax.semilogy(x[keep], y[keep], "-", color=col, lw=0.7,
+                            alpha=trace_alpha, zorder=1)
+
+            mx = result.master_t - (t0 if normalize else 0.0)
+            my = result.master_Q / q0
+            keep = my >= floor
+            mx, my = mx[keep], my[keep]
+            step = max(1, int(round(mx.size / max(marker_every, 1))))
+            mk = markers[i % len(markers)]
+            ax.semilogy(mx[::step], my[::step], mk, ls="none", color=col,
+                        ms=ms * scale.get(mk, 1.0), mfc=col, mec="white", mew=0.9,
+                        zorder=4 - i * 0.1)
+            ends.append(float(result.tau))
+        curve_end.append(ends)
+
+        ax.grid(True, which="both", color="white", alpha=0.75, lw=0.8)
+        ax.set_axisbelow(True)
+        if ylim:
+            ax.set_ylim(*ylim)
+        ax.set_ylabel("log(Q) (m$^3$/s) " if normalize else "log(Q) (m$^3$/s) ")
+        if gi < n - 1:
+            ax.tick_params(labelbottom=False)
+        else:
+            ax.set_xlabel("Days since recession start")
+        if basin_labels:
+            ax.set_title(glabel, loc="left", fontweight="bold")
+        axes.append(ax)
+
+    for ax in axes[1:]:                       # one Q/Q0 scale and one day axis for all rows
+        ax.sharey(axes[0]); ax.sharex(axes[0])
+
+    if not tau_panel:
+        fig.tight_layout()
+        return fig
+
+    all_tau = [t for row in curve_end for t in row if np.isfinite(t)]
+    lo_all, hi_all = min(all_tau), max(all_tau)
+    for gi, (glabel, base_col, entries) in enumerate(groups):
+        tax = fig.add_subplot(gs[gi, 1])
+        tax.set_facecolor("#f2f2f2")
+        taus = curve_end[gi]
+        for i, tv in enumerate(taus):
+            if not np.isfinite(tv):
+                continue
+            col = _shade(base_col, shades[i % len(shades)])
+            mk = markers[i % len(markers)]
+            tax.plot(0.0, tv, mk, ms=(ms + 4.0) * scale.get(mk, 1.0), color=col,
+                     mfc=col, mec="white", mew=1.2, zorder=4)
+        good = [t for t in taus if np.isfinite(t)]
+        if tau_shared:
+            lo, hi = lo_all, hi_all
+        else:
+            lo, hi = min(good), max(good)
+        pad = max((hi - lo) * 0.10, 2.0)
+        tax.set_xlim(-1, 1)
+        tax.set_ylim(lo - pad, hi + pad)
+        tax.set_xticks([])
+        tax.set_ylabel(r"Recession Timescale, $1/k$"+"\n(days)")
+        tax.yaxis.set_label_position("right")
+        tax.yaxis.tick_right()
+        tax.grid(True, axis="y", color="white", alpha=0.75, lw=0.8)
+        tax.set_axisbelow(True)
+        for s in ("top", "left", "bottom"):
+            tax.spines[s].set_visible(False)
+        strips.append(tax)
+
+    fig.tight_layout()
+    return fig

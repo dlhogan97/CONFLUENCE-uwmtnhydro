@@ -24,7 +24,7 @@ io:
     path: null              # forcing screen OFF -- see note at bottom
 
 preprocess:
-  min_flow: 0.1             # m3/s; record min is 0.82, so this is a guard (masks 0 days)
+  min_flow: 0.01            # m3/s; record min is 0.38, so this is a guard (masks 0 days)
   drop_negative: true
   date_start: null          # manual override; set to force gauges onto one window
   align_start_to_swe: true  # Butte SWE begins 1980-10-01, Q begins 1970-10-01, so the

@@ -25,7 +25,10 @@ io:
     path: null              # forcing screen OFF -- see note at bottom
 
 preprocess:
-  min_flow: 0.1             # m3/s; masks 6 sub-threshold days incl. one exact zero
+  min_flow: 0.01            # m3/s; masks 0 days. Was 0.1, which masked 426-428 late-summer
+                            # days (9 dry water years) -- the model min is 0.0101, so 0.1 cut
+                            # into the real low-flow range and dropped exactly the years the
+                            # recession/BFI analysis cares about. Matches tuolumne.yaml.
   drop_negative: true
   date_start: null          # manual override; set to force gauges onto one window
   align_start_to_swe: true  # SWE begins 1980-12-02, Q begins 1970-01-01, so the analysis
