@@ -4,7 +4,7 @@ from pathlib import Path
 import emu_core as E
 BASE = E.BASE_RUN
 ROOT = Path("/scratch/dlhogan/ess-project-data/domain_East_River_distributed_elevAspect/simulations/store_memory_sandbox/East/deepstore_dev/overnight/summa")
-EXE = "/tmp/claude-1008/summa_ds"        # wrapper: LD_LIBRARY_PATH -> new libsumma.so, exec /home/dlhogan/summa_deepstore/bin/summa.exe
+EXE = "/home/dlhogan/bin/summa_ds"       # wrapper: LD_LIBRARY_PATH -> new libsumma.so, exec /home/dlhogan/summa_deepstore/bin/summa.exe
 def ln(n, a, b, c): return f"{n:<25} | {a:>12} | {b:>12} | {c:>12}"
 def num(v):
     # the parameter files are read with a fixed-width real format: a value without a decimal point (e.g. "1") is read as 1e-4
@@ -23,6 +23,7 @@ def build(name, fit, singlebasin):
         out.append(l)
         if l.startswith("aquiferBaseflowExp"):
             out.append(ln("aquiferLeakRate", num(p["lam"]*E.RATE0), "0", "1.0e-3")); out.append(ln("aquiferLeakExp", num(p["m_leak"]), "1.0", "10.0"))
+            out.append(ln("canopyGapFrac", "0.0", "0.0", "1.0"))     # the build requires it (2026-10-20); 0 = no canopy gaps, as these runs were made
     open(T/"localParamInfo.txt", "w").write("\n".join(out))
     out = []
     for l in open(T/"basinParamInfo.txt").read().rstrip("\n").split("\n"):

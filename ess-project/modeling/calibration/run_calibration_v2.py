@@ -125,7 +125,7 @@ class RunnerV2(CalibrationRunner):
             if not ((y0, m0) <= (yy, mm) <= (y1, m1)): (fdir/f.name).symlink_to(f); continue
             with xr.open_dataset(f) as _d: ds = _d.load().copy()
             if dT is not None:
-                T0 = ds["airtemp"].values; q0 = ds["spechum"].values; pp = ds["airpres"].values; T1 = T0 + dT[None, :]; q1 = q0*(_esat_kpa(T1)/_esat_kpa(T0))
+                T0 = ds["airtemp"].values.copy(); q0 = ds["spechum"].values.copy(); pp = ds["airpres"].values; T1 = T0 + dT[None, :]; q1 = q0*(_esat_kpa(T1)/_esat_kpa(T0))
                 ds["airtemp"].values[:] = T1; ds["spechum"].values[:] = q1
                 ds["LWRadAtm"].values[:] = ds["LWRadAtm"].values + _lw_dilley_obrien(T1, pp, q1) - _lw_dilley_obrien(T0, pp, q0)
             if lwo is not None: ds["LWRadAtm"].values[:] = ds["LWRadAtm"].values + float(lwo)

@@ -205,3 +205,7 @@ ess-project/notebooks/exploration/observed_data/tuolumne/ASO_50M_SWE_USCATE_2019
 
 # regenerable emulator cache (116 MB; rebuilt by emu_core.prepare())
 ess-project/utils/singlebasin_calibration/*.npz
+
+# untracked data/results tables (temporary; scripts are tracked). Already-tracked csv/json are unaffected.
+*.csv
+*.json

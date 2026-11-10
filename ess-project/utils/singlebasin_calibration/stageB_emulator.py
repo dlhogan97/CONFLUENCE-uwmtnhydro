@@ -1,7 +1,7 @@
 """Stage-B test bed: does fitting only the aquifer+routing (emulator, East) recover the low-flow / recession / monthly / bias features equally well from DIFFERENT stage-A (snow/energy) states?
 A 'state' = the hourly net recharge, surface runoff, HRU areas and initial storage taken from one SUMMA run (old best, v2 round-1 best, v2 round-2 best). Window WY2009-2020 (spin-up from 2005-10-01).
 Stage-B objective = mean of five normalised feature errors: fall low flow, winter low flow, receding limb, monthly-volume error, overall bias."""
-import sys, json, time, warnings; warnings.filterwarnings("ignore")
+import os, sys, json, time, warnings; warnings.filterwarnings("ignore")
 import numpy as np, pandas as pd, numba as nb, netCDF4 as nc
 from pathlib import Path
 from scipy.stats import gamma
@@ -11,12 +11,19 @@ from emu_core import run_buckets
 
 L = "/scratch/dlhogan/ess-project-data/calibration/"
 OUT = Path("/scratch/dlhogan/ess-project-data/domain_East_River_distributed_elevAspect/simulations/store_memory_sandbox/East/deepstore_dev/stageB"); OUT.mkdir(parents=True, exist_ok=True)
-T0, T1, SCORE0 = "2005-10-01", "2020-09-30 23:00", "2008-10-01"
+END = os.environ.get("STAGEB_END", "2020-09-30")                  # scoring/sim end; set 2025-09-30 for the WY2009-2025 window
+SUF = "" if END == "2020-09-30" else f"_to{END[:4]}"               # output-file suffix, so the 2020 results are not overwritten
+T0 = os.environ.get("STAGEB_T0", "2005-10-01")                     # state start; 1981-10-01 for the full-record control state
+T1, SCORE0 = f"{END} 23:00", "2008-10-01"
 SRC = {"old": (L+"bestruns/East_River_baseline_1981_2025/run", "baseline_timestep.nc"),
        "r1": (L+"runs/East_River_v2_20261014_185148/best_full/rank0", "best_timestep.nc"),
-       "r2": (L+"runs/East_River_r2_20261015_110603/best_full/rank0", "best_timestep.nc")}
+       "r2": (L+"runs/East_River_r2_20261015_110603/best_full/rank0", "best_timestep.nc"),
+       "sa": (L+"runs/East_River_stageA_20261019_142114/best_full_work/keep", "best_timestep.nc"),
+       "ctl": (L+"runs/East_River_control_20261020_154016/best_full/keep", "best_timestep.nc"),             # no-storage control (canopy gaps, albedo floor+rate)
+       "ctlfull": (L+"runs/East_River_control_20261020_154016/best_full_1981/keep", "best_timestep.nc"),     # same control, 1981-10-01 to 2025-09-30
+       "routfull": (L+"runs/East_River_routing_20261022_153020/best_full_1981/keep", "best_timestep.nc")}   # routing/timing control (7 free params), 1981-10-01 to 2025-09-30
 def build_state(name):
-    fn = OUT/f"state_{name}.npz"
+    fn = OUT/f"state_{name}{SUF}.npz"
     if not fn.exists():
         d0, f = SRC[name]; d = nc.Dataset(f"{d0}/out/{f}"); t = d["time"]; tt = pd.DatetimeIndex(nc.num2date(t[:], t.units, only_use_cftime_datetimes=False))
         A = np.array(nc.Dataset(f"{d0}/attributes.nc")["HRUarea"][:]).astype(float).ravel()
@@ -40,11 +47,11 @@ def _per_wy(q, f):
 def _min7(g, months): return float(_roll7(g.where(g.index.month.isin(months))).min())
 def _recess(g, y):
     r = _roll7(g).dropna(); t = r.idxmax(); post = r.loc[t:]; b = post[post <= 0.25*r.max()]; return float((b.index[0]-t).days) if len(b) else np.nan
-OBSD = E.obs.loc[SCORE0:"2020-09-30"]
+OBSD = E.obs.loc[SCORE0:END]
 _OF = {"fall": _per_wy(OBSD, lambda g, y: _min7(g, [8, 9, 10])), "winter": _per_wy(OBSD, lambda g, y: _min7(g, [12, 1, 2, 3])), "rec": _per_wy(OBSD, _recess)}
 _OM = OBSD.groupby(OBSD.index.month).mean()
 def terms(q):
-    s = q.loc[SCORE0:"2020-09-30"].clip(lower=0.01); o = OBSD.clip(lower=0.01); out = {}
+    s = q.loc[SCORE0:END].clip(lower=0.01); o = OBSD.clip(lower=0.01); out = {}
     for k, mo in (("fall", [8, 9, 10]), ("winter", [12, 1, 2, 3])):
         sv = _per_wy(s, lambda g, y: _min7(g, mo)); c = sv.index.intersection(_OF[k].index)
         out[k] = float(np.clip(np.abs(np.log10(sv[c].clip(lower=0.01))-np.log10(_OF[k][c].clip(lower=0.01))).mean()/0.15, 0, 3))

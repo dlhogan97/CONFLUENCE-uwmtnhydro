@@ -408,8 +408,8 @@ class CalibrationRunner:
             with xr.open_dataset(f) as _d:
                 ds = _d.load().copy()
             if dT is not None:
-                T0 = ds["airtemp"].values
-                q0 = ds["spechum"].values
+                T0 = ds["airtemp"].values.copy()   # COPY: .values is a view, and airtemp/spechum are overwritten before the LW increment is formed
+                q0 = ds["spechum"].values.copy()
                 p = ds["airpres"].values
                 T1 = T0 + dT[None, :]
                 q1 = q0 * (_esat_kpa(T1) / _esat_kpa(T0))          # preserve RH
